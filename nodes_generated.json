@@ -1,0 +1,118 @@
+{
+  "nodos": [
+    {
+      "id": "infoxicacion_cognitiva",
+      "label": "Infoxicación Cognitiva",
+      "type": "CONCEPTO",
+      "level": 1,
+      "desc": "Acumulación pasiva de información que genera ruido estático sin generar ventaja competitiva real.",
+      "fragmento": "Los profesionales operan bajo la ilusión de que estar actualizados —acumular papers, hilos y resúmenes diarios— equivale a tener ventaja competitiva. En la práctica, esto genera ruido estático. Un resumen, por más preciso que sea, es conocimiento inerte si no está acoplado a un motor de ejecución.",
+      "fuente": "pdf",
+      "fuente_label": "PragmaForge"
+    },
+    {
+      "id": "motor_inferencia",
+      "label": "Motor de Inferencia",
+      "type": "CONCEPTO",
+      "level": 1,
+      "desc": "Sistema que transforma la ingesta pasiva de información en generación activa de criterio aplicable.",
+      "fragmento": "La visión no es construir una biblioteca más inteligente, sino un motor de inferencia. El objetivo es cambiar el flujo de valor: pasar de la ingesta pasiva de información a la generación activa de criterio aplicable para dominios de alta complejidad.",
+      "fuente": "pdf",
+      "fuente_label": "PragmaForge"
+    },
+    {
+      "id": "techo_rag",
+      "label": "Limitación del RAG Monolítico",
+      "type": "CONCEPTO",
+      "level": 2,
+      "desc": "Los sistemas RAG tradicionales operan como buscadores sin entender contexto, función del usuario o viabilidad de solución.",
+      "fragmento": "Un RAG monolítico recupera fragmentos semánticamente similares a una consulta, pero carece de entendimiento sobre la función del usuario, el contexto de la industria o la viabilidad de la solución. Te dice qué dice el paper, pero falla en el cómo se integra.",
+      "fuente": "pdf",
+      "fuente_label": "PragmaForge"
+    },
+    {
+      "id": "capa_curacion",
+      "label": "Ingesta y Curación Contextual",
+      "type": "CONCEPTO",
+      "level": 3,
+      "desc": "Clasificación del conocimiento por vector de aplicabilidad según rol profesional e industria específica.",
+      "fragmento": "No todos los papers valen lo mismo. El sistema debe clasificar el flujo de entrada no solo por tema, sino por vector de aplicabilidad: Rol Profesional, Industria/Dominio. Esta capa asegura que la base de conocimiento esté pre-segmentada, reduciendo la fricción al momento de la recuperación.",
+      "fuente": "pdf",
+      "fuente_label": "PragmaForge"
+    },
+    {
+      "id": "estructuracion_ontologica",
+      "label": "Estructuración Ontológica para Agentes",
+      "type": "CONCEPTO",
+      "level": 3,
+      "desc": "Sintetización y etiquetado del conocimiento para consumo por LLMs y agentes, no solo humanos.",
+      "fragmento": "El conocimiento se sintetiza y etiqueta pensando en que su consumidor principal no será necesariamente un humano, sino un LLM o un agente. Se extraen variables, metodologías, métricas de éxito y limitaciones. Se crea un formato estructurado que permite cruzar este texto con datos numéricos reales de la organización.",
+      "fuente": "pdf",
+      "fuente_label": "PragmaForge"
+    },
+    {
+      "id": "orquestacion_reflexiva",
+      "label": "Orquestación Reflexiva",
+      "type": "CONCEPTO",
+      "level": 3,
+      "desc": "Motor de decisión Multi-RAG que consulta, reflexiona y propone soluciones aplicables descartando enfoques inviables.",
+      "fragmento": "Ante un problema concreto, el sistema no arroja un paper. Consulta: Busca en el conocimiento estructurado. Reflexiona: Evalúa las metodologías encontradas contra las capacidades o datos históricos de la empresa. Propone: Sintetiza una solución aplicable, descartando enfoques teóricos inviables y priorizando acciones concretas.",
+      "fuente": "pdf",
+      "fuente_label": "PragmaForge"
+    },
+    {
+      "id": "second_brain",
+      "label": "Second Brain Corporativo",
+      "type": "CONCEPTO",
+      "level": 2,
+      "desc": "Sistema dinámico de gestión del conocimiento que evoluciona y se retroalimenta con cada problema resuelto.",
+      "fragmento": "El impacto final es transformar la gestión del conocimiento. En lugar de depender de la memoria humana o de bases de datos aisladas, se consolida un Second Brain que no es estático, sino dinámico. Evoluciona a medida que ingiere nueva investigación, pero se calibra y retroalimenta con cada problema que ayuda a resolver.",
+      "fuente": "pdf",
+      "fuente_label": "PragmaForge"
+    },
+    {
+      "id": "transformacion_criterio",
+      "label": "Transformación en Criterio Estratégico",
+      "type": "CONCEPTO",
+      "level": 1,
+      "desc": "Objetivo final de orquestar complejidad técnica para convertir información en criterio y decisiones de alto impacto.",
+      "fragmento": "El fin absoluto es orquestar la complejidad técnica para lograr la máxima premisa del liderazgo estratégico: transformar información en criterio, y el criterio en decisiones de alto impacto.",
+      "fuente": "pdf",
+      "fuente_label": "PragmaForge"
+    }
+  ],
+  "relaciones": [
+    {
+      "source": "infoxicacion_cognitiva",
+      "target": "motor_inferencia"
+    },
+    {
+      "source": "motor_inferencia",
+      "target": "techo_rag"
+    },
+    {
+      "source": "techo_rag",
+      "target": "capa_curacion"
+    },
+    {
+      "source": "capa_curacion",
+      "target": "estructuracion_ontologica"
+    },
+    {
+      "source": "estructuracion_ontologica",
+      "target": "orquestacion_reflexiva"
+    },
+    {
+      "source": "orquestacion_reflexiva",
+      "target": "second_brain"
+    },
+    {
+      "source": "second_brain",
+      "target": "transformacion_criterio"
+    },
+    {
+      "source": "motor_inferencia",
+      "target": "transformacion_criterio"
+    }
+  ]
+}
