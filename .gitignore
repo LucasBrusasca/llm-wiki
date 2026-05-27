@@ -1,0 +1,22 @@
+# Entornos virtuales
+venv/
+.env
+env/
+__pycache__/
+*.pyc
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.npm/
+
+# Archivos de la base de datos y subidas (no subir el contenido del usuario)
+uploads/
+nodes_generated.json
+edges_generated.json
+*.sqlite3
+*.db
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,577 @@
+import anthropic
+import json
+import re
+import sys
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
+
+_embed_model = None
+
+def get_embed_model():
+    global _embed_model
+    if _embed_model is None:
+        from sentence_transformers import SentenceTransformer
+        print("Cargando modelo de embeddings (primera vez: ~80MB)...")
+        _embed_model = SentenceTransformer('all-MiniLM-L6-v2')
+        print("✓ Modelo listo")
+    return _embed_model
+
+def generar_embedding(nodo):
+    model = get_embed_model()
+    conceptos_str = ', '.join(nodo.get('conceptos', []))
+    texto = f"{nodo['label']}. {nodo.get('desc','')}. {nodo.get('fragmento','')}. {conceptos_str}"
+    vec = model.encode([texto], show_progress_bar=False)[0]
+    nodo['embedding'] = vec.tolist()
+
+def parsear_json(texto):
+    if texto.startswith("```"):
+        texto = re.sub(r'^```\w*\n?', '', texto).rstrip('`').strip()
+    try:
+        return json.loads(texto)
+    except json.JSONDecodeError:
+        m = re.search(r'\{.*\}', texto, re.DOTALL)
+        if m:
+            return json.loads(m.group())
+        raise
+
+import httpx
+
+def strip_thinking(text: str) -> str:
+    """Elimina el bloque <think>...</think> que emiten los modelos con thinking mode."""
+    import re
+    # Eliminar bloque think completo
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    # Eliminar backticks de markdown si el modelo los agrega igual
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1]
+        text = text.rsplit("```", 1)[0]
+    return text.strip()
+
+_PROMPT_SUFIJO = """
+Respondé SOLO con un JSON válido, sin bloques de código, sin backticks.
+IMPORTANTE: "desc" y "conceptos" SIEMPRE en español, aunque el documento sea en inglés. "label" usá el título original.
+{
+  "nodo": {
+    "id": "identificador_unico_sin_espacios",
+    "label": "Título principal del contenido (idioma original)",
+    "type": "DOCUMENTO",
+    "level": 1,
+    "desc": "Descripción en ESPAÑOL de 4-5 oraciones: qué trata, conceptos/métodos principales, qué problema resuelve, relevancia en el campo.",
+    "fragmento": "Cita textual o idea central más relevante, 20-50 palabras.",
+    "conceptos": ["Concepto 1", "Concepto 2", "Concepto 3", "..."]
+  },
+  "relaciones": []
+}
+Incluí entre 8 y 14 conceptos clave. Solo JSON."""
+
+
+def extraer_texto_pdf(ruta_pdf):
+    try:
+        import fitz
+        doc = fitz.open(ruta_pdf)
+        texto = ""
+        for page in doc:
+            texto += page.get_text()
+        doc.close()
+        return texto.strip()
+    except Exception as e:
+        print(f"Error al extraer texto del PDF: {e}")
+        return ""
+
+def query_llm(messages: list, system: str = None) -> str:
+    provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
+    model = os.getenv("LLM_MODEL", "").strip()
+
+    if provider == "ollama":
+        if not model:
+            model = os.getenv("LLM_MODEL", "qwen3.5:27b")
+        url = os.getenv("OLLAMA_URL", "http://localhost:11434/v1/chat/completions")
+        headers = {"Content-Type": "application/json"}
+        payload_messages = []
+        if system:
+            payload_messages.append({"role": "system", "content": system})
+        for msg in messages:
+            content = msg["content"]
+            if isinstance(content, list):
+                text_content = ""
+                for block in content:
+                    if block["type"] == "text":
+                        text_content += block["text"]
+                content = text_content
+            payload_messages.append({"role": msg["role"], "content": content})
+            
+        payload = {
+            "model": model,
+            "messages": payload_messages,
+            "temperature": 0.1
+        }
+        with httpx.Client(timeout=300.0) as client:
+            resp = client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            return strip_thinking(data["choices"][0]["message"]["content"])
+
+    elif provider == "gemini":
+        if not model:
+            model = "gemini-1.5-flash"
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        url = f"https://generativelanguage.googleapis.com/v1beta/chat/completions?key={api_key}"
+        headers = {"Content-Type": "application/json"}
+        payload_messages = []
+        if system:
+            payload_messages.append({"role": "system", "content": system})
+        for msg in messages:
+            content = msg["content"]
+            if isinstance(content, list):
+                text_content = ""
+                for block in content:
+                    if block["type"] == "text":
+                        text_content += block["text"]
+                content = text_content
+            payload_messages.append({"role": msg["role"], "content": content})
+            
+        payload = {
+            "model": model,
+            "messages": payload_messages,
+            "temperature": 0.1
+        }
+        with httpx.Client(timeout=300.0) as client:
+            resp = client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            return strip_thinking(data["choices"][0]["message"]["content"])
+
+    else:
+        # Default: Anthropic
+        if not model:
+            model = "claude-3-5-sonnet-latest"
+        if "sonnet" in model:
+            model = "claude-3-5-sonnet-latest"
+        elif "haiku" in model:
+            model = "claude-3-5-haiku-latest"
+            
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        resp = client.messages.create(
+            model=model,
+            max_tokens=1200,
+            system=system,
+            messages=messages
+        )
+        return strip_thinking(resp.content[0].text)
+
+
+def procesar_pdf(ruta_pdf):
+    """Un único nodo por PDF con metadata de conceptos interna."""
+    provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
+    
+    if provider == "anthropic":
+        import base64
+        pdf_b64 = base64.standard_b64encode(Path(ruta_pdf).read_bytes()).decode("utf-8")
+        prompt = "Analizá este documento y generá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+        messages = [{"role": "user", "content": [
+            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64}},
+            {"type": "text", "text": prompt},
+        ]}]
+        response_text = query_llm(messages)
+    else:
+        pdf_text = extraer_texto_pdf(ruta_pdf)
+        prompt = f"Analizá el siguiente documento y generá UN ÚNICO nodo de resumen.\n\nDOCUMENTO:\n{pdf_text[:20000]}\n\n" + _PROMPT_SUFIJO
+        messages = [{"role": "user", "content": prompt}]
+        response_text = query_llm(messages)
+        
+    resultado = parsear_json(response_text.strip())
+    nodo = resultado["nodo"]
+    pdf_path = Path(ruta_pdf)
+    nodo["fuente"] = "pdf"
+    nodo["fuente_path"] = str(pdf_path).replace("\\", "/")
+    nodo["fuente_label"] = pdf_path.stem
+    generar_embedding(nodo)
+    print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
+    return {"nodos": [nodo], "relaciones": []}
+
+
+def _youtube_metadata(url):
+    """Obtiene título y autor del video usando la API oEmbed (sin API key)."""
+    try:
+        oembed = f"https://www.youtube.com/oembed?url={url}&format=json"
+        with httpx.Client(timeout=10.0) as client:
+            r = client.get(oembed)
+            if r.status_code == 200:
+                d = r.json()
+                return d.get("title", ""), d.get("author_name", "")
+    except Exception:
+        pass
+    return "", ""
+
+
+def procesar_youtube(url):
+    """Un único nodo por video de YouTube."""
+    title, author = _youtube_metadata(url)
+    if title:
+        title_hint = (
+            f'Título real del video: "{title}" (canal: {author}).\n'
+            f'Generá el nodo usando ESTE título. El label debe ser exactamente: "{title}".\n'
+        )
+    else:
+        title_hint = ""
+    prompt = (
+        f"Video de YouTube: {url}\n{title_hint}"
+        f"Generá UN ÚNICO nodo de resumen basándote en el título y tema inferido del video."
+        + _PROMPT_SUFIJO
+    )
+    messages = [{"role": "user", "content": prompt}]
+    response_text = query_llm(messages)
+    resultado = parsear_json(response_text.strip())
+    nodo = resultado["nodo"]
+    nodo["fuente"] = "youtube"
+    nodo["fuente_url"] = url
+    nodo["fuente_label"] = title or nodo.get("label", "Video")
+    # Siempre usar el título real si está disponible
+    if title:
+        nodo["label"] = title
+        if not nodo.get("desc") or "no se puede" in nodo.get("desc", "").lower() or "sin información" in nodo.get("desc", "").lower():
+            nodo["desc"] = f"Video de {author} sobre {title}." if author else f"Video: {title}."
+        if not nodo.get("fragmento") or "no se puede" in nodo.get("fragmento", "").lower():
+            nodo["fragmento"] = f"{title} — {author}" if author else title
+    generar_embedding(nodo)
+    print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
+    return {"nodos": [nodo], "relaciones": []}
+
+
+def procesar_excel(ruta_excel):
+    """Un único nodo por archivo Excel."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(str(ruta_excel), read_only=True, data_only=True)
+        ws = wb.active
+        rows = []
+        for i, row in enumerate(ws.iter_rows(max_row=20, values_only=True)):
+            row_txt = ' | '.join(str(c) for c in row if c is not None)
+            if row_txt.strip():
+                rows.append(row_txt)
+            if i >= 19:
+                break
+        wb.close()
+        contenido = '\n'.join(rows[:20])
+    except ImportError:
+        contenido = f"[Archivo Excel: {Path(ruta_excel).name}]"
+
+    prompt = f"Archivo Excel con este contenido:\n{contenido}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    messages = [{"role": "user", "content": prompt}]
+    response_text = query_llm(messages)
+    resultado = parsear_json(response_text.strip())
+    nodo = resultado["nodo"]
+    xl_path = Path(ruta_excel)
+    nodo["fuente"] = "excel"
+    nodo["fuente_path"] = str(xl_path).replace("\\", "/")
+    nodo["fuente_label"] = xl_path.stem
+    generar_embedding(nodo)
+    print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
+    return {"nodos": [nodo], "relaciones": []}
+
+
+def _extraer_texto_html(html_str: str) -> str:
+    """Extrae texto limpio de HTML. Usa BeautifulSoup si está disponible."""
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_str, "html.parser")
+        for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+            tag.decompose()
+        texto = soup.get_text(separator=" ")
+    except ImportError:
+        texto = re.sub(r'<[^>]+>', ' ', html_str)
+    return re.sub(r'\s+', ' ', texto).strip()
+
+
+def procesar_html(ruta_html):
+    """Un único nodo por archivo HTML."""
+    try:
+        texto = Path(ruta_html).read_text(encoding="utf-8", errors="ignore")
+        texto_limpio = _extraer_texto_html(texto)[:6000]
+    except Exception:
+        texto_limpio = f"[Archivo HTML: {Path(ruta_html).name}]"
+
+    prompt = f"Contenido HTML:\n{texto_limpio}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    messages = [{"role": "user", "content": prompt}]
+    response_text = query_llm(messages)
+    resultado = parsear_json(response_text.strip())
+    nodo = resultado["nodo"]
+    h_path = Path(ruta_html)
+    nodo["fuente"] = "html"
+    nodo["fuente_path"] = str(h_path).replace("\\", "/")
+    nodo["fuente_label"] = h_path.stem
+    generar_embedding(nodo)
+    print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
+    return {"nodos": [nodo], "relaciones": []}
+
+
+def procesar_url_web(url: str):
+    """Descarga y procesa cualquier URL web (artículo, Wikipedia, GitHub, etc.)."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; PragmaForge/1.0; +https://github.com/pragmaforge)"
+    }
+    try:
+        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+            resp = client.get(url, headers=headers)
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "")
+            if "pdf" in content_type:
+                raise ValueError("URL apunta a un PDF — subilo como archivo")
+            html = resp.text
+    except httpx.HTTPStatusError as e:
+        raise ValueError(f"No se pudo acceder a la URL: HTTP {e.response.status_code}")
+    except Exception as e:
+        raise ValueError(f"Error al descargar URL: {e}")
+
+    # Try to get page title
+    title_m = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+    page_title = re.sub(r'\s+', ' ', title_m.group(1)).strip() if title_m else ""
+
+    texto_limpio = _extraer_texto_html(html)[:6000]
+    if not texto_limpio.strip():
+        raise ValueError("No se pudo extraer texto de la página")
+
+    title_hint = f'Título de la página: "{page_title}"\n' if page_title else ""
+    prompt = (
+        f"URL: {url}\n{title_hint}"
+        f"Contenido de la página web:\n{texto_limpio}\n\n"
+        f"Generá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    )
+    messages = [{"role": "user", "content": prompt}]
+    response_text = query_llm(messages)
+    resultado = parsear_json(response_text.strip())
+    nodo = resultado["nodo"]
+    if page_title and (not nodo.get("label") or len(nodo["label"]) < 5):
+        nodo["label"] = page_title
+    nodo["fuente"] = "html"
+    nodo["fuente_url"] = url
+    nodo["fuente_label"] = page_title or url
+    generar_embedding(nodo)
+    print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
+    return {"nodos": [nodo], "relaciones": []}
+
+
+def procesar_issue(descripcion: str):
+    """Crea un nodo de issue/problema y genera embedding para buscar conexiones. Intenta extraer un flujograma si corresponde."""
+    prompt = f"""Analizá este problema, issue o proceso y generá UN ÚNICO nodo de resumen. Si el texto describe un proceso con múltiples pasos o etapas, extraé también un flujograma.
+
+TEXTO:
+{descripcion[:3000]}
+
+Respondé SOLO con JSON válido siguiendo EXACTAMENTE esta estructura:
+{{
+  "nodo": {{
+    "id": "issue_identificador_unico_sin_espacios",
+    "label": "Título conciso del issue/proceso",
+    "type": "ISSUE",
+    "level": 1,
+    "desc": "Descripción general en 3-4 oraciones.",
+    "fragmento": "La parte más crítica o central en 20-40 palabras.",
+    "conceptos": ["Concepto 1", "Concepto 2", "Concepto 3", "..."]
+  }},
+  "flujograma": {{
+    "etapas": [
+      {{ "id": "e1", "label": "Nombre corto de la etapa 1", "desc": "Descripción breve" }},
+      {{ "id": "e2", "label": "Nombre corto de la etapa 2", "desc": "Descripción breve" }}
+    ],
+    "conexiones": [
+      {{ "source": "e1", "target": "e2", "label": "pasa a" }}
+    ]
+  }}
+}}
+Si no es un proceso que se pueda dividir en etapas, dejá "etapas" y "conexiones" vacíos ([]).
+Incluí 6-10 conceptos clave. Solo JSON."""
+    messages = [{"role": "user", "content": prompt}]
+    response_text = query_llm(messages)
+    resultado = parsear_json(response_text.strip())
+    nodo = resultado["nodo"]
+    nodo["fuente"] = "issue"
+    nodo["is_issue"] = True
+    nodo["problema_texto"] = descripcion[:1000]
+    if "flujograma" in resultado and resultado["flujograma"].get("etapas"):
+        nodo["flujograma"] = resultado["flujograma"]
+    generar_embedding(nodo)
+    print(f"✓ Issue '{nodo['label']}' creado")
+    return nodo
+
+
+def procesar_txt(ruta: str):
+    """Un único nodo por archivo de texto plano o markdown."""
+    try:
+        texto = Path(ruta).read_text(encoding="utf-8", errors="ignore").strip()[:6000]
+    except Exception:
+        texto = f"[Archivo: {Path(ruta).name}]"
+
+    prompt = f"Documento de texto:\n{texto}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    messages = [{"role": "user", "content": prompt}]
+    response_text = query_llm(messages)
+    resultado = parsear_json(response_text.strip())
+    nodo = resultado["nodo"]
+    p = Path(ruta)
+    nodo["fuente"] = "concepto"
+    nodo["fuente_path"] = str(p).replace("\\", "/")
+    nodo["fuente_label"] = p.stem
+    generar_embedding(nodo)
+    print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
+    return {"nodos": [nodo], "relaciones": []}
+
+
+def calcular_similitud_coseno(a_emb, b_emb):
+    if not a_emb or not b_emb:
+        return 0.0
+    import numpy as np
+    vec_a = np.array(a_emb)
+    vec_b = np.array(b_emb)
+    norm_a = np.linalg.norm(vec_a)
+    norm_b = np.linalg.norm(vec_b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return float(np.dot(vec_a, vec_b) / (norm_a * norm_b))
+
+
+def _conceptos_overlap(ca_list, cb_list):
+    """True si los nodos comparten ≥ 2 conceptos, con matching por substring además de exacto."""
+    sa = [c.lower() for c in ca_list]
+    sb = [c.lower() for c in cb_list]
+    exact = len(set(sa) & set(sb))
+    if exact >= 2:
+        return True
+    # Substring match: any term of ≥4 chars that appears inside another term counts
+    matches = exact
+    for a_term in sa:
+        for b_term in sb:
+            if a_term in set(sa) & set(sb):
+                continue  # already counted as exact
+            if len(a_term) >= 4 and len(b_term) >= 4:
+                if a_term in b_term or b_term in a_term:
+                    matches += 1
+                    if matches >= 2:
+                        return True
+    return False
+
+
+def _auto_relaciones(nodos):
+    """Crea relaciones entre nodos si comparten conceptos o similitud semántica ≥ 0.38."""
+    rels, pares = [], set()
+    for i, a in enumerate(nodos):
+        for b in nodos[i+1:]:
+            comparten = _conceptos_overlap(a.get('conceptos', []), b.get('conceptos', []))
+            sim = calcular_similitud_coseno(a.get('embedding'), b.get('embedding'))
+            if comparten or sim >= 0.38:
+                key = (a['id'], b['id'])
+                if key not in pares:
+                    rels.append({"source": a['id'], "target": b['id']})
+                    pares.add(key)
+    return rels
+
+
+def acumular_resultado(nuevo):
+    BASE = Path(__file__).parent.resolve()
+    salida = BASE / "nodes_generated.json"
+    if salida.exists():
+        with open(salida, "r", encoding="utf-8") as f:
+            base = json.load(f)
+    else:
+        base = {"nodos": [], "relaciones": []}
+
+    idx = {n["id"]: i for i, n in enumerate(base["nodos"])}
+    for nodo in nuevo["nodos"]:
+        if nodo["id"] in idx:
+            base["nodos"][idx[nodo["id"]]] = nodo
+        else:
+            base["nodos"].append(nodo)
+            idx[nodo["id"]] = len(base["nodos"]) - 1
+
+    # Regenerar relaciones automáticas basadas en conceptos compartidos y similitud de coseno
+    base["relaciones"] = _auto_relaciones(base["nodos"])
+    return base
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Uso: python processor.py <archivo_o_url>")
+        print("  Soporta: PDF, XLSX, HTML, URLs de YouTube")
+        sys.exit(1)
+
+    entrada = sys.argv[1]
+    print(f"Procesando: {entrada}")
+
+    ext = Path(entrada).suffix.lower()
+    if entrada.startswith("http"):
+        resultado = procesar_youtube(entrada)
+    elif ext in ('.xlsx', '.xls'):
+        resultado = procesar_excel(entrada)
+    elif ext in ('.html', '.htm'):
+        resultado = procesar_html(entrada)
+    else:
+        resultado = procesar_pdf(entrada)
+
+    acumulado = acumular_resultado(resultado)
+
+    BASE = Path(__file__).parent.resolve()
+    salida = BASE / "nodes_generated.json"
+    with open(salida, "w", encoding="utf-8") as f:
+        json.dump(acumulado, f, ensure_ascii=False, indent=2)
+
+    print(f"✓ Nodo agregado. Total: {len(acumulado['nodos'])} nodos, {len(acumulado['relaciones'])} relaciones")
+    print(f"✓ Guardado en: {salida}")
+
+
+def generar_rich_html(node, nodos, relaciones) -> str:
+    conceptos_str = ", ".join(node.get("conceptos", []))
+    connected_ids = set()
+    for rel in relaciones:
+        s = rel.get("source"); t = rel.get("target")
+        s_id = s.get("id") if isinstance(s, dict) else s
+        t_id = t.get("id") if isinstance(t, dict) else t
+        if s_id == node["id"]: connected_ids.add(t_id)
+        elif t_id == node["id"]: connected_ids.add(s_id)
+    conexiones = [n["label"] for n in nodos if n["id"] in connected_ids]
+    conexiones_str = ", ".join(conexiones[:6]) if conexiones else "ninguna"
+
+    prompt = f"""Eres un generador de apuntes de estudio en HTML.
+Generá un documento HTML completo y autocontenido (con CSS inline en <style>) sobre el siguiente tema.
+
+TÍTULO: {node.get('label', '')}
+DESCRIPCIÓN: {node.get('desc', '')}
+FRAGMENTO CLAVE: {node.get('fragmento', '')}
+CONCEPTOS: {conceptos_str}
+CONECTADO CON: {conexiones_str}
+
+REGLAS DE DISEÑO OBLIGATORIAS:
+- Fondo: #f5f1e8 (crema/papel)
+- Tipografía principal: 'Fraunces', Georgia, serif (importar de Google Fonts)
+- Tipografía código/mono: 'JetBrains Mono', monospace (importar de Google Fonts)
+- Color accent: #b8441f (terracota)
+- Color ink: #1a1a1a
+- Color muted: #6b6558
+- Layout: sidebar izquierdo de navegación (240px fijo) + contenido principal con scroll
+- El sidebar debe tener links a cada sección (position:sticky top:24px)
+- Cada sección debe tener un número y título (1. Introducción, 2. Conceptos Clave, etc.)
+- Usar blockquote para el fragmento clave con borde izquierdo terracota 4px
+- Usar "pill tags" (border-radius:100px, padding:2px 12px) para los conceptos
+- Máximo 5 secciones: Introducción, Conceptos Clave, Análisis, Conexiones Temáticas, Síntesis
+- El documento debe ser completamente funcional como HTML standalone
+- No uses frameworks externos excepto Google Fonts
+
+Respondé ÚNICAMENTE con el código HTML completo, sin explicaciones, sin markdown, sin backticks."""
+
+    html_content = query_llm(
+        [{"role": "user", "content": prompt}],
+        system="Sos un generador de documentos HTML de estudio. Respondés SOLO con código HTML válido y completo, nada más."
+    )
+    
+    html_content = html_content.strip()
+    if html_content.startswith("```"):
+        import re
+        html_content = re.sub(r'^```\w*\n?', '', html_content).rstrip('`').strip()
+        
+    return html_content
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PragmaForge — Knowledge Graph 3D</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500&family=Syne:wght@400;600;700;800&display=swap');
+:root {
+  --bg:#080c18; --bg2:#0e1424; --bg3:#141c30;
+  --topo:#4a4d5a; --topo2:#6b6e7d; --topo3:#9294a0;
+  --amber:#f5a623; --amber2:#e8941a; --amber3:#ffc55a;
+  --cyan:#00c8e8; --cyan2:#00a8c8;
+  --cream:#e8e4d9; --cream2:#c8c4b8; --cream3:#908c80;
+  --border:rgba(245,166,35,0.12); --border2:rgba(245,166,35,0.28);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); font-family:'DM Mono',monospace; overflow:hidden; }
+#bg-grid {
+  position:fixed; inset:0; pointer-events:none; z-index:0;
+  background-image:linear-gradient(rgba(245,166,35,0.02) 1px,transparent 1px),linear-gradient(90deg,rgba(245,166,35,0.02) 1px,transparent 1px);
+  background-size:48px 48px;
+}
+#vignette { position:fixed; inset:0; pointer-events:none; z-index:0; background:radial-gradient(ellipse at center,transparent 40%,rgba(4,6,12,0.7) 100%); }
+#scanline { position:fixed; inset:0; pointer-events:none; z-index:10; background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,0,0,0.03) 3px,rgba(0,0,0,0.03) 4px); }
+
+#header {
+  position:fixed; top:0; left:0; right:0; z-index:20;
+  padding:18px 28px 14px; display:flex; justify-content:space-between; align-items:flex-end;
+  border-bottom:1px solid var(--border);
+  background:linear-gradient(180deg,rgba(8,12,24,0.98) 0%,transparent 100%);
+}
+#brand .eyebrow { font-size:9px; font-weight:300; color:var(--topo2); letter-spacing:4px; text-transform:uppercase; margin-bottom:3px; }
+#brand h1 { font-family:'Syne',sans-serif; font-size:26px; font-weight:800; color:var(--cream); letter-spacing:2px; line-height:1; }
+#brand h1 span { color:var(--amber); }
+#header-right { display:flex; flex-direction:column; align-items:flex-end; gap:5px; }
+#status-pill { display:flex; align-items:center; gap:6px; padding:4px 10px; border:1px solid rgba(0,200,232,0.2); background:rgba(0,200,232,0.05); }
+#status-dot { width:5px; height:5px; background:var(--cyan); border-radius:50%; animation:pdot 2s ease-in-out infinite; }
+@keyframes pdot { 0%,100%{opacity:1} 50%{opacity:0.4} }
+#status-text { font-size:9px; color:var(--cyan); letter-spacing:3px; text-transform:uppercase; }
+#stat-nodes { font-size:9px; color:var(--topo2); letter-spacing:2px; }
+
+#search-wrap { position:relative; display:flex; align-items:center; }
+#search-wrap::before { content:'/'; position:absolute; left:10px; font-size:11px; color:var(--amber); pointer-events:none; z-index:1; opacity:0.7; }
+#search-input { font-family:'DM Mono',monospace; font-size:9px; letter-spacing:1px; padding:6px 12px 6px 26px; background:rgba(14,20,36,0.85); border:1px solid var(--border); color:var(--cream2); outline:none; width:210px; transition:border-color 0.2s, width 0.3s; }
+#search-input:focus { border-color:var(--border2); width:270px; }
+#search-input::placeholder { color:var(--topo); }
+
+#canvas-container { position:fixed; inset:0; z-index:1; cursor:crosshair; }
+
+/* TOOLTIP */
+#tooltip {
+  position:fixed; z-index:100; width:380px;
+  background:rgba(7,10,20,0.98); border:1px solid var(--border2);
+  display:none; pointer-events:all;
+  box-shadow:0 24px 64px rgba(0,0,0,0.7),0 0 0 1px rgba(245,166,35,0.04);
+}
+#tt-body { overflow-y:auto; max-height:min(420px, calc(100vh - 220px)); }
+#tt-body::-webkit-scrollbar { width:3px; }
+#tt-body::-webkit-scrollbar-thumb { background:var(--topo); }
+#tooltip.visible { display:block; animation:ttin 0.18s ease; }
+@keyframes ttin { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
+#tooltip::before { content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--amber); border-left:2px solid var(--amber); }
+#tooltip::after  { content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--amber); border-right:2px solid var(--amber); }
+.tt-top { padding:11px 16px 9px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+.tt-type { font-size:8px; color:var(--topo2); letter-spacing:3px; text-transform:uppercase; }
+.tt-id { font-size:8px; color:var(--topo); letter-spacing:2px; }
+.tt-badge-row { padding:8px 16px 0; display:flex; align-items:center; gap:8px; }
+.tt-badge { display:inline-block; font-size:8px; padding:2px 10px; letter-spacing:2px; text-transform:uppercase; font-weight:500; }
+.badge-pdf     { background:rgba(245,166,35,0.12); color:var(--amber);  border:1px solid rgba(245,166,35,0.3); }
+.badge-youtube { background:rgba(255,60,60,0.1);   color:#ff6060;       border:1px solid rgba(255,60,60,0.25); }
+.badge-audio   { background:rgba(0,200,232,0.08);  color:var(--cyan);   border:1px solid rgba(0,200,232,0.2); }
+.badge-tesis   { background:rgba(26,39,68,0.6);    color:#7a9fff;       border:1px solid rgba(100,140,255,0.25); }
+.badge-concepto{ background:rgba(74,77,90,0.2);    color:var(--topo3);  border:1px solid rgba(74,77,90,0.3); }
+.tt-sep { width:28px; height:1px; background:var(--amber); opacity:0.35; margin:2px 16px 0; }
+.tt-title { font-family:'Syne',sans-serif; font-size:14px; font-weight:700; color:var(--cream); padding:8px 16px 3px; letter-spacing:0.5px; line-height:1.3; }
+.tt-desc { font-size:11px; color:var(--topo3); padding:4px 16px 10px; line-height:1.7; font-weight:300; }
+.tt-section { border-top:1px solid var(--border); padding:9px 16px; }
+.tt-section-label { font-size:8px; color:var(--topo); letter-spacing:3px; text-transform:uppercase; margin-bottom:6px; }
+.tt-media { width:100%; height:185px; background:var(--bg2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; overflow:hidden; }
+.tt-media iframe { width:100%; height:100%; border:none; }
+.tt-media audio { width:88%; }
+.tt-media img { width:100%; height:100%; object-fit:cover; opacity:0.85; }
+.tt-pdf-placeholder { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; width:100%; height:100%; color:var(--topo2); font-size:9px; letter-spacing:2px; text-align:center; padding:16px; }
+.tt-pdf-placeholder .pf-icon { font-size:26px; color:var(--amber); opacity:0.6; margin-bottom:4px; }
+.tt-text-preview { width:100%; max-height:130px; overflow-y:auto; padding:10px 12px; font-size:10px; color:var(--topo3); line-height:1.7; border:1px solid var(--border); background:var(--bg2); font-style:italic; }
+.tt-text-preview::-webkit-scrollbar { width:3px; }
+.tt-text-preview::-webkit-scrollbar-thumb { background:var(--topo); }
+.tt-tags { display:flex; flex-wrap:wrap; gap:5px; }
+.tt-tag { font-size:8px; color:var(--topo2); border:1px solid var(--border); padding:3px 8px; letter-spacing:1px; text-transform:uppercase; transition:all 0.2s; cursor:default; }
+.tt-tag:hover { color:var(--cream2); border-color:var(--border2); }
+.tt-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:2px; }
+.tt-action-btn { font-family:'DM Mono',monospace; font-size:8px; letter-spacing:2px; text-transform:uppercase; padding:5px 10px; cursor:pointer; background:transparent; border:1px solid var(--border2); color:var(--amber); transition:all 0.2s; pointer-events:all; }
+.tt-action-btn:hover { background:rgba(245,166,35,0.08); }
+.tt-action-btn.cyan { border-color:rgba(0,200,232,0.3); color:var(--cyan); }
+.tt-action-btn.cyan:hover { background:rgba(0,200,232,0.08); }
+.tt-footer { border-top:1px solid var(--border); padding:6px 16px; font-size:8px; color:var(--topo); letter-spacing:2px; display:flex; justify-content:space-between; }
+
+/* AGENT PANEL */
+#agent-panel {
+  position:fixed; right:0; top:0; bottom:0; width:340px; z-index:50;
+  background:rgba(7,10,20,0.98); border-left:1px solid var(--border2);
+  display:flex; flex-direction:column;
+  transform:translateX(100%); transition:transform 0.3s ease;
+}
+#agent-panel.visible { display:flex; transform:translateX(0); }
+#agent-header { padding:20px 20px 14px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+#agent-title { font-family:'Syne',sans-serif; font-size:13px; font-weight:700; color:var(--amber); letter-spacing:2px; }
+#agent-close { font-size:16px; color:var(--topo2); cursor:pointer; background:none; border:none; transition:color 0.2s; pointer-events:all; }
+#agent-close:hover { color:var(--cream); }
+#agent-messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
+#agent-messages::-webkit-scrollbar { width:3px; }
+#agent-messages::-webkit-scrollbar-thumb { background:var(--topo); }
+.agent-msg { font-size:11px; line-height:1.7; }
+.agent-msg.user { color:var(--cream2); background:rgba(245,166,35,0.06); border:1px solid var(--border); padding:8px 12px; }
+.agent-msg.assistant { color:var(--topo3); padding:0 4px; }
+.agent-msg.thinking { color:var(--topo); font-style:italic; animation:pdot 1.5s infinite; }
+.agent-msg.assistant p { margin:0 0 8px; }
+.agent-msg.assistant p:last-child { margin-bottom:0; }
+.agent-msg.assistant strong { color:var(--cream2); font-weight:500; }
+.agent-msg.assistant em { color:var(--cream3); font-style:italic; }
+.agent-msg.assistant h1,.agent-msg.assistant h2,.agent-msg.assistant h3 { font-family:'Syne',sans-serif; color:var(--amber); font-size:11px; font-weight:700; letter-spacing:1px; margin:10px 0 4px; text-transform:uppercase; }
+.agent-msg.assistant ul,.agent-msg.assistant ol { padding-left:16px; margin:4px 0 8px; }
+.agent-msg.assistant li { margin-bottom:3px; }
+.agent-msg.assistant code { font-family:'DM Mono',monospace; font-size:10px; background:rgba(245,166,35,0.08); border:1px solid var(--border); padding:1px 5px; color:var(--amber3); }
+.agent-msg.assistant pre { background:var(--bg2); border:1px solid var(--border); padding:8px 10px; overflow-x:auto; margin:6px 0; }
+.agent-msg.assistant pre code { background:none; border:none; padding:0; color:var(--cream2); }
+#agent-input-row { padding:14px 16px; border-top:1px solid var(--border); display:flex; gap:8px; }
+#agent-input { flex:1; font-family:'DM Mono',monospace; font-size:10px; padding:8px 12px; background:var(--bg2); border:1px solid var(--border); color:var(--cream2); outline:none; pointer-events:all; }
+#agent-input:focus { border-color:var(--border2); }
+#agent-send { font-family:'DM Mono',monospace; font-size:9px; padding:8px 14px; background:rgba(245,166,35,0.1); border:1px solid var(--border2); color:var(--amber); cursor:pointer; pointer-events:all; letter-spacing:2px; }
+#agent-send:hover { background:rgba(245,166,35,0.18); }
+
+/* UPLOAD PANEL */
+#upload-panel { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); z-index:30; display:flex; gap:8px; align-items:center; background:rgba(8,12,24,0.95); border:1px solid var(--border2); padding:10px 14px; }
+.pf-btn { font-family:'DM Mono',monospace; font-size:9px; font-weight:500; letter-spacing:2px; text-transform:uppercase; padding:7px 14px; cursor:pointer; background:transparent; border:1px solid var(--border2); color:var(--amber); transition:all 0.2s; white-space:nowrap; }
+.pf-btn:hover { background:rgba(245,166,35,0.08); border-color:var(--amber); }
+.pf-btn.primary { background:rgba(245,166,35,0.08); }
+#url-input { font-family:'DM Mono',monospace; font-size:9px; letter-spacing:1px; padding:7px 12px; background:var(--bg2); border:1px solid var(--border); color:var(--cream2); width:240px; outline:none; }
+#url-input::placeholder { color:var(--topo); }
+#url-input:focus { border-color:var(--border2); }
+#file-input { display:none; }
+
+/* PROCESSING */
+#processing { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:50; text-align:center; display:none; background:rgba(8,12,24,0.98); border:1px solid var(--border2); padding:32px 48px; min-width:280px; }
+#processing.visible { display:block; }
+#processing .proc-title { font-family:'Syne',sans-serif; font-size:13px; font-weight:700; color:var(--amber); letter-spacing:3px; margin-bottom:10px; }
+#processing .proc-sub { font-size:9px; color:var(--topo2); letter-spacing:2px; animation:pdot 1.5s ease-in-out infinite; }
+#proc-bar { width:100%; height:1px; background:var(--border); margin-top:18px; }
+#proc-fill { height:100%; width:0%; background:var(--amber); transition:width 2s ease; }
+
+/* LEGEND */
+#legend { position:fixed; top:80px; left:24px; z-index:20; display:flex; flex-direction:column; gap:5px; }
+.legend-section-label { font-size:7px; color:var(--topo); letter-spacing:3px; text-transform:uppercase; margin-bottom:2px; opacity:0.6; }
+.legend-sep { height:1px; background:var(--border); margin:6px 0 4px; }
+.legend-item { display:flex; align-items:center; gap:8px; font-size:8px; color:var(--topo); letter-spacing:2px; text-transform:uppercase; cursor:pointer; transition:opacity 0.2s, color 0.2s; user-select:none; }
+.legend-item:hover { color:var(--cream2); }
+.legend-item.inactive { opacity:0.25; }
+.legend-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+.legend-level { display:flex; align-items:center; gap:8px; font-size:8px; color:var(--topo); letter-spacing:2px; cursor:pointer; transition:opacity 0.2s, color 0.2s; user-select:none; }
+.legend-level:hover { color:var(--cream2); }
+.legend-level.inactive { opacity:0.25; }
+.legend-level-badge { width:13px; height:13px; border:1px solid var(--topo); display:flex; align-items:center; justify-content:center; font-size:7px; font-weight:700; flex-shrink:0; }
+
+#corner-bl { position:fixed; bottom:80px; left:24px; font-size:8px; color:var(--topo); letter-spacing:2px; z-index:20; line-height:1.8; }
+#corner-br { position:fixed; bottom:80px; right:24px; font-size:8px; color:var(--topo); letter-spacing:2px; z-index:20; text-align:right; line-height:1.8; }
+#node-hint { position:fixed; top:80px; right:24px; z-index:20; font-size:8px; color:var(--topo); letter-spacing:2px; text-align:right; line-height:2; }
+
+/* 3D NODE LABELS */
+.node-label-3d { font-family:'DM Mono',monospace; font-size:8px; letter-spacing:1px; text-transform:uppercase; pointer-events:none; white-space:nowrap; opacity:0.65; text-shadow:0 0 6px rgba(0,0,0,1); padding-top:4px; }
+</style>
+</head>
+<body>
+<div id="bg-grid"></div>
+<div id="vignette"></div>
+<div id="scanline"></div>
+
+<div id="header">
+  <div id="brand">
+    <div class="eyebrow">Knowledge Intelligence System · 3D</div>
+    <h1>Pragma<span>Forge</span></h1>
+  </div>
+  <div id="search-wrap">
+    <input type="text" id="search-input" placeholder="buscar nodo...">
+  </div>
+  <div id="header-right">
+    <div id="status-pill"><div id="status-dot"></div><div id="status-text">Sistema activo</div></div>
+    <div id="stat-nodes">Nodos: 0 — Conexiones: 0</div>
+  </div>
+</div>
+
+<div id="legend">
+  <div class="legend-section-label">Fuente</div>
+  <div class="legend-item" data-cat="pdf"      data-tipo="fuente"><div class="legend-dot" style="background:#f5a623"></div>PDF</div>
+  <div class="legend-item" data-cat="youtube"  data-tipo="fuente"><div class="legend-dot" style="background:#ff6060"></div>YouTube</div>
+  <div class="legend-item" data-cat="audio"    data-tipo="fuente"><div class="legend-dot" style="background:#00c8e8"></div>Audio</div>
+  <div class="legend-item" data-cat="tesis"    data-tipo="fuente"><div class="legend-dot" style="background:#7a9fff"></div>Tesis</div>
+  <div class="legend-item" data-cat="concepto" data-tipo="fuente"><div class="legend-dot" style="background:#9294a0"></div>Concepto</div>
+  <div class="legend-sep"></div>
+  <div class="legend-section-label">Nivel</div>
+  <div class="legend-level" data-cat="1" data-tipo="nivel"><div class="legend-level-badge" style="border-color:#f5a623;color:#f5a623">1</div>Principal</div>
+  <div class="legend-level" data-cat="2" data-tipo="nivel"><div class="legend-level-badge" style="border-color:#e8941a;color:#e8941a">2</div>Secundario</div>
+  <div class="legend-level" data-cat="3" data-tipo="nivel"><div class="legend-level-badge" style="border-color:#6b6e7d;color:#9294a0">3</div>Detalle</div>
+  <div class="legend-level" data-cat="4" data-tipo="nivel"><div class="legend-level-badge" style="border-color:#4a4d5a;color:#6b6e7d">4</div>Referencia</div>
+</div>
+
+<div id="node-hint">Órbita — arrastrar<br>Zoom — scroll<br>Hover — inspeccionar<br>Click — agente</div>
+
+<div id="canvas-container"></div>
+
+<div id="processing">
+  <div class="proc-title">Procesando fuente</div>
+  <div class="proc-sub" id="proc-msg">Analizando...</div>
+  <div id="proc-bar"><div id="proc-fill"></div></div>
+</div>
+
+<div id="tooltip">
+  <div class="tt-top">
+    <span class="tt-type" id="tt-type">Concepto</span>
+    <span class="tt-id" id="tt-id">NODE_00</span>
+  </div>
+  <div id="tt-body">
+  <div class="tt-badge-row">
+    <span class="tt-badge badge-concepto" id="tt-badge">Concepto</span>
+  </div>
+  <div class="tt-sep" id="tt-sep"></div>
+  <div class="tt-title" id="tt-title">Título</div>
+  <div class="tt-desc" id="tt-desc">Descripción.</div>
+  <div class="tt-section" id="tt-media-section" style="display:none">
+    <div class="tt-section-label">Vista previa</div>
+    <div class="tt-media" id="tt-media-container"></div>
+  </div>
+  <div class="tt-section" id="tt-text-section" style="display:none">
+    <div class="tt-section-label">Fragmento extraído</div>
+    <div class="tt-text-preview" id="tt-text-content"></div>
+  </div>
+  <div class="tt-section">
+    <div class="tt-section-label">Conexiones</div>
+    <div class="tt-tags" id="tt-tags"></div>
+  </div>
+  <div class="tt-section">
+    <div class="tt-section-label">Acciones</div>
+    <div class="tt-actions">
+      <button class="tt-action-btn" id="btn-consultar">↗ Consultar agente</button>
+      <button class="tt-action-btn" id="btn-expandir">⊕ Expandir nodo</button>
+      <button class="tt-action-btn cyan" id="btn-fuente">⬡ Ver fuente</button>
+      <button class="tt-action-btn" id="btn-ver-doc" style="display:none">⬡ Ver documento</button>
+    </div>
+  </div>
+  <div class="tt-footer">
+    <span id="tt-level">Nivel 1</span>
+    <span>PragmaForge 3D</span>
+  </div>
+  </div>
+</div>
+
+<div id="agent-panel">
+  <div id="agent-header">
+    <div id="agent-title">◈ Agente PragmaForge</div>
+    <button id="agent-close">✕</button>
+  </div>
+  <div id="agent-messages"></div>
+  <div id="agent-input-row">
+    <input type="text" id="agent-input" placeholder="Preguntá sobre este nodo...">
+    <button id="agent-send">Enviar</button>
+  </div>
+</div>
+
+<div id="upload-panel">
+  <input type="file" id="file-input" accept=".pdf,.mp3,.wav,.ogg,.png,.jpg,.jpeg,.csv,.txt,.xlsx">
+  <button class="pf-btn primary" id="btn-subir">+ Subir archivo</button>
+  <input type="text" id="url-input" placeholder="YouTube, artículo, URL...">
+  <button class="pf-btn" id="btn-procesar">Procesar</button>
+  <button class="pf-btn" id="btn-recargar">↺ Recargar</button>
+</div>
+
+<div id="corner-bl">Lucas Brusasca<br>github.com/LucasBrusasca/llm-wiki</div>
+<div id="corner-br">Maestría en Ciencia de Datos<br>Universidad Austral</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+// ── SCENE ─────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x080c18);
+scene.fog = new THREE.FogExp2(0x080c18, 0.004);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 2000);
+camera.position.set(0, 0, 120);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(innerWidth, innerHeight);
+labelRenderer.domElement.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;';
+
+const container = document.getElementById('canvas-container');
+container.appendChild(renderer.domElement);
+container.appendChild(labelRenderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 3;
+controls.maxDistance = 500;
+
+// Lights
+scene.add(new THREE.AmbientLight(0x1a2040, 6));
+const lAmber = new THREE.PointLight(0xf5a623, 3, 400);
+lAmber.position.set(80, 60, 40);
+scene.add(lAmber);
+const lCyan = new THREE.PointLight(0x00c8e8, 1.5, 300);
+lCyan.position.set(-60, -40, 60);
+scene.add(lCyan);
+
+// ── CONSTANTS ─────────────────────────────────────────────────────
+const SCALE = 45;
+const CLUSTER_PALETTE = [
+  0xf5a623, 0x00c8e8, 0x7a9fff, 0x00e8a0, 0xff6060,
+  0xc87aff, 0xff9040, 0x40ffc0, 0xa080ff, 0xff4090,
+  0xffe040, 0x40e0ff, 0x80ff80, 0xff8080, 0x8080ff,
+];
+
+const FUENTE_CSS = {
+  pdf:'#f5a623', youtube:'#ff6060', audio:'#00c8e8',
+  tesis:'#7a9fff', imagen:'#c87aff', articulo:'#00e8a0', default:'#9294a0'
+};
+const FUENTE_BADGE = {
+  pdf:'badge-pdf', youtube:'badge-youtube', audio:'badge-audio',
+  tesis:'badge-tesis', default:'badge-concepto'
+};
+const fcss  = f => FUENTE_CSS[f]  || FUENTE_CSS.default;
+const fbadge = f => FUENTE_BADGE[f] || FUENTE_BADGE.default;
+
+function clusterHex(c) {
+  return c >= 0 ? CLUSTER_PALETTE[c % CLUSTER_PALETTE.length] : 0x4a4d5a;
+}
+function clusterCss(c) {
+  return '#' + clusterHex(c).toString(16).padStart(6, '0');
+}
+function displayCat(fuente) {
+  return ['pdf','youtube','audio','tesis'].includes(fuente) ? fuente : 'concepto';
+}
+
+// ── STATE ─────────────────────────────────────────────────────────
+let allNodes = [], allLinks = [];
+let sphereMeshes = [], glowMeshes = [], lineMeshes = [];
+let nodeInstData = {};
+const _dummy = new THREE.Object3D();
+let neighborLines = [], activeClickNode = null;
+let agentHighlightActive = false, agentHighlightIds = new Set();
+let hoveredNode = null;
+let mousePos = new THREE.Vector2(-9, -9);
+let mouseEvt = null;
+let mouseDownXY = { x: 0, y: 0 };
+let flyTimer = null;
+
+const filtrosFuente = new Set(['pdf','youtube','audio','tesis','concepto']);
+const filtrosNivel  = new Set([1, 2, 3, 4]);
+
+// Geometries (cached)
+const GEO = {
+  1: new THREE.SphereGeometry(1.3, 24, 24),
+  2: new THREE.SphereGeometry(0.95, 20, 20),
+  3: new THREE.SphereGeometry(0.65, 16, 16),
+  4: new THREE.SphereGeometry(0.45, 12, 12),
+};
+const GEO_GLOW = {
+  1: new THREE.SphereGeometry(2.4, 16, 16),
+  2: new THREE.SphereGeometry(1.75, 12, 12),
+  3: new THREE.SphereGeometry(1.2, 10, 10),
+  4: new THREE.SphereGeometry(0.9, 8, 8),
+};
+
+// ── STAR FIELD ────────────────────────────────────────────────────
+(function createStars() {
+  const pos = new Float32Array(3000);
+  for (let i = 0; i < 1000; i++) {
+    const r = 700 + Math.random() * 300;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    pos[i*3]   = r * Math.sin(ph) * Math.cos(th);
+    pos[i*3+1] = r * Math.sin(ph) * Math.sin(th);
+    pos[i*3+2] = r * Math.cos(ph);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x9294a0, size: 1.2, sizeAttenuation: true })));
+})();
+
+// ── INSTANCED NODE BUILD ──────────────────────────────────────────
+function buildAllNodes() {
+  sphereMeshes.forEach(m => scene.remove(m));
+  glowMeshes.forEach(m => scene.remove(m));
+  sphereMeshes = []; glowMeshes = [];
+  Object.values(nodeInstData).forEach(d => { if (d.labelObj) scene.remove(d.labelObj); });
+  nodeInstData = {};
+
+  const byLevel = { 1: [], 2: [], 3: [], 4: [] };
+  allNodes.forEach(n => { n._level = Math.min(Math.max(n.level || 3, 1), 4); byLevel[n._level].push(n); });
+
+  [1, 2, 3, 4].forEach(lvl => {
+    const nodes = byLevel[lvl];
+    if (!nodes.length) return;
+    const count = nodes.length;
+
+    const sphereMat = new THREE.MeshPhongMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.18, shininess: 80 });
+    const sphereMesh = new THREE.InstancedMesh(GEO[lvl], sphereMat, count);
+    sphereMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    sphereMesh.userData.nodeList = [];
+    scene.add(sphereMesh);
+    sphereMeshes.push(sphereMesh);
+
+    const glowMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.06, side: THREE.BackSide });
+    const glowMesh = new THREE.InstancedMesh(GEO_GLOW[lvl], glowMat, count);
+    glowMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    glowMesh.raycast = () => {};
+    scene.add(glowMesh);
+    glowMeshes.push(glowMesh);
+
+    nodes.forEach((node, i) => {
+      const color = new THREE.Color(clusterHex(node.cluster ?? -1));
+      const x = node.x3d !== undefined ? node.x3d * SCALE : (Math.random() - 0.5) * 60;
+      const y = node.y3d !== undefined ? node.y3d * SCALE : (Math.random() - 0.5) * 60;
+      const z = node.z3d !== undefined ? node.z3d * SCALE : (Math.random() - 0.5) * 60;
+      const pos = new THREE.Vector3(x, y, z);
+      node._pos = pos;
+
+      _dummy.position.copy(pos);
+      _dummy.scale.setScalar(1);
+      _dummy.updateMatrix();
+      sphereMesh.setMatrixAt(i, _dummy.matrix);
+      sphereMesh.setColorAt(i, color);
+      glowMesh.setMatrixAt(i, _dummy.matrix);
+      glowMesh.setColorAt(i, color);
+      sphereMesh.userData.nodeList[i] = node;
+
+      const div = document.createElement('div');
+      div.className = 'node-label-3d';
+      div.textContent = node.label.length > 22 ? node.label.slice(0, 21) + '…' : node.label;
+      div.style.color = clusterCss(node.cluster ?? -1);
+      const labelObj = new CSS2DObject(div);
+      const lp = pos.clone();
+      lp.y -= (lvl === 1 ? 1.9 : lvl === 2 ? 1.5 : 1.1);
+      labelObj.position.copy(lp);
+      scene.add(labelObj);
+
+      nodeInstData[node.id] = { node, pos, color, lvl, instanceIdx: i, sphereMesh, glowMesh, labelObj };
+    });
+
+    sphereMesh.instanceMatrix.needsUpdate = true;
+    if (sphereMesh.instanceColor) sphereMesh.instanceColor.needsUpdate = true;
+    glowMesh.instanceMatrix.needsUpdate = true;
+    if (glowMesh.instanceColor) glowMesh.instanceColor.needsUpdate = true;
+  });
+}
+
+// ── LINKS ─────────────────────────────────────────────────────────
+function createLinks() {
+  lineMeshes.forEach(l => scene.remove(l));
+  lineMeshes = [];
+  const nMap = {};
+  allNodes.forEach(n => nMap[n.id] = n);
+  allLinks.forEach(link => {
+    const src = nMap[link.source?.id ?? link.source];
+    const tgt = nMap[link.target?.id ?? link.target];
+    if (!src?._pos || !tgt?._pos) return;
+    const geo = new THREE.BufferGeometry().setFromPoints([src._pos.clone(), tgt._pos.clone()]);
+    const mat = new THREE.LineBasicMaterial({ color: 0x667799, transparent: true, opacity: 0.15 });
+    const line = new THREE.Line(geo, mat);
+    line.userData = { src, tgt };
+    scene.add(line);
+    lineMeshes.push(line);
+  });
+}
+
+// ── NEIGHBOR LINES (click-only) ───────────────────────────────────
+function showNeighborLines(node) {
+  hideNeighborLines();
+  activeClickNode = node;
+  allNodes
+    .filter(n => n !== node && !n._oculto && n._pos)
+    .map(n => ({ n, d: node._pos.distanceTo(n._pos) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 5)
+    .forEach(({ n }) => {
+      const geo = new THREE.BufferGeometry().setFromPoints([node._pos.clone(), n._pos.clone()]);
+      const mat = new THREE.LineBasicMaterial({ color: 0xf5a623, transparent: true, opacity: 0.55 });
+      const line = new THREE.Line(geo, mat);
+      scene.add(line);
+      neighborLines.push(line);
+    });
+}
+
+function hideNeighborLines() {
+  neighborLines.forEach(l => scene.remove(l));
+  neighborLines = [];
+  activeClickNode = null;
+}
+
+// ── INICIAR ───────────────────────────────────────────────────────
+function iniciar() {
+  allNodes.forEach(n => { delete n._pos; delete n._oculto; delete n._level; });
+  agentHighlightActive = false;
+  agentHighlightIds = new Set();
+  hideNeighborLines();
+  buildAllNodes();
+  createLinks();
+  document.getElementById('stat-nodes').textContent =
+    `Nodos: ${allNodes.length} — Conexiones: ${allLinks.length}`;
+  aplicarFiltros();
+}
+
+// ── FILTERS ───────────────────────────────────────────────────────
+function aplicarFiltros() {
+  const dirty = new Set();
+  allNodes.forEach(n => {
+    const d = nodeInstData[n.id];
+    if (!d) return;
+    const vis = filtrosFuente.has(displayCat(n.fuente)) && filtrosNivel.has(n.level);
+    n._oculto = !vis;
+    _dummy.position.copy(d.pos);
+    _dummy.scale.setScalar(vis ? 1 : 0);
+    _dummy.updateMatrix();
+    d.sphereMesh.setMatrixAt(d.instanceIdx, _dummy.matrix);
+    d.glowMesh.setMatrixAt(d.instanceIdx, _dummy.matrix);
+    if (d.labelObj) d.labelObj.element.style.display = vis ? '' : 'none';
+    dirty.add(d.sphereMesh);
+    dirty.add(d.glowMesh);
+  });
+  dirty.forEach(m => { m.instanceMatrix.needsUpdate = true; });
+  lineMeshes.forEach(l => { l.visible = !l.userData.src._oculto && !l.userData.tgt._oculto; });
+  hideNeighborLines();
+}
+
+document.querySelectorAll('.legend-item, .legend-level').forEach(el => {
+  el.addEventListener('click', () => {
+    const cat  = el.dataset.cat;
+    const tipo = el.dataset.tipo;
+    if (tipo === 'fuente') {
+      filtrosFuente.has(cat) ? filtrosFuente.delete(cat) : filtrosFuente.add(cat);
+    } else {
+      const n = parseInt(cat);
+      filtrosNivel.has(n) ? filtrosNivel.delete(n) : filtrosNivel.add(n);
+    }
+    el.classList.toggle('inactive');
+    aplicarFiltros();
+  });
+});
+
+// ── HIGHLIGHT / RESET ─────────────────────────────────────────────
+function highlightNode(node) {
+  const connectedIds = new Set();
+  allLinks.forEach(l => {
+    const s = l.source?.id ?? l.source, t = l.target?.id ?? l.target;
+    if (s === node.id) connectedIds.add(t);
+    if (t === node.id) connectedIds.add(s);
+  });
+  const white = new THREE.Color(1, 1, 1);
+  const dim   = new THREE.Color(0.06, 0.06, 0.08);
+  const dirty  = new Set();
+  allNodes.forEach(n => {
+    const d = nodeInstData[n.id];
+    if (!d || n._oculto) return;
+    if (n === node) {
+      d.sphereMesh.setColorAt(d.instanceIdx, white);
+      _dummy.position.copy(d.pos); _dummy.scale.setScalar(1.6); _dummy.updateMatrix();
+      d.glowMesh.setMatrixAt(d.instanceIdx, _dummy.matrix);
+      d.glowMesh.setColorAt(d.instanceIdx, white);
+    } else if (connectedIds.has(n.id)) {
+      const c = d.color.clone().multiplyScalar(1.8); c.r = Math.min(c.r,1); c.g = Math.min(c.g,1); c.b = Math.min(c.b,1);
+      d.sphereMesh.setColorAt(d.instanceIdx, c);
+    } else {
+      d.sphereMesh.setColorAt(d.instanceIdx, dim);
+    }
+    dirty.add(d.sphereMesh); dirty.add(d.glowMesh);
+  });
+  dirty.forEach(m => { if (m.instanceColor) m.instanceColor.needsUpdate = true; m.instanceMatrix.needsUpdate = true; });
+  lineMeshes.forEach(l => {
+    const s = l.userData.src.id, t = l.userData.tgt.id;
+    l.material.opacity = (s === node.id || t === node.id) ? 1.0 : 0.03;
+  });
+}
+
+function resetHighlights() {
+  const dirty = new Set();
+  allNodes.forEach(n => {
+    const d = nodeInstData[n.id];
+    if (!d) return;
+    d.sphereMesh.setColorAt(d.instanceIdx, d.color);
+    _dummy.position.copy(d.pos); _dummy.scale.setScalar(n._oculto ? 0 : 1); _dummy.updateMatrix();
+    d.sphereMesh.setMatrixAt(d.instanceIdx, _dummy.matrix);
+    d.glowMesh.setMatrixAt(d.instanceIdx, _dummy.matrix);
+    d.glowMesh.setColorAt(d.instanceIdx, d.color);
+    dirty.add(d.sphereMesh); dirty.add(d.glowMesh);
+  });
+  dirty.forEach(m => { if (m.instanceColor) m.instanceColor.needsUpdate = true; m.instanceMatrix.needsUpdate = true; });
+  lineMeshes.forEach(l => {
+    l.material.opacity = (!l.userData.src._oculto && !l.userData.tgt._oculto) ? 0.15 : 0;
+  });
+}
+
+// ── TOOLTIP ───────────────────────────────────────────────────────
+const tt = document.getElementById('tooltip');
+
+function showTT(e, node) {
+  const css = fcss(node.fuente);
+  document.getElementById('tt-type').textContent = node.type || 'Concepto';
+  document.getElementById('tt-id').textContent   = `NODE_${String(allNodes.indexOf(node)+1).padStart(2,'0')}${node.cluster >= 0 ? ` · C${node.cluster}` : ''}`;
+  document.getElementById('tt-title').textContent = node.label;
+  document.getElementById('tt-title').style.color = node.cluster >= 0 ? clusterCss(node.cluster) : css;
+  document.getElementById('tt-desc').textContent  = node.desc;
+  document.getElementById('tt-level').textContent = `Nivel ${node.level}`;
+  document.getElementById('tt-sep').style.background = css;
+
+  const badge = document.getElementById('tt-badge');
+  badge.textContent = (node.fuente || 'concepto').toUpperCase();
+  badge.className = `tt-badge ${fbadge(node.fuente)}`;
+
+  // Tags
+  const tagsEl = document.getElementById('tt-tags');
+  tagsEl.innerHTML = '';
+  allLinks.filter(l => {
+    const s = l.source?.id ?? l.source, t = l.target?.id ?? l.target;
+    return s === node.id || t === node.id;
+  }).forEach(l => {
+    const otherId = (l.source?.id ?? l.source) === node.id ? (l.target?.id ?? l.target) : (l.source?.id ?? l.source);
+    const other = allNodes.find(n => n.id === otherId);
+    if (!other) return;
+    const tag = document.createElement('span');
+    tag.className = 'tt-tag';
+    tag.textContent = other.label.substring(0, 20);
+    tag.style.cssText = `border-color:${css}33;color:${css}bb`;
+    tagsEl.appendChild(tag);
+  });
+
+  // Media
+  const ms = document.getElementById('tt-media-section');
+  const mc = document.getElementById('tt-media-container');
+  const ts = document.getElementById('tt-text-section');
+  mc.innerHTML = ''; ms.style.display = 'none'; ts.style.display = 'none';
+
+  if (node.fuente === 'youtube' && node.fuente_url) {
+    const vid = ytId(node.fuente_url);
+    if (vid) {
+      ms.style.display = 'block';
+      mc.innerHTML = `<div style="position:relative;cursor:pointer" onclick="window.open('${node.fuente_url}','_blank')"><img src="https://img.youtube.com/vi/${vid}/mqdefault.jpg" style="width:100%;border-radius:4px;display:block"><div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:38px;text-shadow:0 0 14px #000;pointer-events:none">▶</div></div>`;
+    }
+  } else if (node.fuente === 'audio' && node.fuente_url) {
+    ms.style.display = 'block'; mc.innerHTML = `<audio controls src="${node.fuente_url}"></audio>`;
+  } else if (node.fuente === 'imagen' && node.fuente_url) {
+    ms.style.display = 'block'; mc.innerHTML = `<img src="${node.fuente_url}" alt="${node.label}">`;
+  } else if ((node.fuente === 'pdf' || node.fuente === 'tesis') && node.fuente_path) {
+    const p = node.fuente_path;
+    ms.style.display = 'block';
+    mc.innerHTML = `<img src="/thumbnail?p=${encodeURIComponent(p)}" style="width:100%;border-radius:4px;cursor:pointer;display:block" onclick="window.open('/doc?p=${encodeURIComponent(p)}','_blank')" onerror="this.parentElement.innerHTML='<div style=\\'padding:12px;opacity:0.4;font-size:10px;text-align:center\\'>${node.fuente_label || 'Documento'}</div>'">`;
+  } else if (node.fragmento) {
+    ts.style.display = 'block'; document.getElementById('tt-text-content').textContent = `"${node.fragmento}"`;
+  } else {
+    ms.style.display = 'block';
+    mc.appendChild(makeInitialsCanvas(node.label, clusterCss(node.cluster ?? -1)));
+  }
+
+  // Actions
+  document.getElementById('btn-consultar').onclick = () => abrirAgente(node);
+  document.getElementById('btn-expandir').onclick  = () => alert(`python processor.py "${node.fuente_url || node.fuente_label || node.id}"\npython embeddings_engine.py`);
+  document.getElementById('btn-fuente').onclick    = () => { if (node.fuente_url || node.link) window.open(node.fuente_url || node.link, '_blank'); };
+
+  const btnDoc = document.getElementById('btn-ver-doc');
+  if ((node.fuente === 'pdf' || node.fuente === 'tesis') && (node.fuente_path || node.fuente_label)) {
+    const p = node.fuente_path || `fuentes/${node.fuente_label}.pdf`;
+    btnDoc.style.display = '';
+    btnDoc.onclick = () => window.open('/doc?p=' + encodeURIComponent(p), '_blank');
+  } else {
+    btnDoc.style.display = 'none';
+  }
+
+  moveTT(e);
+  tt.classList.add('visible');
+}
+
+function moveTT(e) {
+  if (!e) return;
+  const tw = 380, th = 420;
+  let x = e.clientX + 22, y = e.clientY - 22;
+  if (x + tw > innerWidth  - 10) x = e.clientX - tw - 22;
+  if (y + th > innerHeight - 10) y = innerHeight - th - 10;
+  if (y < 70) y = 70;
+  tt.style.left = x + 'px'; tt.style.top = y + 'px';
+}
+
+function hideTT() {
+  tt.classList.remove('visible');
+  if (hoveredNode) {
+    if (!agentHighlightActive) resetHighlights();
+    hoveredNode = null;
+  }
+}
+
+tt.addEventListener('mouseleave', hideTT);
+
+// ── RAYCASTING ────────────────────────────────────────────────────
+const raycaster = new THREE.Raycaster();
+
+renderer.domElement.addEventListener('mousemove', e => {
+  mousePos.x = (e.clientX / innerWidth)  *  2 - 1;
+  mousePos.y = (e.clientY / innerHeight) * -2 + 1;
+  mouseEvt = e;
+  if (tt.classList.contains('visible') && hoveredNode) moveTT(e);
+});
+
+renderer.domElement.addEventListener('mousedown', e => { mouseDownXY = { x: e.clientX, y: e.clientY }; });
+
+renderer.domElement.addEventListener('mouseup', e => {
+  const dx = Math.abs(e.clientX - mouseDownXY.x);
+  const dy = Math.abs(e.clientY - mouseDownXY.y);
+  if (dx >= 5 || dy >= 5) return;
+  if (hoveredNode) {
+    showNeighborLines(hoveredNode);
+    abrirAgente(hoveredNode);
+  } else {
+    hideNeighborLines();
+  }
+});
+
+// ── AGENT PANEL ───────────────────────────────────────────────────
+let conversacion = [], nodoContexto = null;
+
+function abrirAgente(node) {
+  nodoContexto = node;
+  conversacion = [];
+  const msgs = document.getElementById('agent-messages');
+  msgs.innerHTML = '';
+  document.getElementById('agent-panel').classList.add('visible');
+  const intro = document.createElement('div');
+  intro.className = 'agent-msg assistant';
+  intro.textContent = `Contexto cargado: "${node.label}". ¿Qué querés saber?`;
+  msgs.appendChild(intro);
+  document.getElementById('agent-input').focus();
+  tt.classList.remove('visible');
+}
+
+document.getElementById('agent-close').addEventListener('click', () => {
+  document.getElementById('agent-panel').classList.remove('visible');
+  resetAgentHighlight();
+  hideNeighborLines();
+});
+
+async function enviarMensaje() {
+  const input = document.getElementById('agent-input');
+  const msg = input.value.trim(); if (!msg) return;
+  input.value = '';
+  const msgs = document.getElementById('agent-messages');
+  const uDiv = document.createElement('div');
+  uDiv.className = 'agent-msg user'; uDiv.textContent = msg; msgs.appendChild(uDiv);
+  const tDiv = document.createElement('div');
+  tDiv.className = 'agent-msg thinking'; tDiv.textContent = 'Analizando...'; msgs.appendChild(tDiv);
+  msgs.scrollTop = msgs.scrollHeight;
+  conversacion.push({ role: 'user', content: msg });
+  try {
+    const sys = `Sos el agente de PragmaForge. Nodo: "${nodoContexto?.label}". Desc: "${nodoContexto?.desc}". Fuente: ${nodoContexto?.fuente}. Respondé conciso y en español.`;
+    const res = await fetch('/agent', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 600, system: sys, messages: conversacion }) });
+    const data = await res.json();
+    const reply = data.reply || 'Error al conectar.';
+    tDiv.remove();
+    conversacion.push({ role: 'assistant', content: reply });
+    const rDiv = document.createElement('div');
+    rDiv.className = 'agent-msg assistant';
+    rDiv.innerHTML = window.marked.parse(reply);
+    msgs.appendChild(rDiv);
+    msgs.scrollTop = msgs.scrollHeight;
+    if (data.nodos_relevantes?.length) iluminarNodosRelevantes(data.nodos_relevantes);
+  } catch { tDiv.textContent = 'Error al conectar. Verificá tu API key.'; }
+}
+
+document.getElementById('agent-send').addEventListener('click', enviarMensaje);
+document.getElementById('agent-input').addEventListener('keydown', e => { if (e.key === 'Enter') enviarMensaje(); });
+
+// ── AGENT GALAXY HIGHLIGHT ────────────────────────────────────────
+function iluminarNodosRelevantes(ids) {
+  agentHighlightActive = true;
+  agentHighlightIds = new Set(ids);
+  const white = new THREE.Color(1, 1, 1);
+  const dim   = new THREE.Color(0.05, 0.05, 0.07);
+  const dirty = new Set();
+  allNodes.forEach(n => {
+    const d = nodeInstData[n.id];
+    if (!d || n._oculto) return;
+    _dummy.position.copy(d.pos);
+    if (agentHighlightIds.has(n.id)) {
+      d.sphereMesh.setColorAt(d.instanceIdx, white);
+      _dummy.scale.setScalar(2); _dummy.updateMatrix();
+      d.sphereMesh.setMatrixAt(d.instanceIdx, _dummy.matrix);
+      d.glowMesh.setMatrixAt(d.instanceIdx, _dummy.matrix);
+      d.glowMesh.setColorAt(d.instanceIdx, white);
+    } else {
+      d.sphereMesh.setColorAt(d.instanceIdx, dim);
+      _dummy.scale.setScalar(1); _dummy.updateMatrix();
+      d.glowMesh.setMatrixAt(d.instanceIdx, _dummy.matrix);
+    }
+    dirty.add(d.sphereMesh); dirty.add(d.glowMesh);
+  });
+  dirty.forEach(m => { if (m.instanceColor) m.instanceColor.needsUpdate = true; m.instanceMatrix.needsUpdate = true; });
+}
+
+function resetAgentHighlight() {
+  if (!agentHighlightActive) return;
+  agentHighlightActive = false;
+  agentHighlightIds = new Set();
+  resetHighlights();
+}
+
+// ── SEARCH ────────────────────────────────────────────────────────
+document.getElementById('search-input').addEventListener('input', function () {
+  const q = this.value.trim().toLowerCase();
+  if (!q) {
+    allNodes.forEach(n => { n._searchOculto = false; });
+    aplicarFiltros(); resetHighlights(); return;
+  }
+  const dirty = new Set();
+  allNodes.forEach(n => {
+    const ok = n.label.toLowerCase().includes(q) || (n.desc || '').toLowerCase().includes(q);
+    n._searchOculto = !ok;
+    const d = nodeInstData[n.id];
+    if (!d) return;
+    const vis = ok && !n._oculto;
+    _dummy.position.copy(d.pos); _dummy.scale.setScalar(vis ? 1 : 0); _dummy.updateMatrix();
+    d.sphereMesh.setMatrixAt(d.instanceIdx, _dummy.matrix);
+    d.glowMesh.setMatrixAt(d.instanceIdx, _dummy.matrix);
+    if (d.labelObj) d.labelObj.element.style.display = vis ? '' : 'none';
+    dirty.add(d.sphereMesh); dirty.add(d.glowMesh);
+  });
+  dirty.forEach(m => { m.instanceMatrix.needsUpdate = true; });
+  lineMeshes.forEach(l => { l.visible = !l.userData.src._searchOculto && !l.userData.tgt._searchOculto; });
+});
+
+document.getElementById('search-input').addEventListener('keydown', function (e) {
+  if (e.key === 'Escape') {
+    this.value = '';
+    allNodes.forEach(n => { n._searchOculto = false; });
+    aplicarFiltros(); resetHighlights(); return;
+  }
+  if (e.key !== 'Enter') return;
+  const q = this.value.trim().toLowerCase();
+  if (!q) return;
+  const match = allNodes.find(n => n.label.toLowerCase().includes(q));
+  if (!match?._pos) return;
+  flyToNode(match);
+});
+
+function flyToNode(node) {
+  if (flyTimer) clearInterval(flyTimer);
+  const dest   = node._pos.clone().add(new THREE.Vector3(0, 0, 25));
+  const target = node._pos.clone();
+  const p0 = camera.position.clone(), t0 = controls.target.clone();
+  let t = 0;
+  flyTimer = setInterval(() => {
+    t = Math.min(t + 0.04, 1);
+    const e = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
+    camera.position.lerpVectors(p0, dest, e);
+    controls.target.lerpVectors(t0, target, e);
+    controls.update();
+    if (t >= 1) { clearInterval(flyTimer); flyTimer = null; }
+  }, 16);
+  const white = new THREE.Color(1, 1, 1);
+  const dim   = new THREE.Color(0.08, 0.08, 0.1);
+  const dirty = new Set();
+  allNodes.forEach(n => {
+    const d = nodeInstData[n.id];
+    if (!d || n._oculto) return;
+    d.sphereMesh.setColorAt(d.instanceIdx, n === node ? white : dim);
+    dirty.add(d.sphereMesh);
+  });
+  dirty.forEach(m => { if (m.instanceColor) m.instanceColor.needsUpdate = true; });
+}
+
+// ── UPLOAD PANEL ──────────────────────────────────────────────────
+document.getElementById('btn-subir').addEventListener('click', () => document.getElementById('file-input').click());
+document.getElementById('file-input').addEventListener('change', function (e) {
+  const f = e.target.files[0]; if (!f) return;
+  alert(`Copiá "${f.name}" a fuentes/ y corré:\n\npython processor.py fuentes/${f.name}\npython embeddings_engine.py\n\nDespués ↺ Recargar`);
+  this.value = '';
+});
+document.getElementById('btn-procesar').addEventListener('click', () => {
+  const url = document.getElementById('url-input').value.trim(); if (!url) return;
+  alert(`En la terminal corré:\n\npython processor.py "${url}"\npython embeddings_engine.py\n\nDespués ↺ Recargar`);
+  document.getElementById('url-input').value = '';
+});
+document.getElementById('btn-recargar').addEventListener('click', cargarDesdeJSON);
+
+// ── DATA LOADING ──────────────────────────────────────────────────
+async function cargarDesdeJSON() {
+  try {
+    document.getElementById('proc-msg').textContent = 'Cargando base de conocimiento...';
+    document.getElementById('processing').classList.add('visible');
+    setTimeout(() => { document.getElementById('proc-fill').style.width = '80%'; }, 100);
+    const r = await fetch('nodes_generated.json?t=' + Date.now());
+    if (!r.ok) throw new Error('No se pudo cargar nodes_generated.json');
+    const data = await r.json();
+    allNodes = data.nodos    || [];
+    allLinks = data.relaciones || [];
+    iniciar();
+    document.getElementById('proc-fill').style.width = '100%';
+    setTimeout(() => {
+      document.getElementById('processing').classList.remove('visible');
+      document.getElementById('proc-fill').style.width = '0%';
+    }, 400);
+  } catch (err) {
+    document.getElementById('processing').classList.remove('visible');
+    console.error(err);
+  }
+}
+
+// ── ANIMATION LOOP ────────────────────────────────────────────────
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+
+  if (mouseEvt && sphereMeshes.length > 0) {
+    raycaster.setFromCamera(mousePos, camera);
+    const hits = raycaster.intersectObjects(sphereMeshes, false);
+    if (hits.length > 0) {
+      const hit = hits[0];
+      const node = hit.object.userData.nodeList?.[hit.instanceId];
+      if (node && node !== hoveredNode) {
+        hoveredNode = node;
+        if (!agentHighlightActive) highlightNode(node);
+        showTT(mouseEvt, node);
+      }
+    } else if (hoveredNode && !tt.matches(':hover')) {
+      hideTT();
+    }
+  }
+
+  renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
+}
+
+// ── UTILS ─────────────────────────────────────────────────────────
+function makeInitialsCanvas(label, cssColor) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 200; canvas.height = 140;
+  canvas.style.cssText = 'width:100%;border-radius:4px;display:block';
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#0d1224';
+  ctx.fillRect(0, 0, 200, 140);
+  ctx.fillStyle = cssColor;
+  ctx.font = 'bold 68px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const initials = label.trim().split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase() || '').join('') || '?';
+  ctx.fillText(initials, 100, 70);
+  return canvas;
+}
+
+function ytId(url) {
+  const m = url.match(/(?:youtu\.be\/|v=|embed\/)([a-zA-Z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  labelRenderer.setSize(innerWidth, innerHeight);
+});
+
+// ── START ─────────────────────────────────────────────────────────
+cargarDesdeJSON();
+animate();
+</script>
+</body>
+</html>
