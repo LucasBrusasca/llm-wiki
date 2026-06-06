@@ -148,6 +148,7 @@ function buildCaption(text) {
 const THUMB_FUENTES = new Set(['pdf', 'tesis', 'youtube', 'image', 'video']);
 function hasThumb(node) {
   if (node.is_issue) return false;
+  if (node.thumb_data) return true; // miniatura incrustada (demo estático sin backend)
   const f = (node.fuente || '').toLowerCase();
   if (THUMB_FUENTES.has(f)) return true;
   return /\.(pdf|png|jpe?g|gif|webp|bmp|mp4|webm|mov|m4v)$/i.test(node.fuente_path || '');
@@ -197,7 +198,7 @@ function buildNode(node, degree, maxDegree, texReg) {
       } catch { /* mantiene la tarjeta neutra */ }
     };
     img.onerror = () => {};                             // 404 → tarjeta neutra
-    img.src = `/thumb/${encodeURIComponent(node.id)}`;
+    img.src = node.thumb_data || `/thumb/${encodeURIComponent(node.id)}`;
   }
 
   return group;
