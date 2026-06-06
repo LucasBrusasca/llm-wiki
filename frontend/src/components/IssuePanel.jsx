@@ -12,6 +12,7 @@ function NewIssueForm({ onRefresh, setSelectedIssueId }) {
   const [file, setFile]           = useState(null);
   const [dragOver, setDragOver]   = useState(false);
   const [status, setStatus]       = useState({ state: 'idle', message: '', progress: 0, result: null });
+  const [collapsedSections, setCollapsedSections] = useState({});
   const pollRef                   = useRef(null);
 
   useEffect(() => () => clearInterval(pollRef.current), []);
@@ -75,7 +76,11 @@ function NewIssueForm({ onRefresh, setSelectedIssueId }) {
     { at: 20, label: 'Analizando el problema…' },
     { at: 50, label: 'Guardando en el grafo y extrayendo flujograma…' },
     { at: 70, label: 'Buscando conexiones relevantes…' },
-    { at: 85, label: 'Generando síntesis con el agente…' },
+    { at: 30, label: 'Agente 1/4 — Análisis de procesos…' },
+    { at: 50, label: 'Agente 2/4 — Gestión de riesgos…' },
+    { at: 68, label: 'Agente 3/4 — Perspectiva creativa…' },
+    { at: 84, label: 'Agente 4/4 — Red Team epistémico…' },
+    { at: 95, label: 'Finalizando…' },
     { at: 100, label: 'Listo' },
   ];
   const step = STEPS.find(s => (status.progress || 0) <= s.at) || STEPS[STEPS.length - 1];
@@ -158,20 +163,74 @@ function NewIssueForm({ onRefresh, setSelectedIssueId }) {
           </button>
         </div>
       ) : (
-        <div className="issue-result">
+        <div className="issue-result" style={{ paddingBottom: 32 }}>
           <div className="issue-result-label" style={{ fontSize: 14 }}>PROCESO DETECTADO EXITOSAMENTE</div>
           <div className="issue-result-title" style={{ fontSize: 24, margin: '12px 0' }}>{result?.label}</div>
-          
-          <div className="issue-result-actions" style={{ marginTop: 30, display: 'flex', gap: 16 }}>
-            <button 
-              className="issue-new-btn" 
+
+          {/* 4-agent synthesis */}
+          {result?.synthesis && (() => {
+            const syn = result.synthesis;
+            const isObject = typeof syn === 'object' && syn !== null;
+            const sections = isObject ? [
+              { key: 'proceso',  title: '⚙️ ANÁLISIS DE PROCESO',    color: '#00ff88', content: syn.proceso,   dark: false },
+              { key: 'riesgos',  title: '⚠️ GESTIÓN DE RIESGOS',     color: '#ff9500', content: syn.riesgos,   dark: false },
+              { key: 'creativo', title: '💡 PERSPECTIVA CREATIVA',    color: '#00d4ff', content: syn.creativo,  dark: false },
+              { key: 'red_team', title: '🔴 RED TEAM',                color: '#ff3366', content: syn.red_team,  dark: true  },
+            ] : [
+              { key: 'synthesis', title: '⬡ SÍNTESIS', color: 'var(--gold)', content: syn, dark: false },
+            ];
+
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 20 }}>
+                {sections.map(({ key, title, color, content, dark }) => {
+                  const isCollapsed = collapsedSections[key];
+                  return (
+                    <div key={key} style={{
+                      borderRadius: 6,
+                      border: `1px solid ${dark ? 'rgba(255,51,102,0.3)' : `${color}33`}`,
+                      background: dark ? 'rgba(30,4,12,0.7)' : 'rgba(255,255,255,0.03)',
+                      overflow: 'hidden',
+                    }}>
+                      <button
+                        onClick={() => setCollapsedSections(prev => ({ ...prev, [key]: !prev[key] }))}
+                        style={{
+                          width: '100%', display: 'flex', alignItems: 'center',
+                          justifyContent: 'space-between', padding: '10px 14px',
+                          background: 'none', border: 'none', cursor: 'pointer',
+                          color, fontWeight: 700, fontSize: 11, letterSpacing: 1.2,
+                          fontFamily: 'monospace', textAlign: 'left',
+                        }}
+                      >
+                        {title}
+                        <span style={{ fontSize: 12, opacity: 0.7 }}>{isCollapsed ? '▸' : '▾'}</span>
+                      </button>
+                      {!isCollapsed && content && (
+                        <div style={{
+                          padding: '0 14px 14px',
+                          fontSize: 13, color: '#c4c8d6', lineHeight: 1.7,
+                          whiteSpace: 'pre-wrap', borderTop: `1px solid ${dark ? 'rgba(255,51,102,0.15)' : 'rgba(255,255,255,0.06)'}`,
+                          paddingTop: 10,
+                        }}>
+                          {content}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
+          <div className="issue-result-actions" style={{ marginTop: 24, display: 'flex', gap: 16 }}>
+            <button
+              className="issue-new-btn"
               style={{ padding: '12px 24px', fontSize: 14, borderRadius: 8 }}
               onClick={() => { setSelectedIssueId(result?.nodo_id); onRefresh(); }}
             >
               Ver Flujograma Interactivo
             </button>
-            <button 
-              className="issue-new-btn" 
+            <button
+              className="issue-new-btn"
               style={{ padding: '12px 24px', fontSize: 14, borderRadius: 8, background: 'transparent', border: '1px solid var(--gold)' }}
               onClick={resetNewIssue}
             >

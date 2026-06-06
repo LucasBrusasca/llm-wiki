@@ -20,3 +20,7 @@ edges_generated.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Artefactos / temporales
+*.zip
+test_vigilados.pdf

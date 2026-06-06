@@ -8,7 +8,18 @@ const STEPS = [
   { at: 100, label: 'Incorporando al grafo…' },
 ];
 
-function ProgressOverlay({ status, queueInfo }) {
+// Mensaje de error legible (los del proveedor vienen crudos de httpx).
+function humanizeError(msg) {
+  if (!msg) return 'Error en la ingesta';
+  const m = String(msg);
+  if (m.includes('429')) return 'Límite de la API de IA alcanzado — esperá un momento y reintentá';
+  if (m.includes('503')) return 'El servicio de IA está saturado — probá de nuevo en unos segundos';
+  if (m.toLowerCase().includes('timed out') || m.toLowerCase().includes('timeout'))
+    return 'La IA tardó demasiado en responder — reintentá';
+  return m;
+}
+
+function ProgressOverlay({ status, queueInfo, onCancel }) {
   const pct = status.progress || 0;
   const step = STEPS.find(s => pct <= s.at) || STEPS[STEPS.length - 1];
 
@@ -31,6 +42,7 @@ function ProgressOverlay({ status, queueInfo }) {
         {status.label && (
           <div className="ingest-overlay-label">"{status.label}"</div>
         )}
+        <button className="ingest-cancel-btn" onClick={onCancel}>✕ CANCELAR</button>
       </div>
     </div>
   );
@@ -51,12 +63,22 @@ export default function IngestPanel({ onRefresh, inline = false }) {
 
   useEffect(() => () => clearInterval(pollRef.current), []);
 
+  // Auto-cerrar el chip de error a los 7s para que no quede "colgado".
+  useEffect(() => {
+    if (status.state !== 'error') return;
+    const t = setTimeout(() => {
+      setStatus(s => (s.state === 'error' ? { state: 'idle', message: '', label: '', progress: 0 } : s));
+    }, 7000);
+    return () => clearTimeout(t);
+  }, [status.state, status.message]);
+
   const startPolling = useCallback(() => {
     clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
       try {
         const r = await fetch('/api/ingest/status');
         const s = await r.json();
+        if (s.state === 'error') s.message = humanizeError(s.message);
         setStatus(s);
         if (s.state === 'done') {
           clearInterval(pollRef.current);
@@ -220,7 +242,7 @@ export default function IngestPanel({ onRefresh, inline = false }) {
 
   return (
     <>
-      {isProcessing && <ProgressOverlay status={status} queueInfo={queueInfo} />}
+      {isProcessing && <ProgressOverlay status={status} queueInfo={queueInfo} onCancel={reset} />}
 
       <div className={`ingest-panel${inline ? ' ingest-panel--inline' : ''}`}>
         <label

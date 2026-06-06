@@ -1,0 +1,62 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pragmaforge}
+      POSTGRES_USER: ${POSTGRES_USER:-pragma}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pragma}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pragma}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: dev
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pragma}:${POSTGRES_PASSWORD:-pragma}@db:5432/${POSTGRES_DB:-pragmaforge}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-pragma}:${POSTGRES_PASSWORD:-pragma}@db:5432/${POSTGRES_DB:-pragmaforge}
+      # Ollama corre en el HOST: desde el contenedor hay que usar host.docker.internal,
+      # no localhost (que es el loopback del propio contenedor). Override del .env.
+      OLLAMA_URL: ${OLLAMA_URL_DOCKER:-http://host.docker.internal:11434/v1/chat/completions}
+    env_file: .env
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - .:/app
+      - uploads_data:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+      target: dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    environment:
+      VITE_API_URL: http://localhost:8000
+      # Target del proxy de Vite (lado servidor, dentro del contenedor).
+      # Debe usar el nombre de red del servicio backend, NO localhost.
+      BACKEND_URL: http://backend:8000
+      # Bloom de postprocessing. Si los FPS caen por debajo de 30,
+      # poné "false" para desactivarlo (backdrop y canales siguen funcionando).
+      VITE_BLOOM_ENABLED: ${VITE_BLOOM_ENABLED:-true}
+
+volumes:
+  postgres_data:
+  uploads_data:

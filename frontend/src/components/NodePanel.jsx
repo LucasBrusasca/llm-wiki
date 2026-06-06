@@ -1,14 +1,37 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { clusterColor, ytId } from '../App.jsx';
 
+const CYAN = '#00d4ff';
+
+/* ── Helpers de tipo de medio ── */
+function fileExt(node) {
+  const s = node.fuente_path || node.fuente_label || node.fuente_url || '';
+  const m = String(s).toLowerCase().match(/\.([a-z0-9]+)(?:$|\?|#)/);
+  return m ? m[1] : '';
+}
+function mediaKind(node) {
+  if (node.fuente === 'youtube') return 'youtube';
+  const e = fileExt(node);
+  if (['mp4', 'webm', 'mov', 'mkv', 'm4v', 'ogv'].includes(e) || node.fuente === 'video') return 'video';
+  if (['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'opus'].includes(e) || node.fuente === 'audio') return 'audio';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif'].includes(e) || node.fuente === 'image') return 'image';
+  if (node.fuente === 'pdf' || node.fuente === 'tesis' || e === 'pdf') return 'pdf';
+  if (node.fuente === 'excel' || ['xlsx', 'xls', 'csv'].includes(e)) return 'excel';
+  if (node.fuente === 'html' || ['html', 'htm'].includes(e)) return 'html';
+  return 'text';
+}
+function fileUrl(node) {
+  return node.fuente_path ? `/files/${encodeURIComponent(node.id)}` : null;
+}
+
 function ExcelPreview({ path }) {
   const [rows, setRows] = useState(null);
   useEffect(() => {
     fetch(`/excel-preview?p=${encodeURIComponent(path)}`)
       .then(r => r.json()).then(d => setRows(d.rows)).catch(() => setRows([]));
   }, [path]);
-  if (rows === null) return <div className="preview-loading">Cargando…</div>;
-  if (!rows.length)  return <div className="preview-loading">Sin datos</div>;
+  if (rows === null) return <div className="preview-loading">CARGANDO…</div>;
+  if (!rows.length)  return <div className="preview-loading">SIN DATOS</div>;
   return (
     <div className="excel-table-wrap">
       <table className="excel-table">
@@ -22,21 +45,92 @@ function ExcelPreview({ path }) {
   );
 }
 
+/* ── AUDIO INTERCEPT: onda real (WebAudio) con fallback sintético ── */
+function AudioIntercept({ src }) {
+  const canvasRef = useRef(null);
+  const peaksRef  = useRef(null);
+
+  const draw = useCallback((data) => {
+    const cv = canvasRef.current; if (!cv || !data) return;
+    const ctx = cv.getContext('2d');
+    const W = cv.width, H = cv.height;
+    ctx.clearRect(0, 0, W, H);
+    // línea media
+    ctx.strokeStyle = 'rgba(0,212,255,0.18)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); ctx.stroke();
+    const n = data.length, bw = W / n;
+    ctx.fillStyle = 'rgba(0,212,255,0.9)';
+    for (let i = 0; i < n; i++) {
+      const h = Math.max(1, data[i] * H * 0.92);
+      ctx.fillRect(i * bw + 0.5, (H - h) / 2, Math.max(1, bw - 1.2), h);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const synth = () => Array.from({ length: 110 }, (_, i) =>
+      0.15 + 0.85 * Math.abs(Math.sin(i * 0.42)) * (0.5 + 0.5 * Math.abs(Math.sin(i * 0.13))));
+    (async () => {
+      try {
+        const res = await fetch(src);
+        const buf = await res.arrayBuffer();
+        const AC = window.AudioContext || window.webkitAudioContext;
+        const ac = new AC();
+        const audioBuf = await ac.decodeAudioData(buf);
+        const ch = audioBuf.getChannelData(0);
+        const N = 110, block = Math.max(1, Math.floor(ch.length / N));
+        const arr = []; let max = 0;
+        for (let i = 0; i < N; i++) {
+          let peak = 0;
+          for (let j = 0; j < block; j++) { const v = Math.abs(ch[i * block + j] || 0); if (v > peak) peak = v; }
+          arr.push(peak); if (peak > max) max = peak;
+        }
+        ac.close();
+        const norm = arr.map(v => (max > 0 ? v / max : 0));
+        if (!cancelled) { peaksRef.current = norm; draw(norm); }
+      } catch {
+        if (!cancelled) { const s = synth(); peaksRef.current = s; draw(s); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [src, draw]);
+
+  return (
+    <div className="poi-audio">
+      <div className="poi-audio-head">▶ AUDIO INTERCEPT</div>
+      <canvas ref={canvasRef} width={540} height={92} className="poi-wave" />
+      <audio controls src={src} className="poi-audio-el" />
+    </div>
+  );
+}
+
+function FragmentFallback({ node }) {
+  const txt = (node.fragmento || node.desc || 'SIN CONTENIDO ARCHIVADO').toString();
+  return (
+    <div className="poi-fragment">
+      <div className="poi-fragment-head">▟ ARCHIVE FRAGMENT · NO FILE</div>
+      <div className="poi-fragment-body">{txt}</div>
+    </div>
+  );
+}
+
 function RichPreviewModal({ node, html, onClose }) {
-  const srcUrl = node.fuente_url || (node.fuente_path ? `/doc?p=${encodeURIComponent(node.fuente_path)}` : null);
+  const srcUrl = node.fuente_url || (node.fuente_path ? `/files/${encodeURIComponent(node.id)}` : null);
   return (
     <div
-      style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(4,6,12,0.88)',
+      style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(3,6,12,0.9)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div style={{ width: '90vw', maxWidth: 1100, height: '90vh', background: '#f5f1e8',
-        borderRadius: 5, border: '1px solid rgba(245,166,35,0.25)',
-        overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '10px 16px', background: '#1a1a1a', flexShrink: 0,
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        borderRadius: 5, border: '1px solid rgba(0,212,255,0.35)',
+        overflow: 'hidden', display: 'flex', flexDirection: 'column',
+        boxShadow: '0 0 60px rgba(0,212,255,0.12)' }}>
+        <div style={{ padding: '10px 16px', background: '#060b16', flexShrink: 0,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          borderBottom: '1px solid rgba(0,212,255,0.25)' }}>
           <span style={{ fontFamily: "'Courier New', monospace", fontSize: 10,
-            color: '#f5a623', letterSpacing: 2 }}>
+            color: '#00d4ff', letterSpacing: 2 }}>
             ✦ APUNTE IA · {node.label.slice(0, 55)}{node.label.length > 55 ? '…' : ''}
           </span>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -44,8 +138,8 @@ function RichPreviewModal({ node, html, onClose }) {
               <button onClick={() => window.open(srcUrl, '_blank')}
                 style={{ fontFamily: "'Courier New', monospace", fontSize: 9, letterSpacing: 2,
                   padding: '4px 10px', background: 'transparent',
-                  border: '1px solid rgba(245,166,35,0.35)', color: '#f5a623', cursor: 'pointer', borderRadius: 2 }}>
-                → Fuente original
+                  border: '1px solid rgba(0,212,255,0.4)', color: '#00d4ff', cursor: 'pointer', borderRadius: 2 }}>
+                → FUENTE ORIGINAL
               </button>
             )}
             <button onClick={onClose}
@@ -65,116 +159,92 @@ function RichPreviewModal({ node, html, onClose }) {
 }
 
 function ContentPreview({ node }) {
-  const f = node.fuente;
-  const [richHtml, setRichHtml] = useState(null);
-  const [loading, setLoading]   = useState(false);
-  const [showRich, setShowRich] = useState(false);
+  const kind = mediaKind(node);
+  const url  = fileUrl(node);
+  // url externa (web) o ruta /doc legada como respaldo si no hay /files
+  const docUrl = node.fuente_path ? `/doc?p=${encodeURIComponent(node.fuente_path)}` : null;
+  const src = url || node.fuente_url || docUrl;
 
-  const loadRichPreview = useCallback(async () => {
-    if (richHtml) { setShowRich(true); return; }
-    setLoading(true);
-    try {
-      const r = await fetch(`/api/node/${node.id}/rich-preview`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const html = await r.text();
-      setRichHtml(html);
-      setShowRich(true);
-    } catch (e) {
-      console.error('Rich preview error:', e);
-    } finally {
-      setLoading(false);
-    }
-  }, [node.id, richHtml]);
-
-  // YouTube: unchanged
-  if (f === 'youtube' && node.fuente_url) {
+  if (kind === 'youtube' && node.fuente_url) {
     const vid = ytId(node.fuente_url);
     if (vid) return (
       <iframe src={`https://www.youtube.com/embed/${vid}?autoplay=0`} title={node.label}
-        allowFullScreen style={{ width: '100%', height: 160, border: 'none', borderRadius: 4 }} />
+        allowFullScreen className="poi-media-frame" style={{ background: '#000' }} />
     );
   }
 
-  // Audio: unchanged
-  if (f === 'audio' && node.fuente_path) {
-    return <audio controls style={{ width: '100%', marginTop: 4 }}
-      src={`/doc?p=${encodeURIComponent(node.fuente_path)}`} />;
+  if (kind === 'video' && src) {
+    return <video controls src={src} className="poi-media-frame" style={{ background: '#000' }} />;
   }
 
-  // Excel: unchanged
-  if (f === 'excel' && node.fuente_path) {
+  if (kind === 'audio' && src) {
+    return <AudioIntercept src={src} />;
+  }
+
+  if (kind === 'image' && src) {
+    return <img src={src} alt={node.label} className="poi-media-img" />;
+  }
+
+  if (kind === 'excel' && node.fuente_path) {
+    return <ExcelPreview path={node.fuente_path} />;
+  }
+
+  if ((kind === 'pdf' || kind === 'html') && src) {
+    // #toolbar=0 → oculta la barra gris del visor de PDF (ganamos espacio).
     return (
-      <div>
-        <ExcelPreview path={node.fuente_path} />
-        <button className="btn-secondary" style={{ marginTop: 6 }}
-          onClick={() => window.open(`/doc?p=${encodeURIComponent(node.fuente_path)}`, '_blank')}>
-          ↓ Descargar Excel
-        </button>
-      </div>
+      <iframe
+        src={kind === 'pdf' ? `${src}#toolbar=0&navpanes=0&view=FitH` : src}
+        title="Preview"
+        className="poi-media-frame"
+        style={{ background: '#fff' }}
+      />
     );
   }
 
-  // PDF, HTML, tesis → thumbnail + Rich Preview button
-  if ((f === 'pdf' || f === 'tesis' || f === 'html') && (node.fuente_path || node.fuente_url)) {
-    return (
-      <>
-        {showRich && richHtml && (
-          <RichPreviewModal node={node} html={richHtml} onClose={() => setShowRich(false)} />
-        )}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {node.fuente_url ? (
-            <div style={{ width: '100%', height: 550, overflow: 'hidden', paddingBottom: 12, borderRadius: 4, background: '#fff' }}>
-              <iframe src={node.fuente_url} title="Preview" style={{ width: '100%', height: '100%', display: 'block', border: 'none' }} />
-            </div>
-          ) : (
-            <div style={{ width: '100%', height: 550, overflow: 'hidden', paddingBottom: 12, borderRadius: 4, background: '#fff' }}>
-              <iframe src={`/doc?p=${encodeURIComponent(node.fuente_path)}#toolbar=0&navpanes=0&scrollbar=0`} title="Preview" style={{ width: '100%', height: '100%', display: 'block', border: 'none' }} />
-            </div>
-          )}
-          {f !== 'html' && (
-            <button onClick={loadRichPreview} disabled={loading} className="btn-secondary" style={{ borderColor: 'rgba(245,166,35,0.45)', color: '#f5a623' }}>
-              {loading ? '⟳ Generando apunte…' : '✦ Ver apunte IA'}
-            </button>
-          )}
-        </div>
-      </>
-    );
-  }
-
-  return <InitialsCanvas node={node} />;
+  return <FragmentFallback node={node} />;
 }
 
-function InitialsCanvas({ node }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    const canvas = ref.current; if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const color = clusterColor(node.cluster);
-    ctx.fillStyle = '#080c18'; ctx.fillRect(0, 0, 240, 140);
-    ctx.fillStyle = color;
-    ctx.font = "bold 56px 'Courier New', monospace";
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const ini = node.label.trim().split(/\s+/).slice(0, 2)
-      .map(w => w[0]?.toUpperCase() || '').join('') || '?';
-    ctx.fillText(ini, 120, 70);
-  }, [node]);
-  return <canvas ref={ref} width={240} height={140}
-    style={{ width: '100%', borderRadius: 4, display: 'block' }} />;
-}
+const FUENTE_ICONS = {
+  youtube: '▶ YOUTUBE', pdf: '⬡ PDF', tesis: '⬡ TESIS',
+  excel: '⊞ EXCEL', audio: '♫ AUDIO', html: '◈ WEB',
+  word: '⬡ WORD', concepto: '◈ CONCEPTO', video: '▶ VIDEO', image: '▣ IMAGEN',
+};
 
-const MIN_W = 300, MIN_H = 200, DEFAULT_W = 580;
+const MIN_W = 320, MIN_H = 220, DEFAULT_W = 600;
 
-export default function NodePanel({ node, allNodes, allLinks, onClose, onOpenAgent, onNavigate, onDelete, initialPos }) {
-  const color    = clusterColor(node.cluster);
+export default function NodePanel({
+  node, allNodes, allLinks, onClose, onOpenAgent, onOpenReport, onNavigate, onDelete,
+  initialPos, containerRef,
+}) {
+  const color    = CYAN;
   const isMobile = window.innerWidth < 900;
 
   const isDragging = useRef(false);
   const resizing   = useRef(null);
   const dragOffset = useRef({ x: 0, y: 0 });
-  const panelRef   = useRef(null);
+  const internalRef = useRef(null);
+  const panelRef   = containerRef || internalRef; // compartido con el conector
 
   const [pos,  setPos]  = useState(initialPos || { x: 60, y: 80 });
   const [size, setSize] = useState({ w: null, h: null });
+
+  // Apunte IA (rich-preview)
+  const [richHtml, setRichHtml]       = useState(null);
+  const [loadingRich, setLoadingRich] = useState(false);
+  const [showRich, setShowRich]       = useState(false);
+  const kind = mediaKind(node);
+  const canRich = (kind === 'pdf' || kind === 'html');
+  const loadRich = useCallback(async () => {
+    if (richHtml) { setShowRich(true); return; }
+    setLoadingRich(true);
+    try {
+      const r = await fetch(`/api/node/${node.id}/rich-preview`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const html = await r.text();
+      setRichHtml(html); setShowRich(true);
+    } catch (e) { console.error('Rich preview error:', e); }
+    finally { setLoadingRich(false); }
+  }, [node.id, richHtml]);
 
   const onMouseDownDrag = useCallback(e => {
     if (isMobile) return;
@@ -189,7 +259,7 @@ export default function NodePanel({ node, allNodes, allLinks, onClose, onOpenAge
     const rect = panelRef.current.getBoundingClientRect();
     resizing.current = { edge, startX: e.clientX, startY: e.clientY,
       startW: rect.width, startH: rect.height, startLeft: rect.left };
-  }, []);
+  }, [panelRef]);
 
   useEffect(() => {
     const onMove = e => {
@@ -222,7 +292,7 @@ export default function NodePanel({ node, allNodes, allLinks, onClose, onOpenAge
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup',  onUp);
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-  }, []);
+  }, [panelRef]);
 
   const connected = allLinks
     .filter(l => {
@@ -236,7 +306,7 @@ export default function NodePanel({ node, allNodes, allLinks, onClose, onOpenAge
     }).filter(Boolean);
 
   const currentW = size.w || (isMobile ? window.innerWidth : DEFAULT_W);
-  const isTwoCol = !isMobile && currentW >= 480;
+  const isTwoCol = !isMobile && currentW >= 500;
 
   const panelStyle = isMobile ? {} : {
     left: pos.x, top: pos.y,
@@ -244,10 +314,17 @@ export default function NodePanel({ node, allNodes, allLinks, onClose, onOpenAge
     ...(size.h ? { height: size.h, maxHeight: 'none' } : {}),
   };
 
+  const url = fileUrl(node);
+  const openLarge = () => {
+    const target = url || node.fuente_url || (node.fuente_path ? `/doc?p=${encodeURIComponent(node.fuente_path)}` : null);
+    if (target) window.open(target, '_blank');
+  };
+  const hasFile = Boolean(url || node.fuente_url);
+
   return (
     <aside
       ref={panelRef}
-      className={`node-tooltip${isMobile ? ' mobile' : ''}${isTwoCol ? ' two-col' : ''}`}
+      className={`node-tooltip poi-panel${isMobile ? ' mobile' : ''}${isTwoCol ? ' two-col' : ''}`}
       style={panelStyle}
     >
       {/* Resize handles */}
@@ -257,32 +334,37 @@ export default function NodePanel({ node, allNodes, allLinks, onClose, onOpenAge
         <div className="rh rh--bottom" onMouseDown={e => onResizeStart(e, 'bottom')} />
       </>}
 
-      {/* Drag header */}
-      <div className="tooltip-header" onMouseDown={onMouseDownDrag}
-        style={{ borderColor: color + '33', cursor: isMobile ? 'default' : 'grab' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-          <span className="tooltip-badge" style={{ color, borderColor: color + '55', flexShrink: 0 }}>
-            {(node.fuente || 'concepto').toUpperCase()}
-          </span>
-          <span className="panel-title" style={{ color, fontSize: 13 }}>{node.label}</span>
+      {/* Header técnico mono (estilo etiqueta clasificada) */}
+      <div className="tooltip-header poi-header" onMouseDown={onMouseDownDrag}
+        style={{ cursor: isMobile ? 'default' : 'grab' }}>
+        <div className="poi-header-l">
+          <span className="poi-tag">{(FUENTE_ICONS[node.fuente] || '◈ CONCEPTO')}</span>
+          <span className="poi-title">{node.label}</span>
         </div>
         <button className="panel-close" onClick={onClose}>✕</button>
+      </div>
+      <div className="poi-stripes" />
+      <div className="poi-status">
+        <span className="poi-status-blink">●</span> SEARCHING ARCHIVES · NODE {String(node.id).slice(0, 20)}
       </div>
 
       {/* Body */}
       <div className={`tooltip-body${isTwoCol ? ' tooltip-body-grid' : ''}`}>
 
         <div className="tooltip-col-left">
-          <div className="panel-thumb"><ContentPreview node={node} /></div>
-          {(node.fuente_path || node.fuente_url) && (
-            <button className="btn-secondary" style={{ marginTop: 8 }}
-              onClick={() => {
-                const url = node.fuente_url
-                  ? node.fuente_url
-                  : `/doc?p=${encodeURIComponent(node.fuente_path)}`;
-                window.open(url, '_blank');
-              }}>
-              → Ver fuente
+          {/* Preview redimensionable: arrastrá la esquina inferior-derecha. */}
+          <div className="poi-preview">
+            <ContentPreview node={node} />
+            {hasFile && (
+              <button className="poi-expand" title="Abrir en grande" onClick={openLarge}>⤢</button>
+            )}
+          </div>
+          {showRich && richHtml && (
+            <RichPreviewModal node={node} html={richHtml} onClose={() => setShowRich(false)} />
+          )}
+          {canRich && (
+            <button className="btn-secondary poi-btn" onClick={loadRich} disabled={loadingRich}>
+              {loadingRich ? '⟳ GENERANDO APUNTE…' : '✦ APUNTE IA'}
             </button>
           )}
         </div>
@@ -326,14 +408,19 @@ export default function NodePanel({ node, allNodes, allLinks, onClose, onOpenAge
           <div className="panel-actions" style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 6 }}>
             <button className="btn-primary" style={{ borderColor: color, color }}
               onClick={() => onOpenAgent(node)}>
-              ⬡ Preguntar al agente
+              ⬡ PREGUNTAR AL AGENTE
             </button>
+            {onOpenReport && (
+              <button className="btn-secondary poi-btn" onClick={() => onOpenReport(node)}>
+                ▤ INFORME
+              </button>
+            )}
             <div style={{ borderTop: '1px solid rgba(90,110,160,0.12)', marginTop: 2 }} />
             <button className="btn-secondary" style={{ borderColor: '#ff606033', color: '#ff6060aa', fontSize: 10, minHeight: 34, opacity: 0.75 }}
               onClick={() => {
                 if (window.confirm(`¿Eliminar "${node.label}" del grafo?`)) onDelete?.(node.id);
               }}>
-              ✕ Eliminar nodo
+              ✕ ELIMINAR NODO
             </button>
           </div>
         </div>
