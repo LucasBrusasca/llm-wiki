@@ -17,6 +17,9 @@ edges_generated.json
 *.sqlite3
 *.db
 
+# Modelos / artefactos generados por el pipeline (se regeneran)
+*.pkl
+
 # OS
 .DS_Store
 Thumbs.db
