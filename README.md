@@ -40,48 +40,61 @@ From there you can:
 ## Setup
 
 ### Prerequisites
-- Python 3.10+
-- Node.js 18+
-- Ollama (if running local models) — `ollama pull qwen3.5:27b`
+- **Docker + Docker Compose** (recommended), *or* Python 3.10+ and Node.js 18+ for the manual setup
+- An LLM provider: a **Gemini** or **Anthropic** API key, *or* **Ollama** running locally
 
-### 1. Clone and configure
+### Clone and configure
 
 ```bash
 git clone https://github.com/LucasBrusasca/llm-wiki.git
 cd llm-wiki
-cp .env.example .env
+cp .env.example .env          # then edit .env (see below)
 ```
 
 Edit `.env`:
 
 ```env
-# Choose your LLM provider: 'anthropic', 'gemini', or 'ollama'
-LLM_PROVIDER=ollama
-LLM_MODEL=qwen3.5:27b
-OLLAMA_URL=http://localhost:11434/v1/chat/completions
+# Choose your LLM provider: 'gemini', 'anthropic', or 'ollama'
+LLM_PROVIDER=gemini
+LLM_MODEL=gemini-2.5-flash
 
 # API keys — only needed for cloud providers
+GEMINI_API_KEY=your_key_here
 ANTHROPIC_API_KEY=
-GEMINI_API_KEY=
+
+# For local Ollama instead:
+# LLM_PROVIDER=ollama
+# LLM_MODEL=qwen3.5:27b
+# OLLAMA_URL=http://localhost:11434/v1/chat/completions
 ```
 
-### 2. Backend
+### Option A — Docker (recommended)
 
 ```bash
+./start.sh           # Linux / macOS
+```
+
+On Windows, just **double-click `start.bat`**. Either one runs `docker compose up -d`
+(Postgres + pgvector, FastAPI backend, Vite frontend) and opens
+**http://localhost:5173** when it's ready.
+
+> If you use a local Ollama running on the host, the backend reaches it through
+> `host.docker.internal` — already wired in `docker-compose.yml`.
+
+To stop everything: `docker compose down`.
+
+### Option B — Manual (without Docker)
+
+```bash
+# Backend
 pip install -r requirements-fastapi.txt
-python main.py
-# → http://localhost:8000
+python main.py                       # → http://localhost:8000
+
+# Frontend (in another terminal)
+cd frontend && npm install && npm run dev   # → http://localhost:5173
 ```
 
-### 3. Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-### 4. First run
+### First run
 
 Open `http://localhost:5173`, click **Biblioteca**, and drop in a PDF or paste a YouTube URL. The system will:
 1. Extract text and send it to the LLM
@@ -150,7 +163,14 @@ React 3D graph
 
 ---
 
-## Local LLM recommendations (no GPU)
+## LLM provider notes
+
+**On a machine without a dedicated GPU, the cloud providers (Gemini / Anthropic) are
+by far the smoothest** — a 27B local model runs at a few tokens/sec on CPU, which makes
+ingestion slow. The app handles transient provider errors (429 rate-limit, 503) with
+automatic retry + backoff. Use Ollama when you want fully offline/local processing.
+
+### Local models (Ollama, no GPU)
 
 Tested on Intel Core Ultra 9 185H, 32GB RAM:
 
