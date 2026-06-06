@@ -238,5 +238,5 @@ The thesis explores multi-silo RAG systems with epistemic veto mechanisms. Pragm
 ## Author
 
 **Lucas Brusasca**  
-Data & AI — Caminos de las Sierras, Córdoba, Argentina  
+Data & AI — Córdoba, Argentina  
 [LinkedIn](https://linkedin.com/in/lucasbrusasca) · [GitHub](https://github.com/LucasBrusasca)
