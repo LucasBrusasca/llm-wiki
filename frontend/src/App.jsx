@@ -107,7 +107,13 @@ export default function App() {
     fetch('/api/graph')
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(data => { setGraphData(buildGraphData(data)); setLoading(false); })
-      .catch(() => { setFetchError(true); setLoading(false); });
+      .catch(() => {
+        // Sin backend (ej. GitHub Pages): cargar el snapshot estático de demo.
+        fetch(`${import.meta.env.BASE_URL}demo-graph.json`)
+          .then(r => { if (!r.ok) throw new Error('no demo'); return r.json(); })
+          .then(data => { setGraphData(buildGraphData(data)); setLoading(false); })
+          .catch(() => { setFetchError(true); setLoading(false); });
+      });
   }, []);
 
   useEffect(() => { loadGraph(); }, [loadGraph]);

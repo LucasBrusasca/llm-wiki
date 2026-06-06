@@ -9,6 +9,9 @@ import react from '@vitejs/plugin-react';
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
 
 export default defineConfig({
+  // Para GitHub Pages el sitio vive en /llm-wiki/. El build de Pages setea GH_PAGES=true;
+  // en Docker/local queda en '/' (no afecta el dev normal).
+  base: process.env.GH_PAGES === 'true' ? '/llm-wiki/' : '/',
   plugins: [react()],
   server: {
     host: true,
