@@ -8,15 +8,36 @@ UMAP_MODEL_PATH = BASE / "umap_model.pkl"
 
 
 def main():
-    path = BASE / "nodes_generated.json"
-    if not path.exists():
-        print(f"No se encontró {path}")
-        return
+    from database.connection import get_sync_session
+    from database.models import Node as NodeModel
 
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    # ── Leer nodos desde DB ──
+    with get_sync_session() as session:
+        nodos_db = session.query(NodeModel).filter(
+            NodeModel.embedding.isnot(None),
+            NodeModel.is_centroid == False,
+        ).all()
 
-    nodos = data["nodos"]
+        if len(nodos_db) < 3:
+            print(f"Solo {len(nodos_db)} nodos con embedding. "
+                  f"Necesitás al menos 3 para calcular coordenadas.")
+            return
+
+        nodos = []
+        for n in nodos_db:
+            emb = n.embedding
+            if hasattr(emb, "tolist"):
+                emb = emb.tolist()
+            nodos.append({
+                "id":      n.id,
+                "label":   n.label,
+                "embedding": emb,
+                "cluster": n.cluster if n.cluster is not None else -1,
+                "x3d":     n.x3d,
+                "y3d":     n.y3d,
+                "z3d":     n.z3d,
+            })
+
     nodos_con_emb = [n for n in nodos if n.get("embedding")]
 
     # Validar compatibilidad de embeddings (768d vs 384d)
@@ -34,11 +55,10 @@ def main():
 
     if len(nodos_con_emb) < 3:
         print(f"Solo {len(nodos_con_emb)} nodos con embedding. Necesitás al menos 3.")
-        print("Corré primero: python processor.py <archivo>")
         return
 
-    # Separar nodos que ya tienen coordenadas 3D de los nuevos
-    nodos_nuevos   = [n for n in nodos_con_emb if n.get("x3d") is None]
+    # ── Pipeline UMAP/HDBSCAN existente — SIN CAMBIOS ──
+    nodos_nuevos     = [n for n in nodos_con_emb if n.get("x3d") is None]
     nodos_existentes = [n for n in nodos_con_emb if n.get("x3d") is not None]
 
     import umap
@@ -108,22 +128,59 @@ def main():
     for nodo, label in zip(nodos_para_hdbscan, labels):
         nodo["cluster"] = int(label)
 
-    # Nodos sin embedding
-    for nodo in nodos:
-        if not nodo.get("embedding"):
-            nodo.setdefault("x3d", 0.0)
-            nodo.setdefault("y3d", 0.0)
-            nodo.setdefault("z3d", 0.0)
-            nodo.setdefault("cluster", -1)
+    # ── Calcular PCA 3D ──
+    embeddings_array = np.array([
+        n["embedding"] for n in nodos_con_emb
+        if n.get("embedding") and len(n["embedding"]) > 0
+    ])
+    nodos_con_emb_pca = [
+        n for n in nodos_con_emb
+        if n.get("embedding") and len(n["embedding"]) > 0
+    ]
 
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    if len(embeddings_array) >= 3:
+        from sklearn.decomposition import PCA
+        pca = PCA(n_components=3, random_state=42)
+        pca_coords = pca.fit_transform(embeddings_array)
+
+        for axis in range(3):
+            col = pca_coords[:, axis]
+            mn, mx = col.min(), col.max()
+            if mx > mn:
+                pca_coords[:, axis] = 2 * (col - mn) / (mx - mn) - 1
+            else:
+                pca_coords[:, axis] = 0.0
+
+        for idx, n in enumerate(nodos_con_emb_pca):
+            n["x_pca"] = float(pca_coords[idx, 0])
+            n["y_pca"] = float(pca_coords[idx, 1])
+            n["z_pca"] = float(pca_coords[idx, 2])
+    else:
+        for n in nodos_con_emb_pca:
+            n["x_pca"] = n.get("x3d", 0.0)
+            n["y_pca"] = n.get("y3d", 0.0)
+            n["z_pca"] = n.get("z3d", 0.0)
+
+    # ── Guardar coordenadas en DB ──
+    with get_sync_session() as session:
+        for n in nodos:
+            session.query(NodeModel).filter(
+                NodeModel.id == n["id"]
+            ).update({
+                "x3d":     n.get("x3d"),
+                "y3d":     n.get("y3d"),
+                "z3d":     n.get("z3d"),
+                "x_pca":   n.get("x_pca"),
+                "y_pca":   n.get("y_pca"),
+                "z_pca":   n.get("z_pca"),
+                "cluster": n.get("cluster", -1),
+            })
+        session.commit()
 
     n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
     n_ruido = sum(1 for l in labels if l == -1)
-    print(f"✓ {len(nodos_nuevos) if nodos_existentes else len(nodos_con_emb)} nodos proyectados")
+    print(f"✓ Coordenadas UMAP y PCA actualizadas para {len(nodos)} nodos")
     print(f"✓ {n_clusters} clusters, {n_ruido} nodos sin cluster")
-    print(f"✓ Guardado en {path}")
 
 
 if __name__ == "__main__":

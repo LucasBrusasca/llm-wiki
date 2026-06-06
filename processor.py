@@ -82,6 +82,41 @@ def extraer_texto_pdf(ruta_pdf):
         print(f"Error al extraer texto del PDF: {e}")
         return ""
 
+def _post_llm_chat(url, payload, headers, timeout, retries=6):
+    """POST a un endpoint OpenAI-compatible con reintentos + backoff ante sobrecarga
+    transitoria del proveedor (429 rate-limit por minuto, 5xx como el 503 de Gemini)
+    y errores de transporte. Respeta el header Retry-After si el servidor lo manda.
+    Evita que los límites de cuota del free tier rompan la ingesta."""
+    import time
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(url, json=payload, headers=headers)
+            if resp.status_code in (429, 500, 502, 503, 504) and attempt < retries - 1:
+                # Respetar Retry-After (segundos) si viene; si no, backoff exponencial.
+                retry_after = resp.headers.get("retry-after")
+                try:
+                    wait = float(retry_after) if retry_after else 0
+                except ValueError:
+                    wait = 0
+                # 429 (cuota por minuto) necesita esperas largas; cap 35s.
+                wait = max(wait, min(2 ** attempt, 35) if resp.status_code == 429 else min(2 ** attempt, 8))
+                print(f"[LLM] {resp.status_code} transitorio → espero {wait:.0f}s y reintento ({attempt + 1}/{retries - 1})…")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except (httpx.TransportError, httpx.TimeoutException) as e:
+            last_exc = e
+            if attempt < retries - 1:
+                time.sleep(min(2 ** attempt, 8))
+                continue
+            raise
+    if last_exc:
+        raise last_exc
+
+
 def query_llm(messages: list, system: str = None) -> str:
     provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
     model = os.getenv("LLM_MODEL", "").strip()
@@ -103,24 +138,32 @@ def query_llm(messages: list, system: str = None) -> str:
                         text_content += block["text"]
                 content = text_content
             payload_messages.append({"role": msg["role"], "content": content})
-            
+
+        # Modelos Qwen3 (p.ej. qwen3.5:27b) traen "thinking" activado: generan cientos
+        # de tokens de razonamiento antes de responder → impracticablemente lento en
+        # hardware modesto. El soft-switch /no_think lo desactiva y acelera ~10x.
+        if "qwen3" in model.lower():
+            for m in reversed(payload_messages):
+                if m["role"] == "user":
+                    m["content"] = f"{m['content']}\n\n/no_think"
+                    break
+
         payload = {
             "model": model,
             "messages": payload_messages,
             "temperature": 0.1
         }
-        with httpx.Client(timeout=300.0) as client:
-            resp = client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            return strip_thinking(data["choices"][0]["message"]["content"])
+        data = _post_llm_chat(url, payload, headers, httpx.Timeout(900.0, connect=10.0))
+        return strip_thinking(data["choices"][0]["message"]["content"])
 
     elif provider == "gemini":
         if not model:
-            model = "gemini-1.5-flash"
+            model = "gemini-2.5-flash"
         api_key = os.getenv("GEMINI_API_KEY", "")
-        url = f"https://generativelanguage.googleapis.com/v1beta/chat/completions?key={api_key}"
-        headers = {"Content-Type": "application/json"}
+        # Capa de compatibilidad OpenAI de Google (NO el endpoint nativo generateContent).
+        # Path correcto: /v1beta/openai/chat/completions con auth Bearer.
+        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
         payload_messages = []
         if system:
             payload_messages.append({"role": "system", "content": system})
@@ -133,17 +176,23 @@ def query_llm(messages: list, system: str = None) -> str:
                         text_content += block["text"]
                 content = text_content
             payload_messages.append({"role": msg["role"], "content": content})
-            
+
+        # Modelos Qwen3 (p.ej. qwen3.5:27b) traen "thinking" activado: generan cientos
+        # de tokens de razonamiento antes de responder → impracticablemente lento en
+        # hardware modesto. El soft-switch /no_think lo desactiva y acelera ~10x.
+        if "qwen3" in model.lower():
+            for m in reversed(payload_messages):
+                if m["role"] == "user":
+                    m["content"] = f"{m['content']}\n\n/no_think"
+                    break
+
         payload = {
             "model": model,
             "messages": payload_messages,
             "temperature": 0.1
         }
-        with httpx.Client(timeout=300.0) as client:
-            resp = client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            return strip_thinking(data["choices"][0]["message"]["content"])
+        data = _post_llm_chat(url, payload, headers, httpx.Timeout(900.0, connect=10.0))
+        return strip_thinking(data["choices"][0]["message"]["content"])
 
     else:
         # Default: Anthropic
@@ -456,40 +505,117 @@ def _conceptos_overlap(ca_list, cb_list):
 
 
 def _auto_relaciones(nodos):
-    """Crea relaciones entre nodos si comparten conceptos o similitud semántica ≥ 0.38."""
+    """
+    Genera relaciones con metadata semántica completa.
+    Cada relación incluye score, shared_concepts, label y description.
+    Sin llamadas al LLM — todo determinístico.
+    """
     rels, pares = [], set()
+
     for i, a in enumerate(nodos):
+        if a.get("is_centroid"):
+            continue
         for b in nodos[i+1:]:
-            comparten = _conceptos_overlap(a.get('conceptos', []), b.get('conceptos', []))
-            sim = calcular_similitud_coseno(a.get('embedding'), b.get('embedding'))
-            if comparten or sim >= 0.38:
-                key = (a['id'], b['id'])
-                if key not in pares:
-                    rels.append({"source": a['id'], "target": b['id']})
-                    pares.add(key)
+            if b.get("is_centroid"):
+                continue
+
+            ca = [c.lower() for c in a.get("conceptos", [])]
+            cb = [c.lower() for c in b.get("conceptos", [])]
+
+            # Conceptos compartidos: exact match + substring match
+            exact = set(ca) & set(cb)
+            partial = set()
+            for x in ca:
+                for y in cb:
+                    if x in exact or y in exact:
+                        continue
+                    if len(x) >= 4 and len(y) >= 4:
+                        if x in y or y in x:
+                            partial.add(x if len(x) <= len(y) else y)
+            shared = list(exact | partial)
+
+            sim = calcular_similitud_coseno(
+                a.get("embedding"), b.get("embedding")
+            )
+            sim = round(sim, 2) if sim else 0.0
+            comparten = len(shared) >= 2
+
+            if not (comparten or sim >= 0.38):
+                continue
+
+            key = (a["id"], b["id"])
+            if key in pares:
+                continue
+            pares.add(key)
+
+            # Label determinístico por reglas de prioridad
+            if sim >= 0.75:
+                label = "COMPLEMENTA_A"
+            elif sim >= 0.55 and comparten:
+                label = "PROFUNDIZA_EN"
+            elif sim >= 0.38 and comparten:
+                label = "RELACIONADO_CON"
+            elif comparten:
+                label = "COMPARTE_CONCEPTOS_CON"
+            else:
+                label = "SEMANTICAMENTE_SIMILAR_A"
+
+            # Description automática
+            if shared:
+                nombres = ", ".join(shared[:5])
+                description = (
+                    f"Comparten {len(shared)} conceptos ({nombres}) "
+                    f"con similitud semántica del {int(sim * 100)}%."
+                )
+            else:
+                description = f"Similitud semántica del {int(sim * 100)}%."
+
+            rels.append({
+                "source":          a["id"],
+                "target":          b["id"],
+                "score":           sim,
+                "shared_concepts": shared,
+                "label":           label,
+                "description":     description,
+            })
+
     return rels
 
 
-def acumular_resultado(nuevo):
-    BASE = Path(__file__).parent.resolve()
-    salida = BASE / "nodes_generated.json"
-    if salida.exists():
-        with open(salida, "r", encoding="utf-8") as f:
-            base = json.load(f)
-    else:
-        base = {"nodos": [], "relaciones": []}
+def acumular_resultado(nuevo: dict) -> dict:
+    """
+    Wrapper de compatibilidad. Guarda nodos en PostgreSQL
+    y recalcula relaciones. Retorna el dict original.
+    """
+    try:
+        from main import _save_node_sync
+        for nodo in nuevo.get("nodos", []):
+            _save_node_sync(nodo)
+    except Exception as e:
+        print(f"Warning acumular_resultado: {e}")
+    return nuevo
 
-    idx = {n["id"]: i for i, n in enumerate(base["nodos"])}
-    for nodo in nuevo["nodos"]:
-        if nodo["id"] in idx:
-            base["nodos"][idx[nodo["id"]]] = nodo
-        else:
-            base["nodos"].append(nodo)
-            idx[nodo["id"]] = len(base["nodos"]) - 1
 
-    # Regenerar relaciones automáticas basadas en conceptos compartidos y similitud de coseno
-    base["relaciones"] = _auto_relaciones(base["nodos"])
-    return base
+def _get_all_nodes_sync() -> list[dict]:
+    """Lee todos los nodos no-centroide de la DB de forma síncrona."""
+    from database.connection import get_sync_session
+    from database.models import Node as NodeModel
+    with get_sync_session() as session:
+        nodes = session.query(NodeModel).filter(
+            NodeModel.is_centroid == False
+        ).all()
+        result = []
+        for n in nodes:
+            emb = n.embedding
+            if hasattr(emb, 'tolist'):
+                emb = emb.tolist()
+            result.append({
+                "id": n.id, "label": n.label,
+                "conceptos": n.conceptos or [],
+                "embedding": emb,
+                "is_centroid": False,
+            })
+        return result
 
 
 def main():
@@ -511,15 +637,8 @@ def main():
     else:
         resultado = procesar_pdf(entrada)
 
-    acumulado = acumular_resultado(resultado)
-
-    BASE = Path(__file__).parent.resolve()
-    salida = BASE / "nodes_generated.json"
-    with open(salida, "w", encoding="utf-8") as f:
-        json.dump(acumulado, f, ensure_ascii=False, indent=2)
-
-    print(f"✓ Nodo agregado. Total: {len(acumulado['nodos'])} nodos, {len(acumulado['relaciones'])} relaciones")
-    print(f"✓ Guardado en: {salida}")
+    acumular_resultado(resultado)
+    print(f"✓ Nodo guardado en DB")
 
 
 def generar_rich_html(node, nodos, relaciones) -> str:

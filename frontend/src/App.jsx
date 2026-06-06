@@ -9,14 +9,15 @@ import SynthesisPanel from './components/SynthesisPanel.jsx';
 import IssuePanel from './components/IssuePanel.jsx';
 import Footer from './components/Footer.jsx';
 
+// Paleta azul marino tecnológica — azules / cianes, sin ámbar.
 export const CLUSTER_PALETTE = [
-  '#f5a623','#00c8e8','#7a9fff','#00e8a0','#ff6060',
-  '#c87aff','#ff9040','#40ffc0','#a080ff','#ff4090',
-  '#ffe040','#40e0ff','#80ff80','#ff8080','#8080ff',
+  '#4a90d9','#00d4ff','#5fa8e8','#2f6fb0','#7ec8f0',
+  '#3b82c4','#26b6e6','#8fd4f5','#1f5f9e','#5cc4e0',
+  '#6aa7e0','#13a0d8','#a0d8f0','#2a78bd','#48b4e2',
 ];
 
 export function clusterColor(cluster) {
-  if (cluster === undefined || cluster === null || cluster < 0) return '#8a90aa';
+  if (cluster === undefined || cluster === null || cluster < 0) return '#5a7a9a';
   return CLUSTER_PALETTE[cluster % CLUSTER_PALETTE.length];
 }
 
@@ -42,7 +43,14 @@ function buildGraphData(data) {
     }
     return base;
   });
-  const links = (data.relaciones || []).map(l => ({ source: l.source, target: l.target }));
+  const links = (data.relaciones || []).map(l => ({
+    source: l.source,
+    target: l.target,
+    score: l.score,
+    label: l.label,
+    shared_concepts: l.shared_concepts,
+    description: l.description,
+  }));
   return { nodes, links };
 }
 
@@ -73,6 +81,8 @@ export default function App() {
 
   const hoverTimer = useRef(null);
   const searchTimer = useRef(null);
+  const projectRef = useRef(null);   // proyección 3D→pantalla (la setea Graph3D)
+  const panelElRef = useRef(null);   // elemento del NodePanel (para el conector)
 
   const handleSearchChange = useCallback(e => {
     const q = e.target.value;
@@ -142,7 +152,15 @@ export default function App() {
       x: Math.min(Math.max(cx - W / 2, 8), vw - W - 8),
       y: Math.min(Math.max(cy - 60, 56), vh - H - 40),
     });
-    setSelectedLink({ nodeA, nodeB });
+    setSelectedLink({
+      nodeA, nodeB,
+      linkMeta: {
+        score: link.score,
+        label: link.label,
+        shared_concepts: link.shared_concepts,
+        description: link.description,
+      },
+    });
     setFixedNode(null);
     setHoverNode(null);
     setAgentOpen(false);
@@ -160,13 +178,13 @@ export default function App() {
       });
       return;
     }
-    const vw = window.innerWidth, vh = window.innerHeight;
-    const W = window.innerWidth >= 900 ? 580 : 340, H = 500;
-    const cx = event?.clientX ?? vw / 2;
-    const cy = event?.clientY ?? vh / 2;
+    // Posición consistente y siempre visible (zona derecha, debajo del header).
+    // En desktop el panel es two-col (~850px); uso ese ancho real para que entre completo.
+    const vw = window.innerWidth;
+    const W = vw >= 900 ? 850 : Math.min(vw - 24, 360);
     setTooltipPos({
-      x: Math.min(cx + 16, vw - W - 8),
-      y: Math.min(Math.max(cy - 30, 56), vh - H - 100),
+      x: Math.max(16, vw - W - 24),
+      y: 84,
     });
     setFixedNode(node);
     setHoverNode(null);
@@ -259,7 +277,7 @@ export default function App() {
     <div className="app">
       <header className="header">
         <div className="header-brand">
-          <span className="header-brand-icon">⬡</span>
+          <span className="header-brand-icon">◈</span>
           <span>PRAGMAFORGE</span>
         </div>
         <input
@@ -332,6 +350,7 @@ export default function App() {
         onLinkClick={handleLinkClick}
         synthMode={synthMode}
         layoutMode={layoutMode}
+        projectRef={projectRef}
       />
 
       {/* Layout Mode Selector */}
@@ -340,6 +359,7 @@ export default function App() {
           { id: 'density',    icon: '⊞', label: 'Densidad',   tip: 'Agrupa nodos por cluster semántico. Cada grupo compacto comparte temas similares.' },
           { id: 'components', icon: '⬡', label: 'UMAP',       tip: 'Reducción dimensional del espacio de embeddings. La distancia entre nodos refleja similitud semántica real.' },
           { id: 'centroid',   icon: '⊙', label: 'Centroides', tip: 'Disposición radial: los nodos más similares al centroide global van al centro; los más distantes, a la periferia.' },
+          { id: 'pca',        icon: '⊕', label: 'PCA',        tip: 'Proyección por componentes principales. Muestra la máxima varianza semántica del grafo.' },
         ].map(({ id, icon, label, tip }) => (
           <div key={id} className="layout-btn-wrap">
             <button
@@ -355,19 +375,22 @@ export default function App() {
       </div>
 
       {activeNode && !agentOpen && !reportOpen && !synthMode && !globalAgent && (
-        <NodePanel
-          key={activeNode.id}
-          node={activeNode}
-          allNodes={graphData.nodes}
-          allLinks={graphData.links}
-          onClose={handleClosePanel}
-          onOpenAgent={handleOpenAgent}
-          onOpenReport={handleOpenReport}
-          onNavigate={node => { setFixedNode(node); setHoverNode(null); setReportOpen(false); }}
-          onDelete={handleDeleteNode}
-          initialPos={tooltipPos}
-          fixed={isFixed}
-        />
+        <>
+          <NodePanel
+            key={activeNode.id}
+            node={activeNode}
+            allNodes={graphData.nodes}
+            allLinks={graphData.links}
+            onClose={handleClosePanel}
+            onOpenAgent={handleOpenAgent}
+            onOpenReport={handleOpenReport}
+            onNavigate={node => { setFixedNode(node); setHoverNode(null); setReportOpen(false); }}
+            onDelete={handleDeleteNode}
+            initialPos={tooltipPos}
+            containerRef={panelElRef}
+            fixed={isFixed}
+          />
+        </>
       )}
 
       {fixedNode && agentOpen && !synthMode && (
@@ -398,6 +421,7 @@ export default function App() {
         <RelationPanel
           nodeA={selectedLink.nodeA}
           nodeB={selectedLink.nodeB}
+          linkMeta={selectedLink.linkMeta}
           onClose={() => { setSelectedLink(null); setHighlighted(new Set()); }}
           initialPos={tooltipPos}
           onOpenSynthesis={handleOpenSynthesisFromRelation}

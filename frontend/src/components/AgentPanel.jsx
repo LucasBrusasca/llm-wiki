@@ -1,11 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { marked } from 'marked';
-import { clusterColor } from '../App.jsx';
 
 marked.setOptions({ breaks: true, gfm: true });
 
 export default function AgentPanel({ node, allNodes, onClose, onHighlight }) {
-  const color   = node ? clusterColor(node.cluster) : '#f5a623';
+  const color   = '#00d4ff'; // cian, igual que el resto (Vigilados)
   const storageKey = `pragmaforge_agent_${node?.id || 'global'}`;
 
   const initialMsg = node
@@ -107,6 +106,10 @@ Respondé SIEMPRE en base a esta información sin decir que no podés acceder al
           <button className="panel-close" onClick={onClose}>✕</button>
         </div>
       </div>
+      <div className="poi-stripes" />
+      <div className="poi-status">
+        <span className="poi-status-blink">●</span> AGENT ONLINE · {node ? `NODE ${String(node.id).slice(0, 18)}` : 'GLOBAL'}
+      </div>
 
       <div className="agent-messages">
         {msgs.map((m, i) => (
@@ -127,7 +130,7 @@ Respondé SIEMPRE en base a esta información sin decir que no podés acceder al
           ref={inputRef}
           className="agent-input"
           value={input}
-          onChange={e => setInput(e.target.value)}
+          onChange={e => { setInput(e.target.value); if (e.target.value) onHighlight?.([]); }}
           onKeyDown={e => e.key === 'Enter' && send()}
           placeholder="Preguntá algo..."
           disabled={busy}

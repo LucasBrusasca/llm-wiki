@@ -109,7 +109,15 @@ function NodeCard({ node }) {
   );
 }
 
-export default function RelationPanel({ nodeA, nodeB, onClose, initialPos, onOpenSynthesis }) {
+const LABEL_STYLES = {
+  COMPLEMENTA_A:            { bg: 'rgba(0,255,136,0.15)',  border: '#00ff88', text: '#00ff88'  },
+  PROFUNDIZA_EN:            { bg: 'rgba(0,212,255,0.15)',  border: '#00d4ff', text: '#00d4ff'  },
+  RELACIONADO_CON:          { bg: 'rgba(255,149,0,0.15)',  border: '#ff9500', text: '#ff9500'  },
+  COMPARTE_CONCEPTOS_CON:   { bg: 'rgba(124,58,237,0.15)', border: '#7c3aed', text: '#c4b5fd' },
+  SEMANTICAMENTE_SIMILAR_A: { bg: 'rgba(90,122,154,0.15)', border: '#5a7a9a', text: '#5a7a9a' },
+};
+
+export default function RelationPanel({ nodeA, nodeB, linkMeta, onClose, initialPos, onOpenSynthesis }) {
   const [synth, setSynth]   = useState('');
   const [busy,  setBusy]    = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -230,6 +238,46 @@ Similitud: ${simPct ?? '?'}%. Temas comunes: ${overlap.join(', ') || 'similitud 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingTop: 44, color: '#3a3d4a', fontSize: 16 }}>⟷</div>
           <NodeCard node={nodeB} />
         </div>
+
+        {/* Edge metadata from DB */}
+        {linkMeta?.label && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {/* Label badge */}
+            {(() => {
+              const style = LABEL_STYLES[linkMeta.label] || LABEL_STYLES.SEMANTICAMENTE_SIMILAR_A;
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{
+                    background: style.bg, border: `1px solid ${style.border}`,
+                    color: style.text, padding: '3px 10px', borderRadius: 4,
+                    fontSize: 10, fontWeight: 700, letterSpacing: 1.2, fontFamily: 'monospace',
+                  }}>
+                    {linkMeta.label.replace(/_/g, ' ')}
+                  </span>
+                  {linkMeta.score != null && (
+                    <span style={{ fontSize: 10, fontFamily: 'monospace', color: '#8a9ab0' }}>
+                      SIMILITUD SEMÁNTICA: <span style={{ color: '#00d4ff', fontWeight: 700 }}>{Math.round(linkMeta.score * 100)}%</span>
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+            {/* Shared concepts pills */}
+            {linkMeta.shared_concepts?.length > 0 && (
+              <div className="panel-tags">
+                {linkMeta.shared_concepts.slice(0, 6).map(c => (
+                  <span key={c} className="panel-tag" style={{ fontSize: 9 }}>{c}</span>
+                ))}
+              </div>
+            )}
+            {/* Description */}
+            {linkMeta.description && (
+              <p style={{ fontSize: 10, color: '#7a7d8a', lineHeight: 1.6, margin: 0, fontStyle: 'italic' }}>
+                {linkMeta.description}
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Auto-explanation (no LLM) */}
         <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(90,110,160,0.15)', borderRadius: 4, padding: '10px 12px' }}>

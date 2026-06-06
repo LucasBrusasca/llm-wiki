@@ -9,7 +9,21 @@
       "Bash(python -c ' *)",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\([k for k in d.get\\('dependencies',{}\\) if 'd3' in k.lower\\(\\)]\\)\")",
       "Bash(python -c \"import json; d=json.load\\(open\\('package.json'\\)\\); [print\\(k,v\\) for k,v in d.get\\('dependencies',{}\\).items\\(\\)]\")",
-      "Bash(python -c \"import sys; lines=[l.strip\\(\\) for l in sys.stdin]; print\\([l for l in lines if 'd3' in l.lower\\(\\)]\\)\")"
+      "Bash(python -c \"import sys; lines=[l.strip\\(\\) for l in sys.stdin]; print\\([l for l in lines if 'd3' in l.lower\\(\\)]\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('main.py'\\).read\\(\\)\\); print\\('main.py OK'\\)\")",
+      "Bash(\"C:\\\\Users\\\\brusa\\\\LucasBrusasca\\\\Data_Science\\\\Python\\\\DSLucasBrusasca\\\\MagLucasBrusasca\\\\MagLucasBrusasca\\\\Scripts\\\\python.exe\" -m uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 120)",
+      "PowerShell(netstat -ano)",
+      "PowerShell(Get-Process -Id 42464 | Select-Object Id, ProcessName, CommandLine 2>$null; \\(Get-WmiObject Win32_Process -Filter \"ProcessId=42464\"\\).CommandLine)",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/api/graph\" -TimeoutSec 5; \"Status: $\\($r.StatusCode\\)\"; $r.Content.Substring\\(0, [Math]::Min\\(200, $r.Content.Length\\)\\) } catch { \"Error: $_\" })",
+      "Bash(curl -s http://localhost:8000/api/graph)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"http://localhost:8000/thumbnail?p=uploads%2F\")",
+      "Bash(python -c \"import json; d=json.load\\(open\\('nodes_generated.json'\\)\\); [print\\(n.get\\('fuente'\\), '|', n.get\\('fuente_path',''\\)[:60]\\) for n in d['nodos'][:10]]\")",
+      "Bash(python fix_paths.py)",
+      "Bash(\"C:\\\\Users\\\\brusa\\\\LucasBrusasca\\\\Data_Science\\\\Python\\\\DSLucasBrusasca\\\\MagLucasBrusasca\\\\MagLucasBrusasca\\\\Scripts\\\\python.exe\" -c \"import fitz; print\\('PyMuPDF OK:', fitz.__version__\\)\")",
+      "Bash(curl -s \"http://localhost:8000/thumbnail?p=uploads/Lost+in+the+Middle_+How+Language+Models+Use+Long+Contexts.pdf\" -o /tmp/test_thumb.jpg -w \"%{http_code}\")",
+      "Bash(dir \"c:\\\\Users\\\\brusa\\\\llm-wiki-local\" /b)",
+      "Bash(findstr /i \"env docker nginx\")",
+      "Bash(docker compose *)"
     ]
   }
 }
