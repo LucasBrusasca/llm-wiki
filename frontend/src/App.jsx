@@ -10,10 +10,21 @@ import IssuePanel from './components/IssuePanel.jsx';
 import Footer from './components/Footer.jsx';
 
 // Paleta azul marino tecnológica — azules / cianes, sin ámbar.
+// Paleta CATEGÓRICA: tonos DISTINTOS (no todos azules) para diferenciar clusters.
+// Saturación media → legibles y elegantes sobre fondo casi negro, sin ser neón.
 export const CLUSTER_PALETTE = [
-  '#4a90d9','#00d4ff','#5fa8e8','#2f6fb0','#7ec8f0',
-  '#3b82c4','#26b6e6','#8fd4f5','#1f5f9e','#5cc4e0',
-  '#6aa7e0','#13a0d8','#a0d8f0','#2a78bd','#48b4e2',
+  '#5b9bd5', // azul
+  '#48c9b0', // teal
+  '#5fd38d', // verde
+  '#e8c35a', // ámbar
+  '#e8915a', // naranja
+  '#e87a6e', // coral
+  '#c98bd9', // violeta
+  '#f0a3b8', // rosa
+  '#8fcf6a', // lima
+  '#6ec6d8', // celeste-agua
+  '#d4a373', // tierra
+  '#9b8fce', // lavanda
 ];
 
 export function clusterColor(cluster) {
@@ -24,6 +35,28 @@ export function clusterColor(cluster) {
 export function ytId(url) {
   const m = url?.match(/(?:youtu\.be\/|v=|embed\/)([a-zA-Z0-9_-]{11})/);
   return m ? m[1] : null;
+}
+
+// Poda de relaciones: con umbral bajo casi todo se conecta (telaraña). Conservamos
+// por nodo sus K relaciones MÁS FUERTES (por score = similitud coseno). Una arista
+// sobrevive si está en el top-K de CUALQUIERA de sus dos extremos (unión) → el grafo
+// queda conectado pero limpio, mostrando solo las conexiones que valen.
+const LINKS_POR_NODO = 3;
+function pruneLinks(links, K = LINKS_POR_NODO) {
+  const byNode = new Map();
+  links.forEach(l => {
+    const s = l.score ?? 0;
+    for (const id of [l.source, l.target]) {
+      if (!byNode.has(id)) byNode.set(id, []);
+      byNode.get(id).push({ l, s });
+    }
+  });
+  const keep = new Set();
+  byNode.forEach(arr => {
+    arr.sort((a, b) => b.s - a.s);
+    arr.slice(0, K).forEach(({ l }) => keep.add(l));
+  });
+  return links.filter(l => keep.has(l));
 }
 
 function buildGraphData(data) {
@@ -51,7 +84,7 @@ function buildGraphData(data) {
     shared_concepts: l.shared_concepts,
     description: l.description,
   }));
-  return { nodes, links };
+  return { nodes, links: pruneLinks(links) };
 }
 
 const isTouchDevice = () =>
@@ -78,6 +111,8 @@ export default function App() {
   const [libraryOpen, setLibraryOpen]   = useState(false);
   const [issueOpen, setIssueOpen]       = useState(false);
   const [layoutMode, setLayoutMode]     = useState('components');
+  const [focusTrigger, setFocusTrigger] = useState(0);  // botón "enfocar" del panel
+  const [fitTrigger, setFitTrigger]     = useState(0);  // botón "ver todo" (desenfocar)
 
   const hoverTimer = useRef(null);
   const searchTimer = useRef(null);
@@ -269,6 +304,7 @@ export default function App() {
     const keyword = new Set(graphData.nodes
       .filter(n =>
         n.label.toLowerCase().includes(searchQ) ||
+        (n.autor || '').toLowerCase().includes(searchQ) ||
         (n.desc || '').toLowerCase().includes(searchQ) ||
         (n.fragmento || '').toLowerCase().includes(searchQ) ||
         (n.conceptos || []).some(c => c.toLowerCase().includes(searchQ))
@@ -321,6 +357,8 @@ export default function App() {
           >
             ◈ Síntesis
           </button>
+          <button className="btn-reload" onClick={() => setFitTrigger(t => t + 1)}
+            title="Ver todo (desenfocar / volver a la vista general)">⊡</button>
           <button className="btn-reload" onClick={loadGraph} title="Recargar">↺</button>
           <button className="btn-reload" title="Recalcular relaciones"
             onClick={async () => { await fetch('/api/recompute-relations', { method: 'POST' }); loadGraph(); }}>
@@ -357,15 +395,15 @@ export default function App() {
         synthMode={synthMode}
         layoutMode={layoutMode}
         projectRef={projectRef}
+        focusTrigger={focusTrigger}
+        fitTrigger={fitTrigger}
       />
 
       {/* Layout Mode Selector */}
       <div className="layout-controls">
         {[
-          { id: 'density',    icon: '⊞', label: 'Densidad',   tip: 'Agrupa nodos por cluster semántico. Cada grupo compacto comparte temas similares.' },
-          { id: 'components', icon: '⬡', label: 'UMAP',       tip: 'Reducción dimensional del espacio de embeddings. La distancia entre nodos refleja similitud semántica real.' },
-          { id: 'centroid',   icon: '⊙', label: 'Centroides', tip: 'Disposición radial: los nodos más similares al centroide global van al centro; los más distantes, a la periferia.' },
-          { id: 'pca',        icon: '⊕', label: 'PCA',        tip: 'Proyección por componentes principales. Muestra la máxima varianza semántica del grafo.' },
+          { id: 'density',    icon: '⊞', label: 'Densidad',   tip: 'Dónde se concentra tu atención: agrupa los documentos por tema, revelando los focos del corpus (los atractores del espacio latente).' },
+          { id: 'components', icon: '⬡', label: 'UMAP',       tip: 'La forma real del conocimiento: proyecta los embeddings preservando la vecindad semántica. La distancia entre nodos refleja qué tan relacionados están.' },
         ].map(({ id, icon, label, tip }) => (
           <div key={id} className="layout-btn-wrap">
             <button
@@ -380,6 +418,17 @@ export default function App() {
         ))}
       </div>
 
+      {/* Botón flotante del Agente (estilo chatbot). Abajo a la DERECHA: el inferior
+          izquierdo lo ocupa el selector de layout. Se oculta si el agente ya está abierto. */}
+      {!globalAgent && !synthMode && !agentOpen && (
+        <button className="agent-fab" onClick={toggleGlobalAgent}
+          aria-label="Abrir el Agente IA"
+          title="Agente IA — preguntá sobre tu conocimiento">
+          <span className="agent-fab-icon">⬡</span>
+          <span className="agent-fab-text">Agente</span>
+        </button>
+      )}
+
       {activeNode && !agentOpen && !reportOpen && !synthMode && !globalAgent && (
         <>
           <NodePanel
@@ -392,6 +441,7 @@ export default function App() {
             onOpenReport={handleOpenReport}
             onNavigate={node => { setFixedNode(node); setHoverNode(null); setReportOpen(false); }}
             onDelete={handleDeleteNode}
+            onFocus={() => setFocusTrigger(t => t + 1)}
             initialPos={tooltipPos}
             containerRef={panelElRef}
             fixed={isFixed}

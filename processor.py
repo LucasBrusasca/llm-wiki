@@ -239,9 +239,22 @@ def procesar_pdf(ruta_pdf):
     nodo["fuente"] = "pdf"
     nodo["fuente_path"] = str(pdf_path).replace("\\", "/")
     nodo["fuente_label"] = pdf_path.stem
+    nodo["autor"] = _pdf_autor(ruta_pdf)   # autor desde los metadatos del PDF (si tiene)
     generar_embedding(nodo)
     print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
     return {"nodos": [nodo], "relaciones": []}
+
+
+def _pdf_autor(ruta_pdf):
+    """Autor desde los metadatos del PDF (a veces vacío; muchos PDFs no lo traen)."""
+    try:
+        import fitz
+        doc = fitz.open(str(ruta_pdf))
+        a = ((doc.metadata or {}).get("author") or "").strip()
+        doc.close()
+        return a or None
+    except Exception:
+        return None
 
 
 def _youtube_metadata(url):
@@ -258,21 +271,85 @@ def _youtube_metadata(url):
     return "", ""
 
 
-def procesar_youtube(url):
-    """Un único nodo por video de YouTube."""
+def _video_id(url):
+    """Extrae el ID de 11 chars de una URL de YouTube (watch?v=, youtu.be/, embed/)."""
+    m = re.search(r"(?:youtu\.be/|v=|embed/)([A-Za-z0-9_-]{11})", url or "")
+    return m.group(1) if m else None
+
+
+def obtener_transcript(video_id):
+    """Transcripción completa del video (subtítulos) o None si no hay/está bloqueada.
+    Prioriza español, luego inglés. No descarga el video — solo el texto de los subtítulos."""
+    if not video_id:
+        return None
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        api = YouTubeTranscriptApi()
+        fetched = api.fetch(video_id, languages=["es", "es-419", "en", "en-US", "en-GB", "pt"])
+        txt = " ".join(s.text for s in fetched).strip()
+        return txt or None
+    except Exception as e:
+        print(f"Sin transcript para {video_id}: {type(e).__name__} {str(e)[:80]}")
+        return None
+
+
+def _muestra_representativa(txt, max_chars=20000):
+    """Para transcripts largos: inicio + medio + final (representa todo el video sin
+    pasarle 80k chars al LLM)."""
+    if len(txt) <= max_chars:
+        return txt
+    t = max_chars // 3
+    n = len(txt)
+    return (txt[:t] + "\n[…]\n" + txt[n // 2 - t // 2: n // 2 + t // 2] + "\n[…]\n" + txt[-t:])
+
+
+def _youtube_uploader(url):
+    """Canal del video vía yt-dlp (fallback cuando oembed viene vacío). Una llamada
+    extra — solo se usa en videos sueltos; en playlists pasamos el canal de la lista."""
+    try:
+        import yt_dlp
+        opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        return (info.get("channel") or info.get("uploader") or "").strip() or None
+    except Exception:
+        return None
+
+
+def procesar_youtube(url, title_hint=None, author_hint=None):
+    """Un nodo por video de YouTube. Si hay transcripción, el resumen/conceptos se basan
+    en lo que el video REALMENTE dice (no en una inferencia del título).
+    title_hint / author_hint: título y canal ya conocidos (p.ej. de yt-dlp al expandir una
+    playlist), usados si el oembed viene vacío."""
     title, author = _youtube_metadata(url)
-    if title:
-        title_hint = (
-            f'Título real del video: "{title}" (canal: {author}).\n'
-            f'Generá el nodo usando ESTE título. El label debe ser exactamente: "{title}".\n'
+    if not title and title_hint:
+        title = title_hint
+    if not author:
+        author = author_hint or _youtube_uploader(url)
+    vid = _video_id(url)
+    transcript = obtener_transcript(vid)
+
+    titulo_frase = f' titulado "{title}"' if title else ''
+    canal_frase  = f' (canal: {author})' if author else ''
+    label_instr  = (f'El label debe ser EXACTAMENTE: "{title}".' if title
+                    else 'Generá un label conciso (≤ 8 palabras) que describa el video.')
+
+    if transcript:
+        cuerpo = _muestra_representativa(transcript)
+        prompt = (
+            f'Video de YouTube{titulo_frase}{canal_frase}.\n'
+            f'Abajo está la TRANSCRIPCIÓN real del video. Generá el nodo resumiendo lo que '
+            f'REALMENTE se dice — NO inventes ni infieras del título. {label_instr}\n\n'
+            f'TRANSCRIPCIÓN:\n{cuerpo}\n'
+            + _PROMPT_SUFIJO
         )
     else:
-        title_hint = ""
-    prompt = (
-        f"Video de YouTube: {url}\n{title_hint}"
-        f"Generá UN ÚNICO nodo de resumen basándote en el título y tema inferido del video."
-        + _PROMPT_SUFIJO
-    )
+        prompt = (
+            f"Video de YouTube: {url}\nVideo{titulo_frase}{canal_frase}. {label_instr}\n"
+            f"NO hay transcripción disponible: generá un resumen APROXIMADO basándote solo "
+            f"en el título (dejá claro en la desc que es aproximado)." + _PROMPT_SUFIJO
+        )
+
     messages = [{"role": "user", "content": prompt}]
     response_text = query_llm(messages)
     resultado = parsear_json(response_text.strip())
@@ -280,16 +357,51 @@ def procesar_youtube(url):
     nodo["fuente"] = "youtube"
     nodo["fuente_url"] = url
     nodo["fuente_label"] = title or nodo.get("label", "Video")
-    # Siempre usar el título real si está disponible
+    nodo["autor"] = author or None   # canal de YouTube
     if title:
         nodo["label"] = title
-        if not nodo.get("desc") or "no se puede" in nodo.get("desc", "").lower() or "sin información" in nodo.get("desc", "").lower():
-            nodo["desc"] = f"Video de {author} sobre {title}." if author else f"Video: {title}."
-        if not nodo.get("fragmento") or "no se puede" in nodo.get("fragmento", "").lower():
-            nodo["fragmento"] = f"{title} — {author}" if author else title
+    if not nodo.get("label"):
+        nodo["label"] = "Video de YouTube"
+    if transcript:
+        nodo["transcript"] = transcript          # se guarda completo (columna transcript)
+    elif title and not nodo.get("desc"):
+        nodo["desc"] = (f"Video de {author}: {title} (resumen aproximado, sin transcripción)."
+                        if author else f"Video: {title} (resumen aproximado).")
     generar_embedding(nodo)
-    print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
+    print(f"✓ YT '{nodo['label']}' | transcript: {'sí' if transcript else 'NO'} | {len(nodo.get('conceptos',[]))} conceptos")
     return {"nodos": [nodo], "relaciones": []}
+
+
+def expandir_playlist(url, limite=12):
+    """
+    Lista los videos de una playlist de YouTube — SOLO metadata, sin descargar nada
+    (extract_flat). Devuelve [{'url', 'title'}, ...] hasta 'limite' videos.
+    Cada url es de un video individual (watch?v=ID) → reproducible y enlazable.
+    """
+    import yt_dlp
+    opts = {
+        "quiet": True, "no_warnings": True,
+        "extract_flat": True, "skip_download": True,
+        "playlistend": limite,
+    }
+    videos = []
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        # El canal vive a nivel playlist (los entries flat no lo traen).
+        canal = (info.get("uploader") or info.get("channel") or "").strip() or None
+        for e in (info.get("entries") or [])[:limite]:
+            vid = e.get("id")
+            if not vid:
+                continue
+            videos.append({
+                "url": f"https://www.youtube.com/watch?v={vid}",
+                "title": e.get("title") or "",
+                "channel": canal,
+            })
+    except Exception as ex:
+        print(f"Error expandiendo playlist: {ex}")
+    return videos
 
 
 def procesar_excel(ruta_excel):
@@ -467,6 +579,60 @@ def procesar_txt(ruta: str):
     nodo["fuente_label"] = p.stem
     generar_embedding(nodo)
     print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
+    return {"nodos": [nodo], "relaciones": []}
+
+
+def _extraer_texto_office(ruta: str, partes: list) -> str:
+    """Extrae texto de .docx/.pptx (son ZIPs de XML) sin dependencias externas:
+    toma el contenido de los tags <w:t> (Word) y <a:t> (PowerPoint)."""
+    import zipfile
+    texto = ""
+    try:
+        with zipfile.ZipFile(ruta) as z:
+            names = []
+            for patron in partes:
+                if patron.endswith("/"):
+                    names += sorted(n for n in z.namelist()
+                                    if n.startswith(patron) and n.endswith(".xml"))
+                elif patron in z.namelist():
+                    names.append(patron)
+            for name in names:
+                xml = z.read(name).decode("utf-8", errors="ignore")
+                for frag in re.findall(r"<(?:w|a):t[^>]*>(.*?)</(?:w|a):t>", xml, re.DOTALL):
+                    texto += re.sub(r"<[^>]+>", "", frag) + " "
+                texto += "\n"
+    except Exception as e:
+        print(f"Error extrayendo Office: {e}")
+    return texto.strip()
+
+
+def procesar_word(ruta: str):
+    """Un único nodo por documento de Word (.docx)."""
+    texto = _extraer_texto_office(ruta, ["word/document.xml"])[:20000] or f"[Documento Word: {Path(ruta).name}]"
+    prompt = f"Documento de Word:\n{texto}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    response_text = query_llm([{"role": "user", "content": prompt}])
+    nodo = parsear_json(response_text.strip())["nodo"]
+    p = Path(ruta)
+    nodo["fuente"] = "word"
+    nodo["fuente_path"] = str(p).replace("\\", "/")
+    nodo["fuente_label"] = p.stem
+    generar_embedding(nodo)
+    print(f"✓ Nodo Word '{nodo['label']}' con {len(nodo.get('conceptos', []))} conceptos")
+    return {"nodos": [nodo], "relaciones": []}
+
+
+def procesar_pptx(ruta: str):
+    """Un único nodo por presentación de PowerPoint (.pptx)."""
+    texto = _extraer_texto_office(ruta, ["ppt/slides/"])[:20000] or f"[Presentación: {Path(ruta).name}]"
+    prompt = f"Presentación de PowerPoint (texto de las diapositivas):\n{texto}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    response_text = query_llm([{"role": "user", "content": prompt}])
+    nodo = parsear_json(response_text.strip())["nodo"]
+    p = Path(ruta)
+    nodo["fuente"] = "ppt"
+    nodo["fuente_path"] = str(p).replace("\\", "/")
+    nodo["fuente_label"] = p.stem
+    generar_embedding(nodo)
+    print(f"✓ Nodo PPT '{nodo['label']}' con {len(nodo.get('conceptos', []))} conceptos")
     return {"nodos": [nodo], "relaciones": []}
 
 

@@ -32,10 +32,12 @@ class Node(Base):
     fuente_url    = Column(String)
     fuente_path   = Column(String)
     fuente_label  = Column(String)
+    autor         = Column(String)   # canal (YouTube) / autor (PDF, Word, etc.)
     is_centroid   = Column(Boolean, default=False)
     is_issue      = Column(Boolean, default=False)
     tags          = Column(JSON, default=list)
     rich_html     = Column(Text)
+    transcript    = Column(Text)   # transcripción completa (videos de YouTube)
     created_at    = Column(DateTime, server_default=func.now())
     updated_at    = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

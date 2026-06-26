@@ -12,6 +12,12 @@ async def init_db():
         await conn.execute(text(
             "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS fuente_path VARCHAR"
         ))
+        await conn.execute(text(
+            "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS transcript TEXT"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS autor VARCHAR"
+        ))
         await conn.execute(text("""
             CREATE INDEX IF NOT EXISTS nodes_embedding_hnsw
             ON nodes USING hnsw (embedding vector_cosine_ops)

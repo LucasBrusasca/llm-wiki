@@ -289,6 +289,25 @@ body {
 .ingest-submit:hover:not(:disabled) { background: rgba(0,212,255,0.1); }
 .ingest-submit:disabled { opacity: 0.3; cursor: default; }
 
+/* Botón de carga masiva por carpeta */
+.ingest-folder-btn {
+  flex-shrink: 0;
+  height: 36px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: var(--font); font-size: 11px; letter-spacing: 0.4px;
+  padding: 0 14px; border-radius: 2px; cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+.ingest-folder-btn:hover:not(:disabled) {
+  border-color: var(--gold); color: var(--gold);
+  background: rgba(0,212,255,0.08);
+}
+.ingest-folder-btn:disabled { opacity: 0.3; cursor: default; }
+.ingest-panel--inline .ingest-folder-btn { height: 44px; font-size: 12px; }
+
 /* Status bar inside ingest panel */
 .ingest-status {
   display: flex; align-items: center; gap: 8px;
@@ -498,6 +517,11 @@ body {
 
 .panel-desc {
   font-size: 12px; color: #a8afc0; line-height: 1.8;
+}
+
+.panel-autor {
+  font-size: 11px; color: #00d4ff; letter-spacing: 0.5px;
+  margin: 0 0 8px; opacity: 0.85;
 }
 
 .panel-quote {
@@ -718,9 +742,9 @@ body {
 /* ── LIBRARY PANEL ────────────────────────────────────────────────── */
 .library-overlay {
   position: fixed; inset: 0; z-index: 110;
-  background: rgba(0,0,0,0.65);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  /* Sin backdrop-filter: difuminar el canvas WebGL en vivo detrás es carísimo y
+     hacía lento el panel. El fondo oscuro casi opaco da el mismo aislamiento visual. */
+  background: rgba(0,0,0,0.82);
   display: flex; align-items: center; justify-content: center;
   padding: 32px 24px 48px;
   animation: overlay-in 0.2s ease;
@@ -1225,6 +1249,30 @@ body {
 }
 
 /* ── FOOTER ───────────────────────────────────────────────────────── */
+/* Botón flotante del Agente (burbuja estilo chatbot que se expande al hover) */
+.agent-fab {
+  position: fixed; right: 26px; bottom: calc(var(--footer-h) + 30px); z-index: 90;
+  display: flex; align-items: center;
+  width: 52px; height: 52px; overflow: hidden; white-space: nowrap;
+  background: linear-gradient(135deg, rgba(0,212,255,0.18), rgba(0,212,255,0.06));
+  border: 1px solid rgba(0,212,255,0.5);
+  color: #00d4ff; border-radius: 26px; cursor: pointer;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(0,212,255,0.08) inset;
+  transition: width 0.28s cubic-bezier(0.16,1,0.3,1), background var(--transition), box-shadow var(--transition), transform var(--transition);
+}
+.agent-fab:hover {
+  width: 156px;
+  background: linear-gradient(135deg, rgba(0,212,255,0.28), rgba(0,212,255,0.1));
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6), 0 0 24px rgba(0,212,255,0.15);
+}
+.agent-fab-icon { font-size: 22px; line-height: 1; width: 50px; text-align: center; flex-shrink: 0; }
+.agent-fab-text {
+  font-family: var(--font); font-size: 13px; letter-spacing: 1.5px;
+  opacity: 0; transition: opacity 0.18s;
+}
+.agent-fab:hover .agent-fab-text { opacity: 1; }
+
 .app-footer {
   position: fixed; bottom: 0; left: 0; right: 0; z-index: 80;
   height: var(--footer-h);
@@ -1433,6 +1481,22 @@ body {
 }
 .poi-media-frame { width: 100%; height: 100%; display: block; border: none; }
 .poi-media-img   { width: 100%; height: 100%; display: block; object-fit: contain; background: #05080f; }
+
+/* Miniatura de YouTube con ▶ (en vez del player embebido que muestra "video no disponible") */
+.poi-yt-thumb {
+  position: relative; display: block; width: 100%; height: 100%;
+  background: #05080f; overflow: hidden; cursor: pointer; text-decoration: none;
+}
+.poi-yt-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.poi-yt-play {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 64px; height: 64px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.55); border: 2px solid rgba(255, 255, 255, 0.9);
+  color: #fff; font-size: 22px; padding-left: 4px; box-sizing: border-box;
+  transition: background var(--transition), transform var(--transition);
+}
+.poi-yt-thumb:hover .poi-yt-play { background: rgba(255, 0, 40, 0.85); transform: translate(-50%, -50%) scale(1.08); }
 
 /* Botón de expandir (abrir en grande) como ícono chico sobre el preview */
 .poi-expand {
