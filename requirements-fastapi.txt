@@ -13,3 +13,6 @@ sqlalchemy[asyncio]>=2.0
 asyncpg
 psycopg2-binary
 pgvector
+yt-dlp>=2024.0.0
+youtube-transcript-api>=1.0.0
+httpx

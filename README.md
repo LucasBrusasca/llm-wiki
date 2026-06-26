@@ -5,6 +5,9 @@ Ingest PDFs, YouTube videos, web pages and Excel files → the system extracts c
 
 > Built as a personal knowledge management tool and as a demonstration of Multi-RAG orchestration patterns. Thesis project — Maestría en Ciencia de Datos, Universidad Austral.
 
+> 📖 **Leé la [Visión y Concepto Central →](VISION.md)** — el problema profundo que ataca (la deriva del significado / *semantic satiation*), en qué se diferencia de los demos virales y de Obsidian, y hacia dónde va.
+> 🏗️ **Y la [Arquitectura y Forma →](ARQUITECTURA.md)** — medallón (bronze/silver/gold), el framework de conectores para sumar fuentes, y cómo escala.
+
 ---
 
 ## What it does

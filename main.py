@@ -92,6 +92,7 @@ def node_to_dict(n) -> dict:
         "fuente_url": n.fuente_url,
         "fuente_path": n.fuente_path,
         "fuente_label": n.fuente_label,
+        "autor": n.autor,
         "is_centroid": n.is_centroid or False,
         "is_issue": n.is_issue or False,
         "tags": n.tags or [],
@@ -699,9 +700,72 @@ def _set_progress(pct: int, msg: str):
             _ingest["message"] = msg
 
 
+# Techo de videos por playlist. NO es un capricho: cada video = 1 llamada al LLM, y
+# Gemini gratis limita req/min. 50 cubre casi cualquier playlist real; subilo si querés
+# (a costa de tiempo de ingesta y posibles 429 con listas enormes).
+PLAYLIST_LIMIT = 50
+
+
+def _es_playlist_youtube(url: str) -> bool:
+    """URL de playlist 'pura' (no un video suelto que casualmente está en una lista)."""
+    u = (url or "").lower()
+    if "youtube.com" not in u and "youtu.be" not in u:
+        return False
+    return "list=" in u and "watch?v=" not in u
+
+
+def _ingest_playlist(url: str, skip_umap: bool = False):
+    """Expande una playlist de YouTube y crea UN NODO POR VIDEO (cada uno enlazable).
+    Secuencial (respeta el rate-limit del LLM) y UMAP una sola vez al final."""
+    global _ingest
+    from processor import expandir_playlist, procesar_youtube
+    _set_progress(8, "Leyendo la lista de YouTube…")
+    # Listamos TODOS los videos (metadata barata) para saber el total real,
+    # pero solo ingerimos los primeros PLAYLIST_LIMIT (cada uno = 1 llamada al LLM).
+    videos_all = expandir_playlist(url, limite=200)
+    total = len(videos_all)
+    if total == 0:
+        with _ingest_lock:
+            _ingest = {"state": "error",
+                       "message": "No se pudieron leer videos de la playlist (¿es pública?)",
+                       "label": "", "progress": 0}
+        return
+    a_cargar = videos_all[:PLAYLIST_LIMIT]
+    n = len(a_cargar)
+    ok = 0
+    for i, v in enumerate(a_cargar):
+        titulo = (v.get("title") or "")[:45]
+        _set_progress(int(10 + 78 * i / max(1, n)), f"Video {i+1}/{n}: {titulo}…")
+        try:
+            # Pasamos título y canal de yt-dlp como respaldo (el oembed a veces viene vacío).
+            resultado = procesar_youtube(v["url"], title_hint=v.get("title"), author_hint=v.get("channel"))
+            for nodo in resultado.get("nodos", []):
+                _save_node_sync(nodo)
+                ok += 1
+        except Exception as e:
+            print(f"Error en video {v['url']}: {e}")
+    if not skip_umap:
+        _set_progress(90, "Calculando posiciones 3D (UMAP)…")
+        try:
+            import embeddings_engine
+            embeddings_engine.main()
+        except Exception as e:
+            print(f"Error UMAP playlist: {e}")
+    if total > PLAYLIST_LIMIT:
+        msg = f"Cargué {ok} de {total} videos (tope {PLAYLIST_LIMIT}). Decime si querés el resto."
+    else:
+        msg = f"{ok} de {total} videos de la playlist incorporados."
+    with _ingest_lock:
+        _ingest = {"state": "done", "message": msg, "label": "Playlist", "progress": 100}
+
+
 def _run_ingest(entrada: str, skip_umap: bool = False):
     global _ingest
     try:
+        # Playlist de YouTube → un nodo por video (camino propio, sale temprano).
+        if entrada.startswith("http") and _es_playlist_youtube(entrada):
+            _ingest_playlist(entrada, skip_umap)
+            return
         from processor import (
             acumular_resultado,
             procesar_excel,
@@ -749,6 +813,12 @@ def _run_ingest(entrada: str, skip_umap: bool = False):
         elif ext in (".txt", ".md"):
             from processor import procesar_txt
             resultado = procesar_txt(entrada)
+        elif ext == ".docx":
+            from processor import procesar_word
+            resultado = procesar_word(entrada)
+        elif ext in (".pptx", ".pptm"):
+            from processor import procesar_pptx
+            resultado = procesar_pptx(entrada)
         else:
             resultado = procesar_pdf(entrada)
 

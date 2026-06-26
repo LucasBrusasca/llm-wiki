@@ -55,7 +55,7 @@ services:
       BACKEND_URL: http://backend:8000
       # Bloom de postprocessing. Si los FPS caen por debajo de 30,
       # poné "false" para desactivarlo (backdrop y canales siguen funcionando).
-      VITE_BLOOM_ENABLED: ${VITE_BLOOM_ENABLED:-true}
+      VITE_BLOOM_ENABLED: ${VITE_BLOOM_ENABLED:-false}
 
 volumes:
   postgres_data:

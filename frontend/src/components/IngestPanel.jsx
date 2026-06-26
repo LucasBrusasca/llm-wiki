@@ -8,6 +8,11 @@ const STEPS = [
   { at: 100, label: 'Incorporando al grafo…' },
 ];
 
+// Extensiones soportadas (única fuente de verdad para el input y el filtro de carpeta).
+const ACCEPT_EXT  = ['.pdf', '.xlsx', '.xls', '.html', '.htm', '.txt', '.md', '.docx', '.pptx', '.pptm'];
+const ACCEPT_ATTR = ACCEPT_EXT.join(',');
+const isSupported = name => ACCEPT_EXT.some(ext => String(name).toLowerCase().endsWith(ext));
+
 // Mensaje de error legible (los del proveedor vienen crudos de httpx).
 function humanizeError(msg) {
   if (!msg) return 'Error en la ingesta';
@@ -22,6 +27,10 @@ function humanizeError(msg) {
 function ProgressOverlay({ status, queueInfo, onCancel }) {
   const pct = status.progress || 0;
   const step = STEPS.find(s => pct <= s.at) || STEPS[STEPS.length - 1];
+  // Para playlists el backend manda "Video X/N: título…": lo mostramos tal cual.
+  const liveMsg = /^Video \d+\/\d+/.test(status.message || '') ? status.message
+                : /lista de YouTube/i.test(status.message || '') ? status.message
+                : null;
 
   return (
     <div className="ingest-overlay">
@@ -32,7 +41,10 @@ function ProgressOverlay({ status, queueInfo, onCancel }) {
             ARCHIVO {queueInfo.current} DE {queueInfo.total}
           </div>
         )}
-        <div className="ingest-overlay-step">{step.label}</div>
+        {queueInfo?.name && (
+          <div className="ingest-overlay-label" title={queueInfo.name}>{queueInfo.name}</div>
+        )}
+        <div className="ingest-overlay-step">{liveMsg || step.label}</div>
         <div className="ingest-overlay-bar-container">
           <div className="ingest-overlay-bar-wrap">
             <div className="ingest-overlay-bar" style={{ width: `${pct}%` }} />
@@ -58,10 +70,23 @@ export default function IngestPanel({ onRefresh, inline = false }) {
   const pollRef       = useRef(null);
   const fileQueueRef  = useRef([]);
   const queueIdxRef   = useRef(0);
+  const folderInputRef = useRef(null);
+  const ingestModeRef = useRef('file');   // 'file' | 'url' → la rama URL NO usa la cola de archivos
+  const onRefreshRef  = useRef(onRefresh); // siempre la última versión (startPolling tiene deps [])
+  onRefreshRef.current = onRefresh;
   // Ref-based callback so the polling interval always calls the latest version
   const processNextRef = useRef(null);
 
   useEffect(() => () => clearInterval(pollRef.current), []);
+
+  // webkitdirectory / directory no son props estándar de React: se setean como
+  // propiedades del DOM para que el input "subir carpeta" funcione.
+  useEffect(() => {
+    if (folderInputRef.current) {
+      folderInputRef.current.webkitdirectory = true;
+      folderInputRef.current.directory = true;
+    }
+  }, []);
 
   // Auto-cerrar el chip de error a los 7s para que no quede "colgado".
   useEffect(() => {
@@ -82,10 +107,20 @@ export default function IngestPanel({ onRefresh, inline = false }) {
         setStatus(s);
         if (s.state === 'done') {
           clearInterval(pollRef.current);
-          processNextRef.current?.();
+          if (ingestModeRef.current === 'url') {
+            // URL: no hay cola de archivos → usar el mensaje del backend (cuenta los
+            // videos de la playlist, p.ej. "8 de 12 videos…") + limpiar el input.
+            ingestModeRef.current = 'file';
+            setUrl('');
+            onRefreshRef.current?.();
+            setStatus({ state: 'done', message: s.message || 'Documento incorporado al grafo.', label: '', progress: 100 });
+          } else {
+            processNextRef.current?.();
+          }
         }
         if (s.state === 'error') {
           clearInterval(pollRef.current);
+          ingestModeRef.current = 'file';
           fileQueueRef.current = [];
           queueIdxRef.current  = 0;
           setQueueInfo(null);
@@ -160,6 +195,7 @@ export default function IngestPanel({ onRefresh, inline = false }) {
       fileQueueRef.current = [];
       queueIdxRef.current  = 0;
       setQueueInfo(null);
+      setFileNames([]);   // limpiar el chip del archivo (ya no "queda pegado")
       onRefresh();
       setStatus({
         state: 'done',
@@ -172,7 +208,7 @@ export default function IngestPanel({ onRefresh, inline = false }) {
     queueIdxRef.current = idx + 1;
     const isBatch  = queue.length > 1;
     const skipUmap = isBatch; // skip UMAP between files; run once at end
-    setQueueInfo({ current: idx + 1, total: queue.length });
+    setQueueInfo({ current: idx + 1, total: queue.length, name: queue[idx]?.name });
     await sendFile(queue[idx], skipUmap);
   }, [sendFile, onRefresh]);
 
@@ -180,6 +216,7 @@ export default function IngestPanel({ onRefresh, inline = false }) {
   processNextRef.current = processNext;
 
   const startFiles = useCallback(async (files) => {
+    ingestModeRef.current = 'file';
     fileQueueRef.current = files;
     queueIdxRef.current  = 0;
     await processNext();
@@ -203,16 +240,34 @@ export default function IngestPanel({ onRefresh, inline = false }) {
     e.target.value = '';
   }, [startFiles]);
 
+  // Carga masiva: al elegir una carpeta, el navegador entrega TODOS sus archivos
+  // (recursivo). Filtramos a los tipos soportados y los mandamos a la misma cola.
+  const handleFolderChange = useCallback(e => {
+    const all = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!all.length) return;
+    const files = all.filter(f => isSupported(f.name));
+    if (!files.length) {
+      setStatus({
+        state: 'error', label: '', progress: 0,
+        message: `La carpeta (${all.length} archivo${all.length > 1 ? 's' : ''}) no tiene formatos compatibles`,
+      });
+      return;
+    }
+    setFileNames(files.map(f => f.name));
+    setUrl('');
+    startFiles(files);
+  }, [startFiles]);
+
   const handleUrlSubmit = useCallback(e => {
     e.preventDefault();
     const val = url.trim();
     if (!val) return;
     setFileNames([]);
     setQueueInfo(null);
-    sendUrl(val).then(ok => { if (ok) processNextRef.current = () => { onRefresh(); }; });
-    // After URL done, just refresh once
-    processNextRef.current = () => { onRefresh(); setStatus(s => ({ ...s, state: 'done' })); };
-  }, [url, sendUrl, onRefresh]);
+    ingestModeRef.current = 'url';   // el polling, al ver 'done', limpia la URL y avisa bien
+    sendUrl(val);
+  }, [url, sendUrl]);
 
   const onDragOver  = e => { e.preventDefault(); setDragOver(true); };
   const onDragLeave = () => setDragOver(false);
@@ -253,7 +308,7 @@ export default function IngestPanel({ onRefresh, inline = false }) {
         >
           <input
             type="file"
-            accept=".pdf,.xlsx,.xls,.html,.htm,.txt,.md"
+            accept={ACCEPT_ATTR}
             style={{ display: 'none' }}
             onChange={handleFileChange}
             disabled={isProcessing}
@@ -261,6 +316,24 @@ export default function IngestPanel({ onRefresh, inline = false }) {
           />
           <span className="ingest-drop-label">{dropLabel}</span>
         </label>
+
+        {/* Carga masiva por carpeta (filtra a formatos soportados y los encola) */}
+        <input
+          ref={folderInputRef}
+          type="file"
+          style={{ display: 'none' }}
+          onChange={handleFolderChange}
+          disabled={isProcessing}
+          multiple
+        />
+        <button
+          type="button"
+          className="ingest-folder-btn"
+          onClick={() => folderInputRef.current?.click()}
+          disabled={isProcessing}
+        >
+          📁 Cargar una carpeta entera
+        </button>
 
         <form className="ingest-url-row" onSubmit={handleUrlSubmit}>
           <input

@@ -2,7 +2,10 @@ import React, { useState, useMemo } from 'react';
 import { clusterColor } from '../App.jsx';
 import IngestPanel from './IngestPanel.jsx';
 
-const FUENTE_ICON = { youtube: '▶', pdf: '⬛', tesis: '⬛', excel: '⊞', html: '⊡', concepto: '◈' };
+const FUENTE_ICON = {
+  youtube: '▶', pdf: '⬛', tesis: '⬛', excel: '⊞', html: '⊡',
+  word: '⬛', ppt: '◳', image: '▣', audio: '♫', video: '▶', concepto: '◈',
+};
 
 function ConnectionCount({ nodeId, allLinks }) {
   const count = allLinks.filter(l => {
@@ -94,7 +97,7 @@ function NodeRow({ node, allNodes, allLinks, onNavigate, onDelete, onRename, onR
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <span className="lib-fuente-tag">{(node.fuente || 'concepto').toUpperCase()}</span>
             {(node.tags || []).map(t => (
-              <span key={t} style={{ fontSize: 9, background: 'rgba(245,166,35,0.2)', color: '#f5a623', padding: '2px 6px', borderRadius: 10, letterSpacing: 0.5 }}>
+              <span key={t} style={{ fontSize: 9, background: 'rgba(0,212,255,0.2)', color: '#00d4ff', padding: '2px 6px', borderRadius: 10, letterSpacing: 0.5 }}>
                 {t}
               </span>
             ))}
@@ -104,6 +107,13 @@ function NodeRow({ node, allNodes, allLinks, onNavigate, onDelete, onRename, onR
         </div>
 
         <div className="lib-row-actions">
+          {(node.fuente_path || node.fuente_url) && (
+            <button className="lib-btn" title="Abrir documento"
+              onClick={() => {
+                const url = node.fuente_url || `/files/${encodeURIComponent(node.id)}`;
+                window.open(url, '_blank');
+              }}>⤢</button>
+          )}
           <button className="lib-btn" title="Ver en grafo" onClick={() => onNavigate(node)}>⊙</button>
           {editing
             ? <button className="lib-btn lib-btn--ok" onClick={saveRename}>✓</button>
@@ -125,9 +135,9 @@ function NodeRow({ node, allNodes, allLinks, onNavigate, onDelete, onRename, onR
             <span className="lib-detail-label">ETIQUETAS / PROYECTOS:</span>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               {(node.tags || []).map(t => (
-                <span key={t} className="lib-conn-tag" style={{ borderColor: 'rgba(245,166,35,0.4)', color: '#f5a623', display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span key={t} className="lib-conn-tag" style={{ borderColor: 'rgba(0,212,255,0.4)', color: '#00d4ff', display: 'flex', alignItems: 'center', gap: 4 }}>
                   {t}
-                  <button onClick={() => removeTag(t)} style={{ background: 'none', border: 'none', color: '#f5a623', cursor: 'pointer', padding: 0, fontSize: 10 }}>✕</button>
+                  <button onClick={() => removeTag(t)} style={{ background: 'none', border: 'none', color: '#00d4ff', cursor: 'pointer', padding: 0, fontSize: 10 }}>✕</button>
                 </span>
               ))}
               <input 
@@ -213,7 +223,9 @@ export default function LibraryPanel({ allNodes, allLinks, onClose, onNavigate, 
         if (filterType !== 'all' && (n.fuente || 'concepto') !== filterType) return false;
         if (filterTag !== 'all' && !(n.tags || []).includes(filterTag)) return false;
         if (!q) return true;
-        return n.label.toLowerCase().includes(q) || (n.desc || '').toLowerCase().includes(q);
+        return n.label.toLowerCase().includes(q)
+          || (n.desc || '').toLowerCase().includes(q)
+          || (n.autor || '').toLowerCase().includes(q);   // buscar también por autor/canal
       })
       .sort((a, b) => {
         if (sortBy === 'cluster') {

@@ -167,9 +167,15 @@ function ContentPreview({ node }) {
 
   if (kind === 'youtube' && node.fuente_url) {
     const vid = ytId(node.fuente_url);
+    // Miniatura + ▶ que abre en YouTube. Evita el cartel feo de "video no disponible"
+    // de los videos con embed bloqueado por el dueño (y para los demás, igual los abre).
     if (vid) return (
-      <iframe src={`https://www.youtube.com/embed/${vid}?autoplay=0`} title={node.label}
-        allowFullScreen className="poi-media-frame" style={{ background: '#000' }} />
+      <a className="poi-yt-thumb" href={node.fuente_url} target="_blank" rel="noreferrer"
+         title="Abrir en YouTube">
+        <img src={`https://img.youtube.com/vi/${vid}/hqdefault.jpg`} alt={node.label}
+             onError={e => { e.currentTarget.style.visibility = 'hidden'; }} />
+        <span className="poi-yt-play" aria-hidden="true">▶</span>
+      </a>
     );
   }
 
@@ -207,14 +213,14 @@ function ContentPreview({ node }) {
 const FUENTE_ICONS = {
   youtube: '▶ YOUTUBE', pdf: '⬡ PDF', tesis: '⬡ TESIS',
   excel: '⊞ EXCEL', audio: '♫ AUDIO', html: '◈ WEB',
-  word: '⬡ WORD', concepto: '◈ CONCEPTO', video: '▶ VIDEO', image: '▣ IMAGEN',
+  word: '⬡ WORD', ppt: '◳ PPT', concepto: '◈ CONCEPTO', video: '▶ VIDEO', image: '▣ IMAGEN',
 };
 
 const MIN_W = 320, MIN_H = 220, DEFAULT_W = 600;
 
 export default function NodePanel({
   node, allNodes, allLinks, onClose, onOpenAgent, onOpenReport, onNavigate, onDelete,
-  initialPos, containerRef,
+  onFocus, initialPos, containerRef,
 }) {
   const color    = CYAN;
   const isMobile = window.innerWidth < 900;
@@ -367,9 +373,19 @@ export default function NodePanel({
               {loadingRich ? '⟳ GENERANDO APUNTE…' : '✦ APUNTE IA'}
             </button>
           )}
+          {onFocus && (
+            <button className="btn-secondary poi-btn" onClick={onFocus} title="Acercar la cámara a este nodo y destacarlo">
+              ⌖ ENFOCAR EN EL GRAFO
+            </button>
+          )}
         </div>
 
         <div className="tooltip-col-right">
+          {node.autor && (
+            <p className="panel-autor">
+              {node.fuente === 'youtube' ? '▶ Canal: ' : '✎ Autor: '}{node.autor}
+            </p>
+          )}
           {node.desc && <p className="panel-desc">{node.desc}</p>}
 
           {node.fragmento && (
