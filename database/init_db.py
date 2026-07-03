@@ -18,6 +18,18 @@ async def init_db():
         await conn.execute(text(
             "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS autor VARCHAR"
         ))
+        await conn.execute(text(
+            "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS fecha_doc VARCHAR"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS tema VARCHAR"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS flujograma JSON"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS synthesis JSON"
+        ))
         await conn.execute(text("""
             CREATE INDEX IF NOT EXISTS nodes_embedding_hnsw
             ON nodes USING hnsw (embedding vector_cosine_ops)

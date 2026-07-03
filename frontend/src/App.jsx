@@ -8,6 +8,9 @@ import LibraryPanel from './components/LibraryPanel.jsx';
 import SynthesisPanel from './components/SynthesisPanel.jsx';
 import IssuePanel from './components/IssuePanel.jsx';
 import Footer from './components/Footer.jsx';
+import DiscoveriesPanel from './components/DiscoveriesPanel.jsx';
+import ProcessPanel from './components/ProcessPanel.jsx';
+import { computeDiscoveries } from './discoveries.js';
 
 // Paleta azul marino tecnológica — azules / cianes, sin ámbar.
 // Paleta CATEGÓRICA: tonos DISTINTOS (no todos azules) para diferenciar clusters.
@@ -110,6 +113,9 @@ export default function App() {
   const [selectedLink, setSelectedLink] = useState(null);
   const [libraryOpen, setLibraryOpen]   = useState(false);
   const [issueOpen, setIssueOpen]       = useState(false);
+  const [discoveriesOpen, setDiscoveriesOpen] = useState(false);
+  const [processOpen, setProcessOpen]   = useState(false);
+  const [relayouting, setRelayouting]   = useState(false);
   const [layoutMode, setLayoutMode]     = useState('components');
   const [focusTrigger, setFocusTrigger] = useState(0);  // botón "enfocar" del panel
   const [fitTrigger, setFitTrigger]     = useState(0);  // botón "ver todo" (desenfocar)
@@ -315,12 +321,31 @@ export default function App() {
     return merged.size ? merged : keyword;
   }, [searchQ, semanticIds, graphData.nodes]);
 
+  // Descubrimientos: se calcula sólo cuando el panel está abierto (O(n²) coseno; barato).
+  const discoveries = useMemo(
+    () => (discoveriesOpen ? computeDiscoveries(graphData.nodes, graphData.links) : []),
+    [discoveriesOpen, graphData],
+  );
+
+  // El grafo 3D muestra SOLO conocimiento (documentos): los issues/procesos viven en su
+  // módulo y se fundamentan contra el grafo, no dentro de él. graphData completo sigue
+  // yendo a IssuePanel y demás paneles.
+  const graphView = useMemo(() => {
+    const issueIds = new Set(graphData.nodes.filter(n => n.is_issue).map(n => n.id));
+    if (!issueIds.size) return graphData;
+    const endId = e => (typeof e === 'object' && e !== null) ? e.id : e;
+    return {
+      nodes: graphData.nodes.filter(n => !n.is_issue),
+      links: graphData.links.filter(l => !issueIds.has(endId(l.source)) && !issueIds.has(endId(l.target))),
+    };
+  }, [graphData]);
+
   return (
     <div className="app">
       <header className="header">
         <div className="header-brand">
           <span className="header-brand-icon">◈</span>
-          <span>PRAGMAFORGE</span>
+          <span>ALGEDI</span>
         </div>
         <input
           className="search-input"
@@ -357,12 +382,35 @@ export default function App() {
           >
             ◈ Síntesis
           </button>
+          <button
+            className={`btn-synth${discoveriesOpen ? ' active' : ''}`}
+            onClick={() => setDiscoveriesOpen(o => !o)}
+            title="Descubrimientos: puentes, huecos y nodos aislados (sin IA, sobre tus datos)"
+          >
+            ◎ Descubrir
+          </button>
+          <button
+            className={`btn-synth${processOpen ? ' active' : ''}`}
+            onClick={() => setProcessOpen(o => !o)}
+            title="Procesos: describí un proceso y lo estructura + funda en tu grafo"
+          >
+            ⛭ Procesos
+          </button>
           <button className="btn-reload" onClick={() => setFitTrigger(t => t + 1)}
             title="Ver todo (desenfocar / volver a la vista general)">⊡</button>
           <button className="btn-reload" onClick={loadGraph} title="Recargar">↺</button>
           <button className="btn-reload" title="Recalcular relaciones"
             onClick={async () => { await fetch('/api/recompute-relations', { method: 'POST' }); loadGraph(); }}>
             ⟳
+          </button>
+          <button className="btn-reload" disabled={relayouting}
+            title="Reagrupar con IA — reasigna los temas del grafo (taxonomía por LLM)"
+            onClick={async () => {
+              setRelayouting(true);
+              try { await fetch('/api/taxonomy?apply=true', { method: 'POST' }); await loadGraph(); }
+              finally { setRelayouting(false); }
+            }}>
+            {relayouting ? '…' : '✦'}
           </button>
           <button className="btn-reset" onClick={handleReset} title="Resetear grafo">⌫</button>
           {fetchError
@@ -385,7 +433,7 @@ export default function App() {
       )}
 
       <Graph3D
-        graphData={graphData}
+        graphData={graphView}
         selectedNode={highlightNode}
         highlighted={highlighted}
         filteredIds={filteredIds}
@@ -420,7 +468,7 @@ export default function App() {
 
       {/* Botón flotante del Agente (estilo chatbot). Abajo a la DERECHA: el inferior
           izquierdo lo ocupa el selector de layout. Se oculta si el agente ya está abierto. */}
-      {!globalAgent && !synthMode && !agentOpen && (
+      {!globalAgent && !synthMode && !agentOpen && !discoveriesOpen && !processOpen && (
         <button className="agent-fab" onClick={toggleGlobalAgent}
           aria-label="Abrir el Agente IA"
           title="Agente IA — preguntá sobre tu conocimiento">
@@ -473,6 +521,22 @@ export default function App() {
         />
       )}
 
+      {discoveriesOpen && (
+        <DiscoveriesPanel
+          discoveries={discoveries}
+          onHighlight={handleHighlight}
+          onClose={() => setDiscoveriesOpen(false)}
+        />
+      )}
+
+      {processOpen && (
+        <ProcessPanel
+          allNodes={graphData.nodes}
+          onHighlight={handleHighlight}
+          onClose={() => setProcessOpen(false)}
+        />
+      )}
+
       {selectedLink && !synthMode && (
         <RelationPanel
           nodeA={selectedLink.nodeA}
@@ -502,7 +566,10 @@ export default function App() {
         />
       )}
 
-      {libraryOpen && (
+      {/* Siempre montada (oculta con display:none): así una carga por lotes sigue
+          viva en segundo plano aunque cierres la Biblioteca. El progreso se ve en
+          un toast flotante que no bloquea la app. */}
+      <div style={{ display: libraryOpen ? 'contents' : 'none' }}>
         <LibraryPanel
           allNodes={graphData.nodes}
           allLinks={graphData.links}
@@ -512,7 +579,7 @@ export default function App() {
           onRename={loadGraph}
           onRefresh={loadGraph}
         />
-      )}
+      </div>
 
       <Footer />
     </div>

@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="PragmaForge", lifespan=lifespan)
+app = FastAPI(title="Algedi", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -72,6 +72,10 @@ def node_to_dict(n) -> dict:
     emb = n.embedding
     if hasattr(emb, "tolist"):
         emb = emb.tolist()
+    if emb:
+        # 4 decimales bastan para el coseno del frontend (descubrimientos/centroide)
+        # y achican ~60% el peso del payload de /api/graph.
+        emb = [round(float(x), 4) for x in emb]
     return {
         "id": n.id,
         "label": n.label,
@@ -93,10 +97,16 @@ def node_to_dict(n) -> dict:
         "fuente_path": n.fuente_path,
         "fuente_label": n.fuente_label,
         "autor": n.autor,
+        "fecha_doc": n.fecha_doc,
+        "tema": n.tema,
+        "flujograma": n.flujograma,
+        "synthesis": n.synthesis,
         "is_centroid": n.is_centroid or False,
         "is_issue": n.is_issue or False,
         "tags": n.tags or [],
-        "rich_html": n.rich_html,
+        # rich_html NO viaja acá: puede pesar cientos de KB por nodo y el frontend
+        # lo pide on-demand vía /api/node/{id}/rich-preview. Sacarlo aliviana /api/graph.
+        "created_at": n.created_at.isoformat() if n.created_at else None,
     }
 
 
@@ -125,7 +135,7 @@ async def _nodos_relevantes(pregunta: str, max_n: int = 5,
                 FROM nodes
                 WHERE NOT COALESCE(is_centroid, false)
                   AND embedding IS NOT NULL
-                ORDER BY embedding <=> :vec::vector
+                ORDER BY embedding <=> CAST(:vec AS vector)
                 LIMIT :lim
             """),
             {"vec": str(vec), "lim": max_n}
@@ -153,6 +163,39 @@ async def _nodos_relevantes(pregunta: str, max_n: int = 5,
         return [nid for _, nid in scored[:max_n]]
 
 
+async def _nodos_relevantes_scored(pregunta: str, max_n: int = 6,
+                                   db: AsyncSession = None) -> list[dict]:
+    """Como _nodos_relevantes pero devuelve también el contenido y la SIMILITUD coseno
+    (sim = 1 - distancia). Lo usa el agente para fundamentar la respuesta y para el VETO."""
+    try:
+        from processor import get_embed_model
+        model = get_embed_model()
+        vec = model.encode([pregunta], show_progress_bar=False)[0].tolist()
+        result = await db.execute(
+            text("""
+                SELECT id, label, "desc", fragmento,
+                       (embedding <=> CAST(:vec AS vector)) AS dist
+                FROM nodes
+                WHERE NOT COALESCE(is_centroid, false)
+                  AND NOT COALESCE(is_issue, false)
+                  AND embedding IS NOT NULL
+                ORDER BY dist
+                LIMIT :lim
+            """),
+            {"vec": str(vec), "lim": max_n}
+        )
+        out = []
+        for r in result:
+            out.append({
+                "id": r.id, "label": r.label, "desc": r.desc, "fragmento": r.fragmento,
+                "sim": max(0.0, 1.0 - float(r.dist)),
+            })
+        return out
+    except Exception as e:
+        print(f"scored retrieval failed: {e}")
+        return []
+
+
 def _save_node_sync(nodo_data: dict):
     """Guarda o actualiza un nodo en PostgreSQL y recalcula relaciones. Síncrona — segura para threads."""
     from database.models import Node as NodeModel, Edge as EdgeModel
@@ -169,8 +212,12 @@ def _save_node_sync(nodo_data: dict):
         )
         session.flush()
 
+        # Los issues/procesos NO participan de las relaciones del grafo de conocimiento:
+        # son entidades de otro plano (módulo Issue/Procesos) cuyo fundamento se calcula
+        # on-the-fly contra el grafo. Mezclarlos ensuciaba el espacio de documentos.
         all_nodes = session.query(NodeModel).filter(
-            NodeModel.is_centroid == False
+            NodeModel.is_centroid == False,
+            NodeModel.is_issue == False,
         ).all()
 
         nodes_dicts = []
@@ -207,7 +254,8 @@ def _recompute_edges_background():
     from sqlalchemy import delete as sync_delete
     with get_sync_session() as session:
         nodes = session.query(NodeModel).filter(
-            NodeModel.is_centroid == False
+            NodeModel.is_centroid == False,
+            NodeModel.is_issue == False,   # issues fuera del grafo de conocimiento
         ).all()
         nodes_dicts = []
         for n in nodes:
@@ -367,6 +415,21 @@ def _render_thumb(doc) -> bytes:
     return pix.tobytes("png")
 
 
+def _text_thumb(texto: str) -> bytes | None:
+    """Miniatura a partir de TEXTO (para formatos que fitz no abre: Word/PPT/Excel).
+    Renderiza el contenido como página de texto → muestra el inicio del documento."""
+    import fitz
+    snippet = (texto or "").strip()[:1500]
+    if not snippet:
+        return None
+    try:
+        doc = fitz.open(stream=snippet.encode("utf-8"), filetype="txt")
+        data = _render_thumb(doc); doc.close()
+        return data
+    except Exception:
+        return None
+
+
 def _generate_thumb(node) -> bytes | None:
     """Miniatura (PNG ~128px) según el tipo de nodo. None si no aplica."""
     import fitz
@@ -405,7 +468,66 @@ def _generate_thumb(node) -> bytes | None:
                 return data
             except Exception:
                 return None
+        # HTML: fitz lo renderiza como documento → miniatura de la primera parte.
+        if ext in ("html", "htm") or fuente == "html":
+            try:
+                doc = fitz.open(str(target), filetype="html")
+                data = _render_thumb(doc); doc.close()
+                return data
+            except Exception:
+                return None
+        # Texto plano / Markdown: fitz lo pagina como texto.
+        if ext in ("txt", "md", "markdown"):
+            try:
+                return _text_thumb(target.read_text(encoding="utf-8", errors="ignore"))
+            except Exception:
+                return None
+        # Word / PowerPoint: fitz NO los abre → miniatura del texto extraído.
+        if ext == "docx" or fuente == "word":
+            from processor import _extraer_texto_office
+            return _text_thumb(_extraer_texto_office(str(target), ["word/document.xml"]))
+        if ext in ("pptx", "pptm") or fuente == "ppt":
+            from processor import _extraer_texto_office
+            return _text_thumb(_extraer_texto_office(str(target), ["ppt/slides/"]))
+        # Excel: primeras filas como texto.
+        if ext in ("xlsx", "xls") or fuente == "excel":
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(str(target), read_only=True, data_only=True)
+                ws = wb.active
+                rows = []
+                for i, row in enumerate(ws.iter_rows(max_row=20, values_only=True)):
+                    txt = " | ".join(str(c) for c in row if c is not None)
+                    if txt.strip():
+                        rows.append(txt)
+                    if i >= 19:
+                        break
+                wb.close()
+                return _text_thumb("\n".join(rows))
+            except Exception:
+                return None
     return None
+
+
+def _render_html_playwright(path: str) -> bytes | None:
+    """Miniatura de un HTML renderizado CON estilos (Chromium headless): captura del
+    inicio del documento → reducida. Pixel-perfect. SÍNCRONA: llamar en un thread
+    (la sync API de Playwright no corre dentro del event loop de asyncio)."""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(args=["--no-sandbox"])
+            page = browser.new_page(viewport={"width": 900, "height": 650}, device_scale_factor=1)
+            page.goto(f"file://{path}", wait_until="networkidle", timeout=15000)
+            png = page.screenshot(clip={"x": 0, "y": 0, "width": 900, "height": 650})
+            browser.close()
+        import fitz
+        doc = fitz.open(stream=png, filetype="png")
+        data = _render_thumb(doc); doc.close()
+        return data
+    except Exception as e:
+        print(f"playwright html thumb failed: {e}")
+        return None
 
 
 @app.get("/thumb/{node_id}")
@@ -421,10 +543,22 @@ async def get_thumb(node_id: str, db: AsyncSession = Depends(get_async_session))
     node = (await db.execute(select(Node).where(Node.id == node_id))).scalar_one_or_none()
     if node is None:
         raise HTTPException(status_code=404, detail="Nodo no encontrado")
-    try:
-        data = _generate_thumb(node)
-    except Exception:
-        data = None
+    data = None
+    # HTML → render CON estilos (Chromium headless), en un thread. Fallback a fitz si falla.
+    fuente = (node.fuente or "").lower()
+    fp = (node.fuente_path or "").lower()
+    if node.fuente_path and (fuente == "html" or fp.endswith((".html", ".htm"))):
+        try:
+            import asyncio
+            target = _resolve_file(node.fuente_path)
+            data = await asyncio.to_thread(_render_html_playwright, str(target))
+        except Exception:
+            data = None
+    if not data:
+        try:
+            data = _generate_thumb(node)
+        except Exception:
+            data = None
     if not data:
         raise HTTPException(status_code=404, detail="Sin miniatura")
     try:
@@ -483,6 +617,92 @@ async def recompute_relations(db: AsyncSession = Depends(get_async_session)):
         ))
     await db.commit()
     return {"ok": True, "relaciones": len(new_rels)}
+
+
+@app.post("/api/recompute-layout")
+async def recompute_layout():
+    """Re-corre el clustering (UMAP intermedia + HDBSCAN) sobre todos los nodos y
+    persiste posiciones/clusters. Sirve para aplicar ajustes de clustering al grafo
+    existente, sin necesidad de re-subir documentos."""
+    import asyncio
+    import embeddings_engine
+    await asyncio.to_thread(embeddings_engine.main)
+    return {"ok": True}
+
+
+@app.post("/api/taxonomy")
+async def taxonomy(apply: bool = False, db: AsyncSession = Depends(get_async_session)):
+    """Propone (dry-run) o aplica una taxonomía de TEMAS legible, asignada por LLM.
+    Agrupa el grafo como lo haría una persona (por tema), no por densidad de embeddings.
+    Sin apply → solo propone, no escribe. apply=true → persiste node.tema.
+    Los embeddings/UMAP siguen rigiendo la POSICIÓN 3D; esto rige el GRUPO (color/etiqueta)."""
+    rows = (await db.execute(
+        select(Node).where(Node.is_centroid == False, Node.is_issue == False)
+    )).scalars().all()
+    docs = [{"id": n.id, "label": n.label or "", "conceptos": (n.conceptos or [])[:8]} for n in rows]
+    if len(docs) < 3:
+        return {"ok": False, "error": f"Solo {len(docs)} nodos; muy pocos para una taxonomía."}
+
+    listado = "\n".join(
+        f'- [{d["id"]}] {d["label"]} | conceptos: {", ".join(d["conceptos"]) or "(ninguno)"}'
+        for d in docs
+    )
+    system = (
+        "Sos un bibliotecario experto que organiza un grafo de conocimiento personal sobre IA, "
+        "machine learning, estadística, RAG y temas afines. Agrupás documentos por TEMA, "
+        "como lo haría una persona, no por palabras sueltas."
+    )
+    user = f"""Tengo {len(docs)} documentos. Para cada uno te doy id, título y conceptos clave.
+
+1) Proponé una taxonomía de entre 6 y 10 TEMAS con nombres cortos y legibles en español
+   (ej: "Estadística", "LLMs", "RAG / Retrieval", "Diffusion y Visión",
+   "Redes neuronales / Deep learning", "ML clásico", "Agentes", "IA y sociedad").
+   Los temas deben reflejar los temas REALES de ESTOS documentos, no una lista genérica.
+2) Asigná CADA documento a exactamente UN tema de tu taxonomía.
+   Si un documento no encaja claramente en ninguno, asignalo a "Sin clasificar" — no lo fuerces.
+
+Documentos:
+{listado}
+
+Respondé SOLO con JSON válido, sin backticks:
+{{
+  "temas": ["Tema 1", "Tema 2", "..."],
+  "asignaciones": [{{"id": "<id exacto>", "tema": "<uno de temas, o 'Sin clasificar'>"}}]
+}}
+Cada id debe aparecer exactamente una vez. No inventes ids."""
+
+    from processor import query_llm, parsear_json
+    import asyncio
+    from collections import Counter
+    raw = await asyncio.to_thread(query_llm, [{"role": "user", "content": user}], system)
+    try:
+        data = parsear_json(raw)
+    except Exception:
+        return {"ok": False, "error": "El LLM no devolvió JSON válido.", "raw": raw[:600]}
+
+    temas = data.get("temas") or []
+    asign = {}
+    for a in data.get("asignaciones", []):
+        if isinstance(a, dict) and a.get("id"):
+            asign[a["id"]] = (a.get("tema") or "Sin clasificar").strip()
+
+    conteo = Counter(asign.get(d["id"], "Sin clasificar") for d in docs)
+
+    if apply:
+        for n in rows:
+            n.tema = asign.get(n.id) or "Sin clasificar"
+        await db.commit()
+
+    return {
+        "ok": True,
+        "applied": apply,
+        "temas": temas,
+        "conteo": dict(conteo),
+        "asignaciones": [
+            {"id": d["id"], "label": d["label"], "tema": asign.get(d["id"], "Sin clasificar")}
+            for d in docs
+        ],
+    }
 
 
 # ── Search ────────────────────────────────────────────────────────────
@@ -667,16 +887,44 @@ async def agent_endpoint(
     db: AsyncSession = Depends(get_async_session),
 ):
     body = await request.json()
-    system = body.get("system", "Sos el agente de PragmaForge.")
+    system = body.get("system", "Sos el agente de Algedi.")
     messages = body.get("messages", [])
+    ultima = messages[-1]["content"] if messages else ""
+
+    # Recuperar del grafo CON score → fundamentar la respuesta (RAG real) + VETO epistémico.
+    scored = await _nodos_relevantes_scored(ultima, max_n=6, db=db) if ultima else []
+    node_ids = [s["id"] for s in scored]
+    max_sim = scored[0]["sim"] if scored else 0.0
+
+    # VETO: si la mejor coincidencia es muy débil, el agente se abstiene (no inventa).
+    if ultima and max_sim < AGENT_VETO_UMBRAL:
+        reply = (
+            "🚫 **No tengo suficiente respaldo en tu grafo para responder esto con confianza.**\n\n"
+            f"La mejor coincidencia es de apenas **{int(max_sim * 100)}%** de similitud — por debajo del umbral. "
+            "Prefiero callarme antes que inventarte algo que suene bien pero no esté fundamentado en tus documentos.\n\n"
+            "Probá cargar material sobre el tema, o reformular hacia algo que sí esté en tu corpus."
+        )
+        db.add(AuditLog(query=ultima, agent_mode="VETO", node_ids_consulted=node_ids, response=reply[:2000]))
+        await db.commit()
+        return {"reply": reply, "nodos_relevantes": node_ids, "veto": True, "max_sim": round(max_sim, 2)}
+
+    # Grounding: inyectar el conocimiento recuperado CON su % de afinidad. El LLM usa esos
+    # números para auto-vetar con criterio (decir "no me alcanza" si la afinidad es baja).
+    if scored:
+        contexto = "\n".join(
+            f"- [{int(s['sim'] * 100)}% afinidad] {s['label']}: {(s.get('desc') or s.get('fragmento') or '').strip()[:240]}"
+            for s in scored
+        )
+        system = (
+            f"{system}\n\nCONOCIMIENTO RELEVANTE DE TU GRAFO (con % de afinidad a la pregunta). "
+            f"Fundamentá la respuesta SÓLO en esto. Si las afinidades son bajas (≲45%) o el "
+            f"contenido no cubre la pregunta, DECILO con honestidad y NO inventes:\n{contexto}"
+        )
     try:
         from processor import query_llm
         reply = query_llm(messages, system)
     except Exception as e:
         reply = f"Error: {e}"
-
-    ultima = messages[-1]["content"] if messages else ""
-    node_ids = await _nodos_relevantes(ultima, max_n=5, db=db)
 
     db.add(AuditLog(
         query=ultima,
@@ -686,7 +934,127 @@ async def agent_endpoint(
     ))
     await db.commit()
 
-    return {"reply": reply, "nodos_relevantes": node_ids}
+    return {"reply": reply, "nodos_relevantes": node_ids, "veto": False, "max_sim": round(max_sim, 2)}
+
+
+@app.post("/api/synthesize")
+async def synthesize_endpoint(request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Chat del módulo Issue: responde una consulta sobre un proceso/problema, fundándola
+    en el grafo. Incluye SIEMPRE el contenido de los node_ids en foco (el issue y su etapa)
+    + recupera conocimiento relevante por similitud. Honesto: si el grafo no cubre la
+    pregunta, lo dice en vez de inventar. Devuelve markdown en 'result'."""
+    import asyncio
+    body = await request.json()
+    query = (body.get("query") or "").strip()
+    node_ids = body.get("node_ids") or []
+    if not query:
+        return {"result": "Escribí una consulta."}
+
+    # Contenido explícito de los nodos en foco (el issue / la etapa seleccionada).
+    contexto_focos = ""
+    if node_ids:
+        rows = (await db.execute(select(Node).where(Node.id.in_(node_ids)))).scalars().all()
+        if rows:
+            contexto_focos = "\n".join(
+                f"- {n.label}: {(n.desc or n.fragmento or '').strip()[:400]}" for n in rows
+            )
+
+    # Recuperación semántica del resto del grafo para fundamentar (excluye los focos).
+    scored = await _nodos_relevantes_scored(query, max_n=6, db=db)
+    foco_set = set(node_ids)
+    scored = [s for s in scored if s["id"] not in foco_set]
+    max_sim = scored[0]["sim"] if scored else 0.0
+    contexto_grafo = "\n".join(
+        f"- [{int(s['sim'] * 100)}% afinidad] {s['label']}: "
+        f"{(s.get('desc') or s.get('fragmento') or '').strip()[:240]}"
+        for s in scored
+    ) or "(sin coincidencias relevantes en el grafo)"
+
+    system = (
+        "Sos el agente de Algedi ayudando a diagnosticar y mejorar un proceso o problema. "
+        "Respondé en español, con markdown, conciso y accionable. "
+        "Fundamentá SÓLO en el CONTEXTO EN FOCO y el CONOCIMIENTO DEL GRAFO de abajo. "
+        "Si las afinidades del grafo son bajas (≲45%) o no cubren la pregunta, DECILO con "
+        "honestidad y ofrecé lo que sí puedas desde el contexto en foco, sin inventar datos.\n\n"
+        f"CONTEXTO EN FOCO (el proceso/etapa):\n{contexto_focos or '(sin contexto específico)'}\n\n"
+        f"CONOCIMIENTO RELEVANTE DEL GRAFO (con % de afinidad):\n{contexto_grafo}"
+    )
+
+    try:
+        from processor import query_llm
+        reply = await asyncio.to_thread(query_llm, [{"role": "user", "content": query}], system)
+    except Exception as e:
+        reply = f"Error al consultar el agente: {e}"
+
+    consultados = list(node_ids) + [s["id"] for s in scored]
+    db.add(AuditLog(query=query[:2000], agent_mode="ISSUE_CHAT",
+                    node_ids_consulted=consultados, response=reply[:2000]))
+    await db.commit()
+
+    return {"result": reply, "nodos_relevantes": [s["id"] for s in scored], "max_sim": round(max_sim, 2)}
+
+
+# ── Procesos (inteligencia de procesos, fundada en el grafo) ──────────
+
+@app.post("/api/process")
+async def generar_proceso(
+    request: Request,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """A partir de la descripción de un proceso: lo estructura como flujograma Y lo analiza
+    FUNDADO en el grafo de conocimiento (sugerencias/riesgos citando documentos, y qué medir
+    y por qué — sin inventar números). MVP: genera y devuelve, no persiste todavía."""
+    body = await request.json()
+    descripcion = (body.get("descripcion") or "").strip()
+    if not descripcion:
+        raise HTTPException(400, "Falta la descripción del proceso")
+
+    # Grounding: recuperar conocimiento relevante del grafo.
+    scored = await _nodos_relevantes_scored(descripcion, max_n=6, db=db)
+    contexto = "\n".join(
+        f"- [{int(s['sim'] * 100)}% afinidad] {s['label']}: {(s.get('desc') or '').strip()[:200]}"
+        for s in scored
+    ) or "(sin conocimiento relevante en el grafo)"
+    nodos_fundamento = [s["id"] for s in scored]
+    afinidad_max = round(scored[0]["sim"], 2) if scored else 0.0
+
+    prompt = (
+        "Sos un analista de procesos. A partir de la descripción, generá la estructura del "
+        "proceso como flujograma Y un análisis fundado en el conocimiento disponible.\n\n"
+        f"DESCRIPCIÓN DEL PROCESO:\n{descripcion}\n\n"
+        "CONOCIMIENTO RELEVANTE DEL GRAFO (con % de afinidad). Fundá las sugerencias/riesgos "
+        "en esto; si la afinidad es baja o no aplica, DECILO y no inventes respaldo:\n"
+        f"{contexto}\n\n"
+        "Devolvé SOLO un JSON con esta estructura EXACTA:\n"
+        '{\n'
+        '  "titulo": "nombre corto del proceso",\n'
+        '  "pasos": [{"id": "p1", "label": "texto del paso (<=8 palabras)", "tipo": "inicio|paso|decision|fin"}],\n'
+        '  "conexiones": [{"desde": "p1", "hasta": "p2", "condicion": "opcional (sí/no en decisiones)"}],\n'
+        '  "sugerencias": [{"tipo": "mejora|riesgo|automatizacion", "texto": "...", "fundamento": "documento que lo respalda, o \'sin respaldo en el grafo\'"}],\n'
+        '  "indicadores": [{"que": "qué medir", "como": "cómo medirlo", "porque": "por qué importa"}]\n'
+        '}\n\n'
+        "Reglas: el primer paso es 'inicio' y el último 'fin'; los 'decision' pueden tener 2+ "
+        "salidas con condicion; en 'indicadores' NO inventes números, proponé QUÉ medir y POR QUÉ; "
+        "español; SOLO el JSON, sin texto alrededor."
+    )
+
+    try:
+        from processor import query_llm, parsear_json
+        raw = query_llm(
+            [{"role": "user", "content": prompt}],
+            system="Sos un experto en análisis y optimización de procesos. Respondés SOLO con JSON válido.",
+        )
+        data = parsear_json(raw.strip())
+    except Exception as e:
+        raise HTTPException(500, f"No se pudo generar el proceso: {e}")
+
+    data.setdefault("pasos", [])
+    data.setdefault("conexiones", [])
+    data.setdefault("sugerencias", [])
+    data.setdefault("indicadores", [])
+    data["nodos_fundamento"] = nodos_fundamento
+    data["afinidad_max"] = afinidad_max
+    return data
 
 
 # ── Ingestion ─────────────────────────────────────────────────────────
@@ -699,6 +1067,13 @@ def _set_progress(pct: int, msg: str):
             _ingest["progress"] = pct
             _ingest["message"] = msg
 
+
+# Veto epistémico del agente, en DOS capas:
+#  1) Hard floor: si la mejor coincidencia cae por debajo de esto, se abstiene sin llamar al
+#     LLM. Conservador a propósito (los embeddings tienen "piso" alto y un umbral agresivo
+#     vetaría consultas válidas — hay solapamiento entre off-topic y cubierto).
+#  2) Soft: al LLM se le pasa el % de afinidad y se le instruye decir "no me alcanza" si es bajo.
+AGENT_VETO_UMBRAL = 0.28
 
 # Techo de videos por playlist. NO es un capricho: cada video = 1 llamada al LLM, y
 # Gemini gratis limita req/min. 50 cubre casi cualquier playlist real; subilo si querés
@@ -938,7 +1313,7 @@ def _run_issue(descripcion: str, ref_url: str = None, filepath: str = None):
                 _issue_state.update({"progress": 15, "message": "Obteniendo contenido de la URL…"})
             try:
                 import httpx
-                headers = {"User-Agent": "Mozilla/5.0 (compatible; PragmaForge/1.0)"}
+                headers = {"User-Agent": "Mozilla/5.0 (compatible; Algedi/1.0)"}
                 with httpx.Client(timeout=20.0, follow_redirects=True) as c:
                     resp = c.get(ref_url, headers=headers)
                     url_text = _extraer_texto_html(resp.text)[:3000]
@@ -1084,6 +1459,21 @@ def _run_issue(descripcion: str, ref_url: str = None, filepath: str = None):
         with _issue_lock:
             _issue_state.update({"progress": 95, "message": "Finalizando…"})
 
+        # Persistir el reporte en el nodo: antes vivía solo en este estado transitorio
+        # y se perdía al navegar al detalle del issue (quedaba un chat vacío).
+        synthesis = {
+            "proceso":  resp_proceso,
+            "riesgos":  resp_riesgos,
+            "creativo": resp_creativo,
+            "red_team": resp_red_team,
+        }
+        try:
+            with get_sync_session() as s:
+                s.query(NodeModel).filter(NodeModel.id == nodo["id"]).update({"synthesis": synthesis})
+                s.commit()
+        except Exception as e:
+            print(f"Warning: no se pudo persistir el reporte del issue: {e}")
+
         with _issue_lock:
             _issue_state.update({
                 "state": "done",
@@ -1097,12 +1487,7 @@ def _run_issue(descripcion: str, ref_url: str = None, filepath: str = None):
                         {"id": n["id"], "label": n["label"], "desc": n.get("desc", ""), "fuente": n.get("fuente", "")}
                         for n in related_nodes
                     ],
-                    "synthesis": {
-                        "proceso":  resp_proceso,
-                        "riesgos":  resp_riesgos,
-                        "creativo": resp_creativo,
-                        "red_team": resp_red_team,
-                    },
+                    "synthesis": synthesis,
                 },
             })
 

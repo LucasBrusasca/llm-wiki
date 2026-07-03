@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PragmaForge — Knowledge Graph 3D</title>
+<title>Algedi — Knowledge Graph 3D</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
 <script type="importmap">
 {
@@ -258,14 +258,14 @@ body { background:var(--bg); font-family:'DM Mono',monospace; overflow:hidden; }
   </div>
   <div class="tt-footer">
     <span id="tt-level">Nivel 1</span>
-    <span>PragmaForge 3D</span>
+    <span>Algedi 3D</span>
   </div>
   </div>
 </div>
 
 <div id="agent-panel">
   <div id="agent-header">
-    <div id="agent-title">◈ Agente PragmaForge</div>
+    <div id="agent-title">◈ Agente Algedi</div>
     <button id="agent-close">✕</button>
   </div>
   <div id="agent-messages"></div>
@@ -771,7 +771,7 @@ async function enviarMensaje() {
   msgs.scrollTop = msgs.scrollHeight;
   conversacion.push({ role: 'user', content: msg });
   try {
-    const sys = `Sos el agente de PragmaForge. Nodo: "${nodoContexto?.label}". Desc: "${nodoContexto?.desc}". Fuente: ${nodoContexto?.fuente}. Respondé conciso y en español.`;
+    const sys = `Sos el agente de Algedi. Nodo: "${nodoContexto?.label}". Desc: "${nodoContexto?.desc}". Fuente: ${nodoContexto?.fuente}. Respondé conciso y en español.`;
     const res = await fetch('/agent', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 600, system: sys, messages: conversacion }) });
     const data = await res.json();

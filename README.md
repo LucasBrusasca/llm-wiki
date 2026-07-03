@@ -1,4 +1,4 @@
-# PragmaForge
+# Algedi
 
 **Local AI-powered knowledge graph with 3D semantic visualization.**  
 Ingest PDFs, YouTube videos, web pages and Excel files → the system extracts concepts via LLM, builds a semantic graph, and lets you explore, query, and synthesize knowledge in 3D.
@@ -12,7 +12,7 @@ Ingest PDFs, YouTube videos, web pages and Excel files → the system extracts c
 
 ## What it does
 
-You drop documents into PragmaForge. It reads them, extracts key concepts using a local or cloud LLM, generates vector embeddings, and positions each document as a node in 3D space based on semantic similarity (UMAP). Nodes that share concepts or have high cosine similarity get connected.
+You drop documents into Algedi. It reads them, extracts key concepts using a local or cloud LLM, generates vector embeddings, and positions each document as a node in 3D space based on semantic similarity (UMAP). Nodes that share concepts or have high cosine similarity get connected.
 
 From there you can:
 
@@ -234,7 +234,7 @@ This project is a working prototype of the architecture described in my master's
 **"Multi-RAG Multimodal con orquestación reflexiva para gestión del conocimiento corporativo"**  
 Maestría en Ciencia de Datos — Universidad Austral, 2025.
 
-The thesis explores multi-silo RAG systems with epistemic veto mechanisms. PragmaForge is the personal knowledge management layer — separate from the corporate knowledge system, but designed to federate with it via MCP.
+The thesis explores multi-silo RAG systems with epistemic veto mechanisms. Algedi is the personal knowledge management layer — separate from the corporate knowledge system, but designed to federate with it via MCP.
 
 ---
 

@@ -1,9 +1,9 @@
-# PragmaForge — Visión y Concepto Central
+# Algedi — Visión y Concepto Central
 
 > *Knowledge isn't lost in storage. It's lost in the drift between a symbol and its meaning.*
-> **PragmaForge is the mechanism that snaps it back — and lets you act on it.**
+> **Algedi is the mechanism that snaps it back — and lets you act on it.**
 
-PragmaForge no es un visor de embeddings bonito ni una app de notas con un chat pegado.
+Algedi no es un visor de embeddings bonito ni una app de notas con un chat pegado.
 Es un **sistema de anclaje semántico navegable**: ingiere tus documentos reales, modela su
 significado como una geometría explorable, lo **mantiene anclado** para que no se desvíe, y
 deja que un **agente reflexivo** razone y actúe sobre ese conocimiento anclado.
@@ -36,7 +36,7 @@ principio se vuelve un error grande tres pasos después.
 > sobre *grounding mechanisms*: **"Fix the relationship, not the word."** El significado nunca
 > estuvo en la palabra; está en la **relación** entre la palabra y lo que la ancla.
 
-**PragmaForge es, en esencia, un mecanismo anti-saturación a escala personal y de equipo.**
+**Algedi es, en esencia, un mecanismo anti-saturación a escala personal y de equipo.**
 
 ---
 
@@ -58,7 +58,7 @@ El *"Multi"* del título no es decorativo: en vez de un único agente sabelotodo
 comparten **la misma base de conocimiento anclada** y se orquestan entre sí. Especialización
 jerárquica e interconectada, no un chatbot monolítico.
 
-PragmaForge hace eso **tangible y navegable**.
+Algedi hace eso **tangible y navegable**.
 
 ---
 
@@ -79,14 +79,14 @@ Unifica tres cosas que normalmente viven separadas:
 
 ## 4. En qué se diferencia (el posicionamiento)
 
-La mayoría de lo que circula cae en uno de dos baldes. PragmaForge ocupa el cruce que falta.
+La mayoría de lo que circula cae en uno de dos baldes. Algedi ocupa el cruce que falta.
 
 | | Lo que ofrece | Su límite |
 |---|---|---|
 | **Demos virales de embeddings 3D** (mapas de bookmarks, gestos) | Hermoso, espacial, viral | **Pasivos**: solo mirás una nube girar. La gente pide *"how do I use this with my files"* — es un demo, no una herramienta. |
 | **Claude + Obsidian / apps de notas** | Útil, con chat | **Sin geometría ni anclaje**: texto plano; el significado se re-deriva en privado y se desvía. |
 | **RAG tradicional** | Recupera y responde | **Sin reflexión**: responde a ciegas; la deriva se acumula paso a paso. |
-| **PragmaForge** | **Lindo + útil + anclado + reflexivo** | Su trabajo es justo cerrar la brecha que los otros dejan abierta. |
+| **Algedi** | **Lindo + útil + anclado + reflexivo** | Su trabajo es justo cerrar la brecha que los otros dejan abierta. |
 
 **El diferencial no es hacer el grafo más lindo** (esa es la cancha de los demos virales).
 Es hacer que el mapa **te diga algo que no sabías** y que el agente **no se desvíe**. De
@@ -166,13 +166,13 @@ El estado actual ya ancla y navega el conocimiento. La hoja de ruta lo convierte
 
    Cada agente puede portar una **persona/lente** (*escéptico*, *sintetizador*, *analista de
    riesgo*): no solo entiende el significado, **decide bajo un marco** (alineamiento normativo).
-   Esto convierte a PragmaForge de *wiki de documentos* en **consola de control desde donde
+   Esto convierte a Algedi de *wiki de documentos* en **consola de control desde donde
    orquestás múltiples agentes expertos** para tu entorno o empresa.
 
 4. **Arquitectura de decisión y federación** *(la capa que sigue al significado)*
    Anclado el *qué-significa*, falta el **qué-acción, quién la dueña, bajo qué restricciones**
    (la "decision architecture": interpretación es la base, pero la organización todavía necesita
-   decidir acción, dueño y reglas). PragmaForge está diseñado para federar —vía **MCP**— con
+   decidir acción, dueño y reglas). Algedi está diseñado para federar —vía **MCP**— con
    sistemas de conocimiento corporativos, separando la capa personal de la organizacional.
 
 5. **Topología real (Mapper / TDA) y navegación gestual** *(el diferencial sobre los demos virales)*
@@ -205,7 +205,7 @@ agente RAG (global y por nodo), módulo de issues, síntesis multi-nodo, inspecc
 ## 8. El manifiesto, en una línea
 
 > El significado nunca estuvo en la palabra. Está en la **relación** entre la palabra y lo que
-> la ancla. **PragmaForge arregla la relación —y te deja actuar sobre ella.**
+> la ancla. **Algedi arregla la relación —y te deja actuar sobre ella.**
 
 ---
 

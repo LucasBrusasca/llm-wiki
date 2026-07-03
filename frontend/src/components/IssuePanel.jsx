@@ -1,10 +1,68 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import ReactFlow, { Background, Controls, MarkerType } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { clusterColor } from '../App.jsx';
+import { marked } from 'marked';
 
-const FUENTE_ICON = { youtube: '▶', pdf: '⬛', tesis: '⬛', excel: '⊞', html: '⊡', concepto: '◈', issue: '⚠' };
+marked.setOptions({ breaks: true, gfm: true });
 
+// ── Reporte de los 4 agentes ────────────────────────────────────────────────
+// Colapsable y renderizado como markdown. Compartido entre el resultado
+// post-creación y la pestaña "Reporte" del detalle del issue.
+const SYN_SECTIONS = [
+  { key: 'proceso',  title: '⚙️ ANÁLISIS DE PROCESO',  color: '#00ff88' },
+  { key: 'riesgos',  title: '⚠️ GESTIÓN DE RIESGOS',   color: '#ff9500' },
+  { key: 'creativo', title: '💡 PERSPECTIVA CREATIVA',  color: '#00d4ff' },
+  { key: 'red_team', title: '🔴 RED TEAM',              color: '#ff3366', dark: true },
+];
+
+function SynthesisView({ syn }) {
+  const [collapsed, setCollapsed] = useState({});
+  const isObject = typeof syn === 'object' && syn !== null;
+  const sections = isObject
+    ? SYN_SECTIONS.map(s => ({ ...s, content: syn[s.key] })).filter(s => s.content)
+    : [{ key: 'synthesis', title: '⬡ SÍNTESIS', color: 'var(--gold)', content: syn }];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {sections.map(({ key, title, color, content, dark }) => {
+        const isCollapsed = collapsed[key];
+        return (
+          <div key={key} style={{
+            borderRadius: 6,
+            border: `1px solid ${dark ? 'rgba(255,51,102,0.3)' : `${color}33`}`,
+            background: dark ? 'rgba(30,4,12,0.7)' : 'rgba(255,255,255,0.03)',
+            overflow: 'hidden',
+          }}>
+            <button
+              onClick={() => setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))}
+              style={{
+                width: '100%', display: 'flex', alignItems: 'center',
+                justifyContent: 'space-between', padding: '10px 14px',
+                background: 'none', border: 'none', cursor: 'pointer',
+                color, fontWeight: 700, fontSize: 11, letterSpacing: 1.2,
+                fontFamily: 'monospace', textAlign: 'left',
+              }}
+            >
+              {title}
+              <span style={{ fontSize: 12, opacity: 0.7 }}>{isCollapsed ? '▸' : '▾'}</span>
+            </button>
+            {!isCollapsed && (
+              <div
+                style={{
+                  padding: '10px 14px 14px', fontSize: 13, color: '#c4c8d6', lineHeight: 1.7,
+                  borderTop: `1px solid ${dark ? 'rgba(255,51,102,0.15)' : 'rgba(255,255,255,0.06)'}`,
+                }}
+                dangerouslySetInnerHTML={{ __html: marked.parse(content || '') }}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Formulario de nuevo issue ───────────────────────────────────────────────
 // Subcomponente para evitar que el re-render afecte la lista lateral al escribir
 function NewIssueForm({ onRefresh, setSelectedIssueId }) {
   const [desc, setDesc]           = useState('');
@@ -12,7 +70,6 @@ function NewIssueForm({ onRefresh, setSelectedIssueId }) {
   const [file, setFile]           = useState(null);
   const [dragOver, setDragOver]   = useState(false);
   const [status, setStatus]       = useState({ state: 'idle', message: '', progress: 0, result: null });
-  const [collapsedSections, setCollapsedSections] = useState({});
   const pollRef                   = useRef(null);
 
   useEffect(() => () => clearInterval(pollRef.current), []);
@@ -71,15 +128,15 @@ function NewIssueForm({ onRefresh, setSelectedIssueId }) {
   const isError      = status.state === 'error';
   const result       = status.result;
 
+  // Ordenados por umbral ascendente: el .find(progress <= at) devuelve el paso correcto.
   const STEPS = [
     { at: 15, label: 'Obteniendo contenido de referencia…' },
-    { at: 20, label: 'Analizando el problema…' },
-    { at: 50, label: 'Guardando en el grafo y extrayendo flujograma…' },
-    { at: 70, label: 'Buscando conexiones relevantes…' },
-    { at: 30, label: 'Agente 1/4 — Análisis de procesos…' },
-    { at: 50, label: 'Agente 2/4 — Gestión de riesgos…' },
+    { at: 25, label: 'Analizando el problema…' },
+    { at: 40, label: 'Agente 1/4 — Análisis de procesos…' },
+    { at: 55, label: 'Agente 2/4 — Gestión de riesgos…' },
     { at: 68, label: 'Agente 3/4 — Perspectiva creativa…' },
-    { at: 84, label: 'Agente 4/4 — Red Team epistémico…' },
+    { at: 80, label: 'Agente 4/4 — Red Team epistémico…' },
+    { at: 90, label: 'Guardando en el grafo y extrayendo flujograma…' },
     { at: 95, label: 'Finalizando…' },
     { at: 100, label: 'Listo' },
   ];
@@ -90,7 +147,7 @@ function NewIssueForm({ onRefresh, setSelectedIssueId }) {
       <div className="issue-header" style={{ padding: '0 0 24px 0', borderBottom: 'none' }}>
         <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--gold)', letterSpacing: 0.5 }}>Nuevo Proceso o Problema</span>
       </div>
-      
+
       {!isDone ? (
         <div className="issue-input-section" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           <div className="issue-hint" style={{ fontSize: 14 }}>
@@ -167,59 +224,11 @@ function NewIssueForm({ onRefresh, setSelectedIssueId }) {
           <div className="issue-result-label" style={{ fontSize: 14 }}>PROCESO DETECTADO EXITOSAMENTE</div>
           <div className="issue-result-title" style={{ fontSize: 24, margin: '12px 0' }}>{result?.label}</div>
 
-          {/* 4-agent synthesis */}
-          {result?.synthesis && (() => {
-            const syn = result.synthesis;
-            const isObject = typeof syn === 'object' && syn !== null;
-            const sections = isObject ? [
-              { key: 'proceso',  title: '⚙️ ANÁLISIS DE PROCESO',    color: '#00ff88', content: syn.proceso,   dark: false },
-              { key: 'riesgos',  title: '⚠️ GESTIÓN DE RIESGOS',     color: '#ff9500', content: syn.riesgos,   dark: false },
-              { key: 'creativo', title: '💡 PERSPECTIVA CREATIVA',    color: '#00d4ff', content: syn.creativo,  dark: false },
-              { key: 'red_team', title: '🔴 RED TEAM',                color: '#ff3366', content: syn.red_team,  dark: true  },
-            ] : [
-              { key: 'synthesis', title: '⬡ SÍNTESIS', color: 'var(--gold)', content: syn, dark: false },
-            ];
-
-            return (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 20 }}>
-                {sections.map(({ key, title, color, content, dark }) => {
-                  const isCollapsed = collapsedSections[key];
-                  return (
-                    <div key={key} style={{
-                      borderRadius: 6,
-                      border: `1px solid ${dark ? 'rgba(255,51,102,0.3)' : `${color}33`}`,
-                      background: dark ? 'rgba(30,4,12,0.7)' : 'rgba(255,255,255,0.03)',
-                      overflow: 'hidden',
-                    }}>
-                      <button
-                        onClick={() => setCollapsedSections(prev => ({ ...prev, [key]: !prev[key] }))}
-                        style={{
-                          width: '100%', display: 'flex', alignItems: 'center',
-                          justifyContent: 'space-between', padding: '10px 14px',
-                          background: 'none', border: 'none', cursor: 'pointer',
-                          color, fontWeight: 700, fontSize: 11, letterSpacing: 1.2,
-                          fontFamily: 'monospace', textAlign: 'left',
-                        }}
-                      >
-                        {title}
-                        <span style={{ fontSize: 12, opacity: 0.7 }}>{isCollapsed ? '▸' : '▾'}</span>
-                      </button>
-                      {!isCollapsed && content && (
-                        <div style={{
-                          padding: '0 14px 14px',
-                          fontSize: 13, color: '#c4c8d6', lineHeight: 1.7,
-                          whiteSpace: 'pre-wrap', borderTop: `1px solid ${dark ? 'rgba(255,51,102,0.15)' : 'rgba(255,255,255,0.06)'}`,
-                          paddingTop: 10,
-                        }}>
-                          {content}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
+          {result?.synthesis && (
+            <div style={{ marginTop: 20 }}>
+              <SynthesisView syn={result.synthesis} />
+            </div>
+          )}
 
           <div className="issue-result-actions" style={{ marginTop: 24, display: 'flex', gap: 16 }}>
             <button
@@ -227,7 +236,7 @@ function NewIssueForm({ onRefresh, setSelectedIssueId }) {
               style={{ padding: '12px 24px', fontSize: 14, borderRadius: 8 }}
               onClick={() => { setSelectedIssueId(result?.nodo_id); onRefresh(); }}
             >
-              Ver Flujograma Interactivo
+              Abrir el issue (reporte + flujograma + chat)
             </button>
             <button
               className="issue-new-btn"
@@ -244,15 +253,28 @@ function NewIssueForm({ onRefresh, setSelectedIssueId }) {
 }
 
 
+// ── Panel principal ─────────────────────────────────────────────────────────
 export default function IssuePanel({ allNodes, onClose, onRefresh, onNavigate }) {
   const [selectedIssueId, setSelectedIssueId] = useState('new');
   const [search, setSearch] = useState('');
 
-  // Estados para "Chat de Issue"
-  const [chatHistories, setChatHistories] = useState({});
+  // Chat por issue — persistido en localStorage para no perder el diagnóstico
+  // al cerrar el panel (mismo criterio que AgentPanel).
+  const CHATS_KEY = 'algedi_issue_chats';
+  const [chatHistories, setChatHistories] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(CHATS_KEY) || '{}');
+      return (saved && typeof saved === 'object') ? saved : {};
+    } catch { return {}; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(CHATS_KEY, JSON.stringify(chatHistories)); } catch {}
+  }, [chatHistories]);
+
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [selectedStage, setSelectedStage] = useState(null);
+  const [detailTab, setDetailTab] = useState('analisis');
   const messagesEndRef = useRef(null);
 
   const issues = useMemo(() => {
@@ -266,28 +288,73 @@ export default function IssuePanel({ allNodes, onClose, onRefresh, onNavigate })
   const selectedIssue = useMemo(() => issues.find(i => i.id === selectedIssueId), [issues, selectedIssueId]);
   const currentChat = selectedIssueId && selectedIssueId !== 'new' ? (chatHistories[selectedIssueId] || []) : [];
 
-  // Reset stage selection when issue changes
+  // Reset al cambiar de issue: foco de etapa y pestaña por defecto (reporte si existe).
   useEffect(() => {
     setSelectedStage(null);
-  }, [selectedIssueId]);
+    const iss = issues.find(i => i.id === selectedIssueId);
+    setDetailTab(iss?.synthesis ? 'analisis' : (iss?.flujograma?.etapas?.length ? 'flujo' : 'chat'));
+  }, [selectedIssueId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-scroll chat
   useEffect(() => {
-    if (selectedIssueId !== 'new') {
+    if (selectedIssueId !== 'new' && detailTab === 'chat') {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [currentChat, isTyping, selectedIssueId]);
+  }, [currentChat, isTyping, selectedIssueId, detailTab]);
 
-  // ---- Lógica de Flujograma (React Flow) ----
+  const clearChat = useCallback(() => {
+    if (!selectedIssue) return;
+    setChatHistories(prev => { const next = { ...prev }; delete next[selectedIssue.id]; return next; });
+  }, [selectedIssue]);
+
+  const deleteIssue = useCallback(async () => {
+    if (!selectedIssue) return;
+    if (!window.confirm(`¿Eliminar "${selectedIssue.label}" del grafo? Esta acción no se puede deshacer.`)) return;
+    try {
+      await fetch(`/api/node/${encodeURIComponent(selectedIssue.id)}`, { method: 'DELETE' });
+      setChatHistories(prev => { const next = { ...prev }; delete next[selectedIssue.id]; return next; });
+      setSelectedIssueId('new');
+      onRefresh();
+    } catch { /* el refresh mostrará el estado real */ }
+  }, [selectedIssue, onRefresh]);
+
+  // ---- Flujograma (React Flow) ----
   const initialElements = useMemo(() => {
     if (!selectedIssue || !selectedIssue.flujograma) return { nodes: [], edges: [] };
     const { etapas = [], conexiones = [] } = selectedIssue.flujograma;
-    
-    // Layout en árbol muy básico, de arriba hacia abajo
-    const rfNodes = etapas.map((etapa, idx) => ({
+
+    // Layout por niveles (BFS sobre las conexiones): las ramas se abren en columnas
+    // en vez de apilarse todas en una sola línea vertical.
+    const children = {};
+    conexiones.forEach(c => { (children[c.source] ??= []).push(c.target); });
+    const targets = new Set(conexiones.map(c => c.target));
+    const raiz = etapas.find(e => !targets.has(e.id)) || etapas[0];
+    const nivel = {};
+    if (raiz) {
+      const q = [[raiz.id, 0]]; nivel[raiz.id] = 0;
+      while (q.length) {
+        const [id, d] = q.shift();
+        (children[id] || []).forEach(h => {
+          if (nivel[h] === undefined) { nivel[h] = d + 1; q.push([h, d + 1]); }
+        });
+      }
+    }
+    let maxNivel = Math.max(0, ...Object.values(nivel).filter(Number.isFinite));
+    etapas.forEach(e => { if (nivel[e.id] === undefined) { maxNivel += 1; nivel[e.id] = maxNivel; } });
+    const porNivel = {};
+    etapas.forEach(e => { (porNivel[nivel[e.id]] ??= []).push(e); });
+    const NODE_W = 250, COL_GAP = 60, ROW_H = 150;
+    const posDe = {};
+    Object.entries(porNivel).forEach(([lvl, filas]) => {
+      const totalW = filas.length * NODE_W + (filas.length - 1) * COL_GAP;
+      const x0 = Math.max(40, (900 - totalW) / 2);
+      filas.forEach((e, i) => { posDe[e.id] = { x: x0 + i * (NODE_W + COL_GAP), y: Number(lvl) * ROW_H + 40 }; });
+    });
+
+    const rfNodes = etapas.map(etapa => ({
       id: etapa.id,
       data: { label: `${etapa.label}\n\n${etapa.desc || ''}` },
-      position: { x: 300, y: idx * 120 + 40 },
+      position: posDe[etapa.id] || { x: 300, y: 40 },
       style: {
         background: selectedStage?.id === etapa.id ? 'rgba(245,166,35,0.2)' : 'rgba(10,14,30,0.9)',
         color: selectedStage?.id === etapa.id ? '#f5a623' : '#c4c8d6',
@@ -315,10 +382,10 @@ export default function IssuePanel({ allNodes, onClose, onRefresh, onNavigate })
     return { nodes: rfNodes, edges: rfEdges };
   }, [selectedIssue, selectedStage]);
 
-  // ---- Lógica de Chat de Issue ----
+  // ---- Chat del issue ----
   const handleSendMessage = async () => {
     if (!inputText.trim() || !selectedIssue) return;
-    
+
     const userMsg = { role: 'user', text: inputText };
     setChatHistories(prev => ({
       ...prev,
@@ -345,8 +412,12 @@ Descripción general: ${selectedIssue.desc || 'Sin descripción'}
         body: JSON.stringify({ query: contextPrompt, node_ids: [selectedIssue.id] })
       });
       const data = await res.json();
-      
-      const aiMsg = { role: 'assistant', text: data.result || 'No se recibió respuesta.' };
+
+      let texto = data.result || 'No se recibió respuesta.';
+      if (typeof data.max_sim === 'number' && data.max_sim > 0) {
+        texto += `\n\n<small style="color:#7a8699">⊙ fundado en tu grafo · afinidad máx ${Math.round(data.max_sim * 100)}%</small>`;
+      }
+      const aiMsg = { role: 'assistant', text: texto };
       setChatHistories(prev => ({
         ...prev,
         [selectedIssue.id]: [...(prev[selectedIssue.id] || []), aiMsg]
@@ -361,18 +432,24 @@ Descripción general: ${selectedIssue.desc || 'Sin descripción'}
     }
   };
 
+  const TABS = [
+    { id: 'analisis', label: '⬡ Reporte' },
+    { id: 'flujo',    label: '⛬ Flujograma' },
+    { id: 'chat',     label: '💬 Chat' },
+  ];
+
   return (
     <div className="library-overlay">
       <div className="library-panel" style={{ flexDirection: 'row', width: 'min(1300px, 95vw)', height: '88vh', maxHeight: '900px' }}>
-        
+
         {/* PANEL IZQUIERDO: LISTA DE ISSUES */}
         <div style={{ width: '320px', display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', background: 'rgba(0,0,0,0.4)' }}>
           <div className="library-header" style={{ padding: '20px 16px' }}>
             <span className="library-title" style={{ fontSize: 14, letterSpacing: 1.5 }}>⚠ Procesos y Problemas</span>
           </div>
-          
+
           <div style={{ padding: '16px', borderBottom: '1px solid var(--border)' }}>
-            <button 
+            <button
               onClick={() => setSelectedIssueId('new')}
               style={{
                 width: '100%', padding: '12px', marginBottom: '16px', borderRadius: '6px',
@@ -412,9 +489,14 @@ Descripción general: ${selectedIssue.desc || 'Sin descripción'}
                   <div style={{ fontSize: 11, color: 'var(--text-mid)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {issue.desc || 'Sin descripción...'}
                   </div>
-                  {issue.flujograma && issue.flujograma.etapas?.length > 0 && (
-                    <div style={{ fontSize: 10, color: 'var(--gold)', marginTop: 8, fontWeight: 600, letterSpacing: 0.5 }}>⬡ FLUJOGRAMA DISPONIBLE</div>
-                  )}
+                  <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+                    {issue.synthesis && (
+                      <span style={{ fontSize: 10, color: '#00d4ff', fontWeight: 600, letterSpacing: 0.5 }}>⬡ REPORTE</span>
+                    )}
+                    {issue.flujograma?.etapas?.length > 0 && (
+                      <span style={{ fontSize: 10, color: 'var(--gold)', fontWeight: 600, letterSpacing: 0.5 }}>⛬ FLUJOGRAMA</span>
+                    )}
+                  </div>
                 </div>
               ))
             )}
@@ -428,90 +510,157 @@ Descripción general: ${selectedIssue.desc || 'Sin descripción'}
           {selectedIssueId === 'new' ? (
             <NewIssueForm onRefresh={onRefresh} setSelectedIssueId={setSelectedIssueId} />
           ) : (
-            // --- VISTA: DETALLE DEL ISSUE (FLUJOGRAMA + CHAT) ---
+            // --- VISTA: DETALLE DEL ISSUE (pestañas Reporte / Flujograma / Chat) ---
             selectedIssue && (
               <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                
-                {/* ZONA SUPERIOR: FLUJOGRAMA */}
-                {selectedIssue.flujograma && selectedIssue.flujograma.etapas?.length > 0 && (
-                  <div style={{ flex: 1, minHeight: '40%', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.6)', position: 'relative' }}>
-                    <div style={{ position: 'absolute', top: 16, left: 16, zIndex: 5, fontSize: 12, color: 'var(--gold)', fontWeight: 600, letterSpacing: 1 }}>
-                      FLUJOGRAMA INTERACTIVO (Selecciona una etapa)
+
+                {/* HEADER: título, eliminar y pestañas */}
+                <div style={{ padding: '18px 24px 0', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, paddingRight: 36 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 17, fontWeight: 700, color: '#ff3060' }}>{selectedIssue.label}</div>
+                      {selectedIssue.desc && (
+                        <div style={{ fontSize: 12.5, color: 'var(--text-mid)', marginTop: 6, lineHeight: 1.5 }}>{selectedIssue.desc}</div>
+                      )}
                     </div>
-                    <ReactFlow 
-                      nodes={initialElements.nodes}
-                      edges={initialElements.edges}
-                      onNodeClick={(_, node) => {
-                        const etapa = selectedIssue.flujograma.etapas.find(e => e.id === node.id);
-                        setSelectedStage(etapa);
-                      }}
-                      fitView
-                      fitViewOptions={{ padding: 0.2 }}
-                      attributionPosition="bottom-right"
-                    >
-                      <Background color="#5a6ea0" gap={20} size={1} opacity={0.15} />
-                      <Controls showInteractive={false} />
-                    </ReactFlow>
+                    <button onClick={deleteIssue} title="Eliminar este issue del grafo"
+                      style={{
+                        background: 'none', border: '1px solid rgba(255,48,96,0.35)', color: '#ff3060',
+                        borderRadius: 6, cursor: 'pointer', height: 30, padding: '0 10px', fontSize: 11.5, flexShrink: 0,
+                      }}>
+                      🗑 Eliminar
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
+                    {TABS.map(t => (
+                      <button key={t.id} onClick={() => setDetailTab(t.id)}
+                        style={{
+                          padding: '9px 16px', fontSize: 12.5, cursor: 'pointer',
+                          background: 'none', border: 'none',
+                          borderBottom: `2px solid ${detailTab === t.id ? '#ff3060' : 'transparent'}`,
+                          color: detailTab === t.id ? '#ff3060' : 'var(--text-mid)', fontWeight: 600,
+                        }}>
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* PESTAÑA: REPORTE */}
+                {detailTab === 'analisis' && (
+                  <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
+                    {selectedIssue.synthesis ? (
+                      <SynthesisView syn={selectedIssue.synthesis} />
+                    ) : (
+                      <div style={{ color: 'var(--text-mid)', fontSize: 13, lineHeight: 1.7, maxWidth: 520, margin: '40px auto', textAlign: 'center' }}>
+                        Este issue se creó antes de que el reporte quedara guardado en el grafo,
+                        así que su análisis se perdió. Eliminalo y declaralo de nuevo para obtener
+                        el reporte completo de los 4 agentes — a partir de ahora queda persistido.
+                      </div>
+                    )}
                   </div>
                 )}
 
-                {/* HEADER INFO DEL CHAT */}
-                <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--border)', background: 'rgba(255,48,96,0.04)', flexShrink: 0 }}>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: '#ff3060', marginBottom: 6 }}>{selectedIssue.label}</div>
-                  
-                  {selectedStage ? (
-                    <div style={{ fontSize: 13, color: 'var(--gold)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ padding: '4px 8px', background: 'rgba(245,166,35,0.2)', borderRadius: 4 }}>Etapa en Foco: {selectedStage.label}</span>
-                      <button onClick={() => setSelectedStage(null)} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 11, padding: 4 }}>[Quitar foco]</button>
+                {/* PESTAÑA: FLUJOGRAMA */}
+                {detailTab === 'flujo' && (
+                  selectedIssue.flujograma?.etapas?.length > 0 ? (
+                    <div style={{ flex: 1, background: 'rgba(0,0,0,0.6)', position: 'relative' }}>
+                      <div style={{ position: 'absolute', top: 12, left: 16, zIndex: 5, fontSize: 11.5, color: 'var(--gold)', fontWeight: 600, letterSpacing: 1 }}>
+                        Seleccioná una etapa para enfocar el chat en ella
+                      </div>
+                      <ReactFlow
+                        nodes={initialElements.nodes}
+                        edges={initialElements.edges}
+                        onNodeClick={(_, node) => {
+                          const etapa = selectedIssue.flujograma.etapas.find(e => e.id === node.id);
+                          setSelectedStage(etapa);
+                          setDetailTab('chat');
+                        }}
+                        fitView
+                        fitViewOptions={{ padding: 0.2 }}
+                        attributionPosition="bottom-right"
+                      >
+                        <Background color="#5a6ea0" gap={20} size={1} opacity={0.15} />
+                        <Controls showInteractive={false} />
+                      </ReactFlow>
                     </div>
                   ) : (
-                    <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>Conversando sobre el proceso general.</div>
-                  )}
-                </div>
+                    <div style={{ flex: 1, display: 'grid', placeItems: 'center', color: 'var(--text-mid)', fontSize: 13, padding: 24, textAlign: 'center' }}>
+                      Este issue no describe un proceso con etapas — no se extrajo flujograma.
+                      {'\n'}Si debería tenerlo, eliminalo y declaralo de nuevo detallando los pasos.
+                    </div>
+                  )
+                )}
 
-                {/* ZONA INFERIOR: CHAT */}
-                <div className="agent-messages" style={{ flex: 1, padding: '20px 24px', overflowY: 'auto' }}>
-                  {currentChat.length === 0 && (
-                    <div style={{ color: 'var(--text-mid)', fontSize: 13, textAlign: 'center', marginTop: 40, fontStyle: 'italic' }}>
-                      {selectedStage ? `Pregunta sobre la etapa "${selectedStage.label}" y el agente cruzará la consulta con tu biblioteca.` : `Inicia una conversación sobre este proceso.`}
-                    </div>
-                  )}
-                  {currentChat.map((msg, idx) => (
-                    <div key={idx} className={`agent-msg ${msg.role}`} style={{ maxWidth: '85%', fontSize: 14, lineHeight: 1.6 }}>
-                      {msg.role === 'assistant' ? (
-                        <div dangerouslySetInnerHTML={{ __html: msg.text }} />
-                      ) : (
-                        <p>{msg.text}</p>
-                      )}
-                    </div>
-                  ))}
-                  {isTyping && (
-                    <div className="agent-msg assistant">
-                      <span className="thinking-dots">Analizando con el grafo</span>
-                    </div>
-                  )}
-                  <div ref={messagesEndRef} />
-                </div>
+                {/* PESTAÑA: CHAT */}
+                {detailTab === 'chat' && (<>
+                  <div style={{ padding: '10px 24px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                    {selectedStage ? (
+                      <>
+                        <span style={{ fontSize: 12, color: 'var(--gold)', padding: '4px 8px', background: 'rgba(245,166,35,0.2)', borderRadius: 4 }}>
+                          Etapa en foco: {selectedStage.label}
+                        </span>
+                        <button onClick={() => setSelectedStage(null)}
+                          style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 11, padding: 4 }}>
+                          [Quitar foco]
+                        </button>
+                      </>
+                    ) : (
+                      <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+                        Conversando sobre el proceso general — podés enfocar una etapa desde el Flujograma.
+                      </span>
+                    )}
+                    {currentChat.length > 0 && (
+                      <button onClick={clearChat} title="Borra esta conversación"
+                        style={{ marginLeft: 'auto', background: 'none', border: '1px solid var(--border)', color: 'var(--text-mid)', borderRadius: 5, cursor: 'pointer', fontSize: 11, padding: '4px 10px' }}>
+                        🗑 Borrar conversación
+                      </button>
+                    )}
+                  </div>
 
-                <div className="agent-input-row" style={{ padding: '16px 24px', borderTop: '1px solid rgba(255,48,96,0.15)', flexShrink: 0 }}>
-                  <input
-                    className="agent-input"
-                    style={{ border: '1px solid rgba(255,48,96,0.3)', minHeight: 48, fontSize: 14 }}
-                    placeholder={selectedStage ? `Soluciones para la etapa: ${selectedStage.label}...` : "Escribe tu consulta..."}
-                    value={inputText}
-                    onChange={e => setInputText(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') handleSendMessage(); }}
-                    disabled={isTyping}
-                  />
-                  <button
-                    className="agent-send"
-                    style={{ borderColor: 'rgba(255,48,96,0.6)', color: '#ff3060', minWidth: 48, fontSize: 18 }}
-                    onClick={handleSendMessage}
-                    disabled={isTyping || !inputText.trim()}
-                  >
-                    ➔
-                  </button>
-                </div>
+                  <div className="agent-messages" style={{ flex: 1, padding: '20px 24px', overflowY: 'auto' }}>
+                    {currentChat.length === 0 && (
+                      <div style={{ color: 'var(--text-mid)', fontSize: 13, textAlign: 'center', marginTop: 40, fontStyle: 'italic' }}>
+                        {selectedStage ? `Pregunta sobre la etapa "${selectedStage.label}" y el agente cruzará la consulta con tu biblioteca.` : `Inicia una conversación sobre este proceso.`}
+                      </div>
+                    )}
+                    {currentChat.map((msg, idx) => (
+                      <div key={idx} className={`agent-msg ${msg.role}`} style={{ maxWidth: '85%', fontSize: 14, lineHeight: 1.6 }}>
+                        {msg.role === 'assistant' ? (
+                          <div dangerouslySetInnerHTML={{ __html: marked.parse(msg.text || '') }} />
+                        ) : (
+                          <p>{msg.text}</p>
+                        )}
+                      </div>
+                    ))}
+                    {isTyping && (
+                      <div className="agent-msg assistant">
+                        <span className="thinking-dots">Analizando con el grafo</span>
+                      </div>
+                    )}
+                    <div ref={messagesEndRef} />
+                  </div>
+
+                  <div className="agent-input-row" style={{ padding: '16px 24px', borderTop: '1px solid rgba(255,48,96,0.15)', flexShrink: 0 }}>
+                    <input
+                      className="agent-input"
+                      style={{ border: '1px solid rgba(255,48,96,0.3)', minHeight: 48, fontSize: 14 }}
+                      placeholder={selectedStage ? `Soluciones para la etapa: ${selectedStage.label}...` : "Escribe tu consulta..."}
+                      value={inputText}
+                      onChange={e => setInputText(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') handleSendMessage(); }}
+                      disabled={isTyping}
+                    />
+                    <button
+                      className="agent-send"
+                      style={{ borderColor: 'rgba(255,48,96,0.6)', color: '#ff3060', minWidth: 48, fontSize: 18 }}
+                      onClick={handleSendMessage}
+                      disabled={isTyping || !inputText.trim()}
+                    >
+                      ➔
+                    </button>
+                  </div>
+                </>)}
               </div>
             )
           )}

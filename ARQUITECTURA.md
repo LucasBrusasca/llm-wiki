@@ -1,9 +1,9 @@
-# PragmaForge — Arquitectura y Forma
+# Algedi — Arquitectura y Forma
 
 > Cómo está organizado por dentro, cómo **escala** y cómo se **suman fuentes** sin romper nada.
 > Documento hermano de [`VISION.md`](VISION.md): la visión dice *por qué*; esto dice *cómo*.
 
-El criterio de diseño es **no sobre-construir**. PragmaForge es un sistema de conocimiento
+El criterio de diseño es **no sobre-construir**. Algedi es un sistema de conocimiento
 personal y de equipo, no una plataforma de datos a escala petabyte. Por eso adopta **dos**
 patrones que sí le sirven —arquitectura medallón y conectores— y **descarta a propósito** el
 resto del zoológico de data (lake, warehouse, mesh, Fabric), explicando por qué.
@@ -12,10 +12,10 @@ resto del zoológico de data (lake, warehouse, mesh, Fabric), explicando por qu�
 
 ## 1. El principio: arquitectura medallón (bronze → silver → gold)
 
-Es el esqueleto. PragmaForge **ya la tiene implícita**; nombrarla da orden y un lugar exacto
+Es el esqueleto. Algedi **ya la tiene implícita**; nombrarla da orden y un lugar exacto
 para cada fuente nueva.
 
-| Capa | Qué es en PragmaForge | Dónde vive |
+| Capa | Qué es en Algedi | Dónde vive |
 |---|---|---|
 | 🥉 **Bronze** — crudo | El archivo/URL original, tal cual se subió, **intocado** | `uploads/` (volumen Docker) · `fuente_path` / `fuente_url` en la DB |
 | 🥈 **Silver** — limpio + estructurado | Texto extraído → nodo `{label, desc, fragmento, conceptos}` (vía LLM) → **embedding** de 384-d | `processor.py` · `sentence-transformers` · columna `embedding` (pgvector) |
@@ -86,7 +86,7 @@ visualmente**. El objetivo es que **se mantenga ordenado, agradable e intuitivo 
 tamaño** — como los demos virales, pero útil.
 
 > **Principio rector: nivel de detalle (LOD).** Los demos virales se ven limpios porque son
-> *puntitos*, no tarjetas. PragmaForge debe ser **ambas cosas según el zoom**:
+> *puntitos*, no tarjetas. Algedi debe ser **ambas cosas según el zoom**:
 > - **Lejos (vista general):** los nodos se reducen a **puntos/etiquetas** agrupados por color de
 >   cluster → la imagen limpia tipo "constelación" de los videos.
 > - **Cerca (inspección):** las tarjetas ricas con miniatura y preview → más útil que los videos.
@@ -114,7 +114,7 @@ Descartar con criterio es señal de diseño, no de falta de ambición.
 |---|---|
 | **Data Lake / Warehouse / Lakehouse** | Son para **petabytes de data estructurada/analítica**. Acá manejamos documentos + embeddings a escala personal; **Postgres + pgvector alcanza**. Sumar un lake es complejidad sin retorno. |
 | **Data Mesh / Microsoft Fabric** | Gobernanza descentralizada a escala organización. La versión que **sí** corresponde es el **multi-silo + federación vía MCP** que ya está en `VISION.md`. Implementar mesh literal sería prematuro. |
-| **Dashboards tipo PowerBI** | PragmaForge es **exploratorio (grafo)**, no reporting tabular. De PowerBI tomamos **solo** la idea de *conectores*, no el tablero. |
+| **Dashboards tipo PowerBI** | Algedi es **exploratorio (grafo)**, no reporting tabular. De PowerBI tomamos **solo** la idea de *conectores*, no el tablero. |
 
 ---
 

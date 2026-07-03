@@ -239,7 +239,8 @@ def procesar_pdf(ruta_pdf):
     nodo["fuente"] = "pdf"
     nodo["fuente_path"] = str(pdf_path).replace("\\", "/")
     nodo["fuente_label"] = pdf_path.stem
-    nodo["autor"] = _pdf_autor(ruta_pdf)   # autor desde los metadatos del PDF (si tiene)
+    nodo["autor"] = _pdf_autor(ruta_pdf)     # autor desde los metadatos del PDF (si tiene)
+    nodo["fecha_doc"] = _pdf_fecha(ruta_pdf) # fecha de creación del PDF (si tiene)
     generar_embedding(nodo)
     print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
     return {"nodos": [nodo], "relaciones": []}
@@ -253,6 +254,24 @@ def _pdf_autor(ruta_pdf):
         a = ((doc.metadata or {}).get("author") or "").strip()
         doc.close()
         return a or None
+    except Exception:
+        return None
+
+
+def _pdf_fecha(ruta_pdf):
+    """Fecha de creación desde los metadatos del PDF (formato 'D:YYYYMMDD…').
+    Muchos PDFs no la traen o traen la del generador — best-effort."""
+    try:
+        import fitz
+        doc = fitz.open(str(ruta_pdf))
+        raw = ((doc.metadata or {}).get("creationDate") or (doc.metadata or {}).get("modDate") or "")
+        doc.close()
+        m = re.search(r"(\d{4})(\d{2})(\d{2})", raw or "")
+        if m:
+            y, mo, d = m.groups()
+            if "1990" <= y <= "2099" and "01" <= mo <= "12" and "01" <= d <= "31":
+                return f"{y}-{mo}-{d}"
+        return None
     except Exception:
         return None
 
@@ -303,17 +322,20 @@ def _muestra_representativa(txt, max_chars=20000):
     return (txt[:t] + "\n[…]\n" + txt[n // 2 - t // 2: n // 2 + t // 2] + "\n[…]\n" + txt[-t:])
 
 
-def _youtube_uploader(url):
-    """Canal del video vía yt-dlp (fallback cuando oembed viene vacío). Una llamada
-    extra — solo se usa en videos sueltos; en playlists pasamos el canal de la lista."""
+def _youtube_extra(url):
+    """Canal + fecha de publicación del video vía yt-dlp (una sola llamada).
+    Devuelve (canal, fecha_iso) — la fecha como 'YYYY-MM-DD' o None."""
     try:
         import yt_dlp
         opts = {"quiet": True, "no_warnings": True, "skip_download": True}
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-        return (info.get("channel") or info.get("uploader") or "").strip() or None
+        canal = (info.get("channel") or info.get("uploader") or "").strip() or None
+        ud = str(info.get("upload_date") or "")  # 'YYYYMMDD'
+        fecha = f"{ud[:4]}-{ud[4:6]}-{ud[6:8]}" if len(ud) == 8 and ud.isdigit() else None
+        return canal, fecha
     except Exception:
-        return None
+        return None, None
 
 
 def procesar_youtube(url, title_hint=None, author_hint=None):
@@ -324,10 +346,18 @@ def procesar_youtube(url, title_hint=None, author_hint=None):
     title, author = _youtube_metadata(url)
     if not title and title_hint:
         title = title_hint
-    if not author:
-        author = author_hint or _youtube_uploader(url)
     vid = _video_id(url)
-    transcript = obtener_transcript(vid)
+    transcript = obtener_transcript(vid)   # PRIORIDAD: el transcript primero
+    # Canal + fecha de publicación. En playlist el canal viene de la lista (author_hint) y
+    # NO hacemos un extract por video → evita que YouTube nos limite y rompa los transcripts.
+    fecha_yt = None
+    if author_hint:
+        if not author:
+            author = author_hint
+    else:
+        canal_yt, fecha_yt = _youtube_extra(url)  # solo videos sueltos: 1 extract (canal + fecha)
+        if not author:
+            author = canal_yt
 
     titulo_frase = f' titulado "{title}"' if title else ''
     canal_frase  = f' (canal: {author})' if author else ''
@@ -358,6 +388,7 @@ def procesar_youtube(url, title_hint=None, author_hint=None):
     nodo["fuente_url"] = url
     nodo["fuente_label"] = title or nodo.get("label", "Video")
     nodo["autor"] = author or None   # canal de YouTube
+    nodo["fecha_doc"] = fecha_yt     # fecha de publicación del video
     if title:
         nodo["label"] = title
     if not nodo.get("label"):
@@ -431,6 +462,7 @@ def procesar_excel(ruta_excel):
     nodo["fuente"] = "excel"
     nodo["fuente_path"] = str(xl_path).replace("\\", "/")
     nodo["fuente_label"] = xl_path.stem
+    nodo["autor"], nodo["fecha_doc"] = _office_meta(ruta_excel)  # xlsx también es OOXML
     generar_embedding(nodo)
     print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
     return {"nodos": [nodo], "relaciones": []}
@@ -474,7 +506,7 @@ def procesar_html(ruta_html):
 def procesar_url_web(url: str):
     """Descarga y procesa cualquier URL web (artículo, Wikipedia, GitHub, etc.)."""
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; PragmaForge/1.0; +https://github.com/pragmaforge)"
+        "User-Agent": "Mozilla/5.0 (compatible; Algedi/1.0; +https://github.com/algedi)"
     }
     try:
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
@@ -606,6 +638,25 @@ def _extraer_texto_office(ruta: str, partes: list) -> str:
     return texto.strip()
 
 
+def _office_meta(ruta: str):
+    """Autor y fecha de creación desde docProps/core.xml (.docx/.pptx). Best-effort."""
+    import zipfile
+    autor, fecha = None, None
+    try:
+        with zipfile.ZipFile(ruta) as z:
+            if "docProps/core.xml" in z.namelist():
+                xml = z.read("docProps/core.xml").decode("utf-8", errors="ignore")
+                m = re.search(r"<dc:creator>(.*?)</dc:creator>", xml, re.DOTALL)
+                if m:
+                    autor = (re.sub(r"<[^>]+>", "", m.group(1)).strip() or None)
+                m = re.search(r"<dcterms:created[^>]*>(\d{4})-(\d{2})-(\d{2})", xml)
+                if m:
+                    fecha = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    except Exception as e:
+        print(f"Error metadata Office: {e}")
+    return autor, fecha
+
+
 def procesar_word(ruta: str):
     """Un único nodo por documento de Word (.docx)."""
     texto = _extraer_texto_office(ruta, ["word/document.xml"])[:20000] or f"[Documento Word: {Path(ruta).name}]"
@@ -616,6 +667,7 @@ def procesar_word(ruta: str):
     nodo["fuente"] = "word"
     nodo["fuente_path"] = str(p).replace("\\", "/")
     nodo["fuente_label"] = p.stem
+    nodo["autor"], nodo["fecha_doc"] = _office_meta(ruta)
     generar_embedding(nodo)
     print(f"✓ Nodo Word '{nodo['label']}' con {len(nodo.get('conceptos', []))} conceptos")
     return {"nodos": [nodo], "relaciones": []}
@@ -631,6 +683,7 @@ def procesar_pptx(ruta: str):
     nodo["fuente"] = "ppt"
     nodo["fuente_path"] = str(p).replace("\\", "/")
     nodo["fuente_label"] = p.stem
+    nodo["autor"], nodo["fecha_doc"] = _office_meta(ruta)
     generar_embedding(nodo)
     print(f"✓ Nodo PPT '{nodo['label']}' con {len(nodo.get('conceptos', []))} conceptos")
     return {"nodos": [nodo], "relaciones": []}
@@ -745,7 +798,88 @@ def _auto_relaciones(nodos):
                 "description":     description,
             })
 
-    return rels
+    # ── Poda top-K por nodo ─────────────────────────────────────────────
+    # El umbral solo conecta ~30% de los pares (conceptos genéricos tipo
+    # "modelo"/"datos" + coseno alto de base en MiniLM) → bola de pelos de
+    # cientos de aristas que ensucia el grafo y castiga el render 3D.
+    # Conservamos una arista sólo si está entre las K más fuertes de alguno
+    # de sus dos extremos: cada nodo mantiene sus vínculos más significativos
+    # y ninguno queda desconectado por la poda.
+    K = 5
+    fuerza = lambda r: r["score"] + 0.05 * min(len(r["shared_concepts"]), 4)
+    por_nodo = {}
+    for r in rels:
+        por_nodo.setdefault(r["source"], []).append(r)
+        por_nodo.setdefault(r["target"], []).append(r)
+    keep = set()
+    for lst in por_nodo.values():
+        lst.sort(key=fuerza, reverse=True)
+        for r in lst[:K]:
+            keep.add((r["source"], r["target"]))
+    return [r for r in rels if (r["source"], r["target"]) in keep]
+
+
+def asignar_tema(nodo: dict):
+    """Clasifica un documento NUEVO dentro de la taxonomía de temas EXISTENTE (una
+    llamada corta al LLM). Mantiene la taxonomía estable: no re-baraja los demás nodos
+    ni cambia los nombres. Sin esto, los docs nuevos quedaban sin tema y el grafo les
+    inventaba un grupo estructural aparte (etiquetas duplicadas tipo "Agentic RAG" al
+    lado de "Agentes y Razonamiento IA"). Si aún no hay taxonomía, no hace nada —
+    el reagrupado global (✦) la crea."""
+    try:
+        from database.connection import get_sync_session
+        from database.models import Node as NodeModel
+        with get_sync_session() as s:
+            temas = [t[0] for t in s.query(NodeModel.tema).filter(
+                NodeModel.tema.isnot(None),
+                NodeModel.tema != "Sin clasificar",
+                NodeModel.is_issue == False,
+            ).distinct().all()]
+        if not temas:
+            return
+        prompt = (
+            f'Documento: "{nodo.get("label", "")}"\n'
+            f"Conceptos: {', '.join((nodo.get('conceptos') or [])[:8])}\n\n"
+            "Temas disponibles:\n" + "\n".join(f"- {t}" for t in temas) +
+            "\n\nAsigná el documento a UNO de esos temas. Si no encaja claramente en "
+            "ninguno, respondé exactamente: Sin clasificar\n"
+            "Respondé SOLO con el nombre del tema, sin comillas ni explicación."
+        )
+        resp = query_llm([{"role": "user", "content": prompt}]).strip().strip('"').strip()
+        if resp in temas:
+            tema = resp
+        elif "sin clasificar" in resp.lower():
+            tema = "Sin clasificar"
+        else:
+            # Respuesta con puntuación/mayúsculas distintas: matcheo laxo, honesto si no hay.
+            low = resp.lower()
+            tema = next((t for t in temas if t.lower() in low or low in t.lower()), "Sin clasificar")
+        with get_sync_session() as s:
+            s.query(NodeModel).filter(NodeModel.id == nodo["id"]).update({"tema": tema})
+            s.commit()
+        print(f"✓ Tema asignado a '{str(nodo.get('label', ''))[:40]}': {tema}")
+    except Exception as e:
+        print(f"Warning asignar_tema: {e}")
+
+
+def asignar_temas_pendientes():
+    """Clasifica TODOS los docs sin tema en la taxonomía existente. Se llama tras cada
+    ingesta: cubre el doc recién subido y también los que quedaron pendientes por
+    errores anteriores (p.ej. cuota de la API agotada) — el sistema se auto-repara."""
+    try:
+        from database.connection import get_sync_session
+        from database.models import Node as NodeModel
+        with get_sync_session() as s:
+            faltan = s.query(NodeModel).filter(
+                NodeModel.tema.is_(None),
+                NodeModel.is_issue == False,
+                NodeModel.is_centroid == False,
+            ).all()
+            nodos = [{"id": n.id, "label": n.label, "conceptos": n.conceptos or []} for n in faltan]
+        for nodo in nodos:
+            asignar_tema(nodo)
+    except Exception as e:
+        print(f"Warning asignar_temas_pendientes: {e}")
 
 
 def acumular_resultado(nuevo: dict) -> dict:
@@ -757,6 +891,7 @@ def acumular_resultado(nuevo: dict) -> dict:
         from main import _save_node_sync
         for nodo in nuevo.get("nodos", []):
             _save_node_sync(nodo)
+        asignar_temas_pendientes()   # clasifica el nuevo + los pendientes de intentos fallidos
     except Exception as e:
         print(f"Warning acumular_resultado: {e}")
     return nuevo

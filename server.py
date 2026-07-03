@@ -97,7 +97,7 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path == "/agent":
             length = int(self.headers["Content-Length"])
             body = json.loads(self.rfile.read(length))
-            system = body.get("system","Sos el agente de PragmaForge.")
+            system = body.get("system","Sos el agente de Algedi.")
             messages = body.get("messages",[])
             try:
                 from processor import query_llm
@@ -128,5 +128,5 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__": 
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer): pass
-    print("PragmaForge server corriendo en http://localhost:8000")
+    print("Algedi server corriendo en http://localhost:8000")
     ThreadedHTTPServer(("",8000), Handler).serve_forever()

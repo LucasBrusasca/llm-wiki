@@ -9,6 +9,22 @@ function fileExt(node) {
   const m = String(s).toLowerCase().match(/\.([a-z0-9]+)(?:$|\?|#)/);
   return m ? m[1] : '';
 }
+// Fecha de carga: absoluta + relativa ("12 jun 2026 · hace 13 días") para trazabilidad.
+function fmtFecha(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const fecha = d.toLocaleDateString('es-AR', { day: '2-digit', month: 'short', year: 'numeric' });
+  const dias = Math.floor((Date.now() - d.getTime()) / 86400000);
+  let rel;
+  if (dias <= 0) rel = 'hoy';
+  else if (dias === 1) rel = 'ayer';
+  else if (dias < 30) rel = `hace ${dias} días`;
+  else if (dias < 365) rel = `hace ${Math.floor(dias / 30)} mes${Math.floor(dias / 30) > 1 ? 'es' : ''}`;
+  else { const a = Math.floor(dias / 365); rel = `hace ${a} año${a > 1 ? 's' : ''}`; }
+  return `${fecha} · ${rel}`;
+}
+
 function mediaKind(node) {
   if (node.fuente === 'youtube') return 'youtube';
   const e = fileExt(node);
@@ -385,6 +401,14 @@ export default function NodePanel({
             <p className="panel-autor">
               {node.fuente === 'youtube' ? '▶ Canal: ' : '✎ Autor: '}{node.autor}
             </p>
+          )}
+          {node.fecha_doc && fmtFecha(node.fecha_doc) && (
+            <p className="panel-fecha panel-fecha--doc">
+              📅 {node.fuente === 'youtube' ? 'Publicado' : 'Creado'}: {fmtFecha(node.fecha_doc)}
+            </p>
+          )}
+          {fmtFecha(node.created_at) && (
+            <p className="panel-fecha">⏱ Cargado: {fmtFecha(node.created_at)}</p>
           )}
           {node.desc && <p className="panel-desc">{node.desc}</p>}
 
