@@ -26,6 +26,12 @@ services:
       # Ollama corre en el HOST: desde el contenedor hay que usar host.docker.internal,
       # no localhost (que es el loopback del propio contenedor). Override del .env.
       OLLAMA_URL: ${OLLAMA_URL_DOCKER:-http://host.docker.internal:11434/v1/chat/completions}
+      # El watcher de uvicorn --reload (watchfiles) crashea sobre bind-mounts de Windows
+      # (os error 5) y tira abajo el backend. Polling = estable, igual que Vite en el front.
+      WATCHFILES_FORCE_POLLING: "true"
+      # No escribir .pyc/__pycache__ en la carpeta montada: era la fuente del "os error 5"
+      # del watcher (churn de __pycache__ sobre el bind-mount de Windows).
+      PYTHONDONTWRITEBYTECODE: "1"
     env_file: .env
     ports:
       - "8000:8000"

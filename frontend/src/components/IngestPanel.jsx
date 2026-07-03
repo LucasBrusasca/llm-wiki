@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 
 const STEPS = [
   { at: 15,  label: 'Extrayendo contenido…' },
@@ -24,39 +25,42 @@ function humanizeError(msg) {
   return m;
 }
 
-function ProgressOverlay({ status, queueInfo, onCancel }) {
+// Toast flotante de progreso: NO bloquea la app — la ingesta corre en el backend y
+// esto solo la mira. Va por portal a <body> para seguir visible aunque la Biblioteca
+// (que contiene este panel) esté oculta.
+function ProgressToast({ status, queueInfo, onCancel }) {
   const pct = status.progress || 0;
   const step = STEPS.find(s => pct <= s.at) || STEPS[STEPS.length - 1];
   // Para playlists el backend manda "Video X/N: título…": lo mostramos tal cual.
   const liveMsg = /^Video \d+\/\d+/.test(status.message || '') ? status.message
                 : /lista de YouTube/i.test(status.message || '') ? status.message
                 : null;
+  const st = status.state;
 
-  return (
-    <div className="ingest-overlay">
-      <div className="ingest-overlay-box">
-        <div className="ingest-overlay-spinner" />
-        {queueInfo && (
-          <div className="ingest-overlay-queue">
-            ARCHIVO {queueInfo.current} DE {queueInfo.total}
-          </div>
-        )}
-        {queueInfo?.name && (
-          <div className="ingest-overlay-label" title={queueInfo.name}>{queueInfo.name}</div>
-        )}
-        <div className="ingest-overlay-step">{liveMsg || step.label}</div>
-        <div className="ingest-overlay-bar-container">
-          <div className="ingest-overlay-bar-wrap">
-            <div className="ingest-overlay-bar" style={{ width: `${pct}%` }} />
-          </div>
-          <div className="ingest-overlay-pct">{pct}%</div>
-        </div>
-        {status.label && (
-          <div className="ingest-overlay-label">"{status.label}"</div>
-        )}
-        <button className="ingest-cancel-btn" onClick={onCancel}>✕ CANCELAR</button>
+  return createPortal(
+    <div className={`ingest-toast${st === 'done' ? ' ingest-toast--done' : ''}${st === 'error' ? ' ingest-toast--error' : ''}`}>
+      <div className="ingest-toast-head">
+        {st === 'processing' && <div className="ingest-toast-spinner" />}
+        {st === 'done' && <span style={{ color: '#5fd38d', flexShrink: 0 }}>✓</span>}
+        {st === 'error' && <span style={{ color: '#e87a6e', flexShrink: 0 }}>✕</span>}
+        <span className="ingest-toast-title" title={queueInfo?.name || status.message}>
+          {st === 'processing'
+            ? (queueInfo ? `Cargando ${queueInfo.current}/${queueInfo.total} · ${queueInfo.name || ''}` : 'Cargando…')
+            : status.message}
+        </span>
+        <button className="ingest-toast-cancel" onClick={onCancel} title={st === 'processing' ? 'Cancelar la carga' : 'Cerrar'}>✕</button>
       </div>
-    </div>
+      {st === 'processing' && (
+        <>
+          <div className="ingest-toast-bar-wrap">
+            <div className="ingest-toast-bar" style={{ width: `${pct}%` }} />
+          </div>
+          <div className="ingest-toast-step">{liveMsg || step.label} · {pct}%{status.label ? ` · "${status.label}"` : ''}</div>
+          <div className="ingest-toast-step" style={{ opacity: 0.65 }}>Corre en segundo plano — podés seguir usando la app</div>
+        </>
+      )}
+    </div>,
+    document.body
   );
 }
 
@@ -88,12 +92,13 @@ export default function IngestPanel({ onRefresh, inline = false }) {
     }
   }, []);
 
-  // Auto-cerrar el chip de error a los 7s para que no quede "colgado".
+  // Auto-cerrar los toasts de error (7s) y de éxito (6s) para que no queden "colgados".
   useEffect(() => {
-    if (status.state !== 'error') return;
+    if (status.state !== 'error' && status.state !== 'done') return;
+    const ms = status.state === 'error' ? 7000 : 6000;
     const t = setTimeout(() => {
-      setStatus(s => (s.state === 'error' ? { state: 'idle', message: '', label: '', progress: 0 } : s));
-    }, 7000);
+      setStatus(s => ((s.state === 'error' || s.state === 'done') ? { state: 'idle', message: '', label: '', progress: 0 } : s));
+    }, ms);
     return () => clearTimeout(t);
   }, [status.state, status.message]);
 
@@ -297,7 +302,9 @@ export default function IngestPanel({ onRefresh, inline = false }) {
 
   return (
     <>
-      {isProcessing && <ProgressOverlay status={status} queueInfo={queueInfo} onCancel={reset} />}
+      {(isProcessing || isDone || isError) && (
+        <ProgressToast status={status} queueInfo={queueInfo} onCancel={reset} />
+      )}
 
       <div className={`ingest-panel${inline ? ' ingest-panel--inline' : ''}`}>
         <label
@@ -346,12 +353,8 @@ export default function IngestPanel({ onRefresh, inline = false }) {
           <button type="submit" className="ingest-submit" disabled={isProcessing || !url.trim()}>→</button>
         </form>
 
-        {(isDone || isError) && (
-          <div className={`ingest-status ingest-status--${status.state}`}>
-            <span className="ingest-status-text">{status.message}</span>
-            <button className="ingest-reset-btn" onClick={reset}>✕</button>
-          </div>
-        )}
+        {/* El estado (procesando / listo / error) se muestra en el toast flotante,
+            visible incluso con la Biblioteca cerrada. */}
       </div>
     </>
   );

@@ -119,11 +119,40 @@ def main():
             nodos_para_hdbscan = nodos_con_emb
             coords_hdbscan = np.array([[n["x3d"], n["y3d"], n["z3d"]] for n in nodos_para_hdbscan])
 
-    # Re-calcular clusters con HDBSCAN sobre todas las coordenadas actuales
+    # Re-calcular clusters con HDBSCAN.
+    # CLAVE: clusterizamos sobre una proyección de MAYOR dimensión derivada de los
+    # embeddings — NO sobre las 3D de display. Aplastar 384-D → 3-D destruye la
+    # separación semántica y mezcla temas distintos en un mismo cluster (p.ej. un doc
+    # de "tratamiento de outliers" caía dentro de un grupo de texto-a-imagen). Las 3D
+    # quedan sólo para dibujar; los clusters salen de un espacio que preserva la
+    # estructura real del embedding.
     print(f"Calculando clusters HDBSCAN sobre {len(nodos_para_hdbscan)} nodos...")
-    min_cs = max(2, len(nodos_para_hdbscan) // 6)
-    clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cs, min_samples=1, metric="euclidean")
-    labels = clusterer.fit_predict(coords_hdbscan)
+    emb_cluster = np.array([n["embedding"] for n in nodos_para_hdbscan], dtype=np.float32)
+    n_nodos = len(nodos_para_hdbscan)
+
+    if n_nodos >= 8:
+        # UMAP intermedia (~10-D) con vecindad coseno: separa bien los temas sin la
+        # pérdida brutal de las 3 dimensiones del dibujo.
+        reducer_cl = umap.UMAP(
+            n_components=min(10, n_nodos - 2),
+            n_neighbors=min(15, n_nodos - 1),
+            min_dist=0.0, metric="cosine", random_state=42,
+        )
+        coords_cl = reducer_cl.fit_transform(emb_cluster)
+    else:
+        # Muy pocos nodos: clusterizar directo sobre el embedding.
+        coords_cl = emb_cluster
+
+    # Params honestos: dejamos que los outliers REALES caigan como ruido (cluster -1,
+    # gris, sin etiqueta) en vez de pegarlos al grupo más cercano. min_samples alto =
+    # más conservador (antes era 1, que forzaba a todo a tener cluster).
+    min_cs = max(3, n_nodos // 10)
+    min_samp = min(5, max(2, n_nodos // 12))
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cs, min_samples=min_samp,
+        metric="euclidean", cluster_selection_method="eom",
+    )
+    labels = clusterer.fit_predict(coords_cl)
 
     for nodo, label in zip(nodos_para_hdbscan, labels):
         nodo["cluster"] = int(label)

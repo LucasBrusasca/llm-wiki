@@ -3,7 +3,7 @@ import ForceGraph3D from 'react-force-graph-3d';
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { clusterColor } from '../App.jsx';
+import { clusterColor, CLUSTER_PALETTE } from '../App.jsx';
 
 /* ── Mapa plano de documentos (constelación de miniaturas) ── */
 const NODE = {
@@ -47,14 +47,6 @@ function cardDims(faceH, aspect) {
   const area = faceH * faceH * 0.78;
   const fh = Math.sqrt(area / Math.max(0.2, aspect));
   return { fw: fh * aspect, fh };
-}
-
-// Libera texturas/materiales de un grupo de nodo (GPU) cuando se saca del grafo.
-function disposeGroup(group) {
-  group?.traverse?.(o => {
-    const m = o.material;
-    if (m) { try { m.map?.dispose?.(); m.dispose?.(); } catch { /* noop */ } }
-  });
 }
 
 const GLYPHS = {
@@ -167,14 +159,15 @@ function buildCaption(text) {
   return sprite;
 }
 
-// ¿El nodo puede tener miniatura real? (pdf/imagen/youtube/video)
-const THUMB_FUENTES = new Set(['pdf', 'tesis', 'youtube', 'image', 'video']);
+// ¿El nodo puede tener miniatura real? (todo documento con archivo: pdf/office/html/txt/img/video/youtube)
+const THUMB_FUENTES = new Set(['pdf', 'tesis', 'youtube', 'image', 'video', 'html', 'word', 'ppt', 'excel']);
 function hasThumb(node) {
   if (node.is_issue) return false;
   if (node.thumb_data) return true; // miniatura incrustada (demo estático sin backend)
   const f = (node.fuente || '').toLowerCase();
   if (THUMB_FUENTES.has(f)) return true;
-  return /\.(pdf|png|jpe?g|gif|webp|bmp|mp4|webm|mov|m4v)$/i.test(node.fuente_path || '');
+  // Cualquier nodo con archivo de un tipo conocido (incluye txt/md, que entran como "concepto").
+  return /\.(pdf|png|jpe?g|gif|webp|bmp|mp4|webm|mov|m4v|html?|docx?|pptx?|pptm|xlsx?|txt|md|markdown)$/i.test(node.fuente_path || '');
 }
 
 // Textura de punto (gradiente radial suave) para el nodo "de lejos" (LOD).
@@ -207,10 +200,27 @@ function setNodeLOD(ud, far) {
   if (ud.dot)     ud.dot.visible = far;
 }
 
+// Clave de agrupamiento del grafo: el TEMA (taxonomía asignada por LLM) manda; si un
+// nodo no tiene tema, cae al cluster HDBSCAN; si tampoco, queda sin grupo (gris neutro).
+// Así el "grupo" (color/etiqueta/empaquetado) refleja la taxonomía, no la densidad.
+function groupKey(node) {
+  const t = node.tema;
+  if (t && t !== 'Sin clasificar') return 't:' + t;
+  if (node.cluster != null && node.cluster >= 0) return 'c:' + node.cluster;
+  return null;
+}
+
+function groupColor(key) {
+  if (key == null) return '#7db2eb';              // sin grupo → azul claro neutro
+  if (key.startsWith('c:')) return clusterColor(parseInt(key.slice(2), 10));
+  let h = 0;                                       // tema (string) → color estable
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return CLUSTER_PALETTE[h % CLUSTER_PALETTE.length];
+}
+
 function nodeDotColor(node) {
   if (node.is_issue) return NODE.issue;
-  if (node.cluster != null && node.cluster >= 0) return clusterColor(node.cluster);
-  return '#7db2eb'; // azul claro neutro
+  return groupColor(groupKey(node));
 }
 
 /* ── Nodo = tarjeta rectangular plana con la miniatura del archivo ──
@@ -287,7 +297,9 @@ function buildNode(node, degree, maxDegree, texReg) {
       } catch { /* mantiene la tarjeta neutra */ }
     };
     img.onerror = () => {};                             // 404 → tarjeta neutra
-    img.src = node.thumb_data || `/thumb/${encodeURIComponent(node.id)}`;
+    // ?v= : cache-bust. Subir cuando cambia la generación de miniaturas (p.ej. HTML con estilos)
+    // para forzar al navegador a re-pedirlas en vez de servir la versión vieja cacheada.
+    img.src = node.thumb_data || `/thumb/${encodeURIComponent(node.id)}?v=2`;
   }
 
   return group;
@@ -361,8 +373,8 @@ function applyDensityLayout(nodes) {
   const PAD = 13; // minimum separation between node centers in world units
   const clusters = {};
   nodes.forEach(n => {
-    const c = (n.cluster != null && n.cluster >= 0) ? String(n.cluster) : '-1';
-    (clusters[c] ??= []).push(n);
+    const k = groupKey(n);
+    (clusters[k != null ? k : '-1'] ??= []).push(n);
   });
   const namedKeys = Object.keys(clusters).filter(k => k !== '-1')
     .sort((a, b) => clusters[b].length - clusters[a].length);
@@ -546,11 +558,13 @@ export default function Graph3D({
     if (layoutMode === 'density') {
       const clusterGroups = {};
       graphData.nodes.forEach(n => {
-        if (n.cluster == null || n.cluster < 0) return;
-        (clusterGroups[String(n.cluster)] ??= []).push(n);
+        const k = groupKey(n);
+        if (k == null) return;
+        (clusterGroups[k] ??= []).push(n);
       });
 
-      // En cuántos clusters aparece cada concepto (para distintividad tipo TF-IDF).
+      // En cuántos grupos aparece cada concepto (para distintividad tipo TF-IDF;
+      // sólo se usa en el fallback de clusters HDBSCAN sin tema).
       const conceptClusters = {};
       Object.entries(clusterGroups).forEach(([cid, members]) => {
         const seen = new Set();
@@ -559,32 +573,34 @@ export default function Graph3D({
       });
 
       const usedLabels = new Set();
-      Object.entries(clusterGroups).forEach(([cid, members]) => {
+      Object.entries(clusterGroups).forEach(([key, members]) => {
         if (members.length < 2) return; // un solo nodo no es "grupo"
         const cx = members.reduce((s, n) => s + (n.fx ?? n.x ?? 0), 0) / members.length;
         const cz = members.reduce((s, n) => s + (n.fz ?? n.z ?? 0), 0) / members.length;
         const maxY = members.reduce((m, n) => Math.max(m, n.fy ?? n.y ?? 0), -Infinity);
 
-        // Frecuencia del concepto en el cluster, ponderada por rareza global:
-        // un concepto frecuente acá pero raro en otros clusters define mejor al grupo.
-        const freq = {};
-        members.forEach(n => (n.conceptos || []).forEach(c => { freq[c] = (freq[c] || 0) + 1; }));
-        const scored = Object.entries(freq)
-          .map(([c, cnt]) => ({ c, cnt, score: cnt / (conceptClusters[c]?.size || 1) }))
-          .sort((a, b) => b.score - a.score || b.cnt - a.cnt);
-
-        // Etiqueta distintiva: UN concepto por defecto (corto, no se corta); sólo se
-        // suma un segundo/tercero si ese concepto ya lo usó otro cluster (para no repetir).
-        let labelText = scored[0]?.c || `Cluster ${cid}`;
-        if (usedLabels.has(labelText)) labelText = scored.slice(0, 2).map(s => s.c).join(' · ');
-        if (usedLabels.has(labelText)) labelText = scored.slice(0, 3).map(s => s.c).join(' · ');
-        if (usedLabels.has(labelText)) labelText = `${scored[0]?.c || 'Grupo'} (${cid})`;
+        let labelText;
+        if (key.startsWith('t:')) {
+          labelText = key.slice(2);           // el TEMA (taxonomía LLM) ES la etiqueta
+        } else {
+          // Fallback: cluster HDBSCAN sin tema → concepto frecuente y distintivo
+          // (frecuencia × rareza global). Si el grupo es heterogéneo, dos conceptos.
+          const freq = {};
+          members.forEach(n => (n.conceptos || []).forEach(c => { freq[c] = (freq[c] || 0) + 1; }));
+          const scored = Object.entries(freq)
+            .map(([c, cnt]) => ({ c, cnt, score: cnt * (cnt / (conceptClusters[c]?.size || 1)) }))
+            .sort((a, b) => b.score - a.score || b.cnt - a.cnt);
+          const top = scored[0];
+          labelText = top?.c || 'Grupo';
+          if (top && top.cnt / members.length < 0.5 && scored[1]) labelText = `${top.c} · ${scored[1].c}`;
+        }
+        if (usedLabels.has(labelText)) labelText = `${labelText} ·`;
         usedLabels.add(labelText);
 
-        const color = clusterColor(parseInt(cid, 10));
+        const color = groupColor(key);
         const sprite = buildClusterTextSprite(labelText, color);
         sprite.position.set(cx, maxY + 8, cz);
-        sprite.userData.cid = cid;
+        sprite.userData.cid = key;
         scene.add(sprite);
         clusterLabelSprites.current.push(sprite);
       });
@@ -869,9 +885,9 @@ export default function Graph3D({
     if (!clusterLabelSprites.current.length) return;
     const clusterGroups = {};
     graphData.nodes.forEach(n => {
-      if (n.cluster == null || n.cluster < 0) return;
-      const c = String(n.cluster);
-      (clusterGroups[c] ??= []).push(n);
+      const k = groupKey(n);
+      if (k == null) return;
+      (clusterGroups[k] ??= []).push(n);
     });
     clusterLabelSprites.current.forEach(sprite => {
       const cid = sprite.userData.cid;

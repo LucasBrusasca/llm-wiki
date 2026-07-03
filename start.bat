@@ -1,10 +1,10 @@
 @echo off
 setlocal
-title PragmaForge
+title Algedi
 cd /d "%~dp0"
 
 echo ===============================================
-echo   PragmaForge - Arranque del stack (Docker)
+echo   Algedi - Arranque del stack (Docker)
 echo ===============================================
 echo.
 

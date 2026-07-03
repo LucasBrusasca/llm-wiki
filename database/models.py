@@ -33,6 +33,10 @@ class Node(Base):
     fuente_path   = Column(String)
     fuente_label  = Column(String)
     autor         = Column(String)   # canal (YouTube) / autor (PDF, Word, etc.)
+    fecha_doc     = Column(String)   # fecha de publicación/creación del contenido (ISO, si existe)
+    tema          = Column(String)   # tema/categoría legible asignado por LLM (taxonomía del grafo)
+    flujograma    = Column(JSON)     # etapas/conexiones extraídas de un issue con proceso
+    synthesis     = Column(JSON)     # reporte 4-agentes del issue (proceso/riesgos/creativo/red_team)
     is_centroid   = Column(Boolean, default=False)
     is_issue      = Column(Boolean, default=False)
     tags          = Column(JSON, default=list)

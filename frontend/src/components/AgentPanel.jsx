@@ -4,49 +4,81 @@ import { marked } from 'marked';
 marked.setOptions({ breaks: true, gfm: true });
 
 export default function AgentPanel({ node, allNodes, onClose, onHighlight }) {
-  const color   = '#00d4ff'; // cian, igual que el resto (Vigilados)
-  const storageKey = `pragmaforge_agent_${node?.id || 'global'}`;
+  const color    = '#00d4ff';
+  const convKey  = `algedi_agent_convs_${node?.id || 'global'}`;
+  const legacyConvKey = `pragmaforge_agent_convs_${node?.id || 'global'}`; // migración: convs guardadas con el nombre anterior
+  const oldKey   = `pragmaforge_agent_${node?.id || 'global'}`;            // migración: formato single, aún más viejo
 
   const initialMsg = node
     ? `Contexto: **"${node.label}"**. ¿Qué querés saber?`
-    : `Agente global de PragmaForge. Puedo ayudarte a explorar relaciones, buscar conceptos y sintetizar información del grafo. ¿Qué necesitás?`;
+    : `Agente global de Algedi. Exploro relaciones, busco conceptos y sintetizo tu grafo — **fundado en tus documentos**. Si algo no está en tu conocimiento, te lo digo en vez de inventarlo. ¿Qué necesitás?`;
 
-  const [msgs, setMsgs] = useState(() => {
-    try {
-      const saved = localStorage.getItem(storageKey);
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return [{ role: 'assistant', text: initialMsg }];
+  const makeConv = () => ({
+    id: `c_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    title: 'Nueva conversación',
+    msgs: [{ role: 'assistant', text: initialMsg }],
+    ts: Date.now(),
   });
 
+  const [convs, setConvs] = useState(() => {
+    try {
+      const saved = localStorage.getItem(convKey);
+      if (saved) { const c = JSON.parse(saved); if (Array.isArray(c) && c.length) return c; }
+      const legacy = localStorage.getItem(legacyConvKey);   // migrar convs del nombre anterior (PragmaForge → Algedi)
+      if (legacy) { const c = JSON.parse(legacy); if (Array.isArray(c) && c.length) return c; }
+      const old = localStorage.getItem(oldKey);   // migrar la conversación vieja (single)
+      if (old) {
+        const m = JSON.parse(old);
+        if (Array.isArray(m) && m.length > 1) return [{ id: 'c_mig', title: 'Conversación anterior', msgs: m, ts: Date.now() }];
+      }
+    } catch {}
+    return [makeConv()];
+  });
+  const [activeId, setActiveId] = useState(() => convs[0]?.id);
+  const [showList, setShowList] = useState(false);
   const [input, setInput] = useState('');
   const [busy, setBusy]   = useState(false);
-  const bottomRef         = useRef(null);
-  const inputRef          = useRef(null);
+  const bottomRef = useRef(null);
+  const inputRef  = useRef(null);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [msgs]);
+  const active = convs.find(c => c.id === activeId) || convs[0];
+  const msgs   = active?.msgs || [];
 
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [msgs]);
+  useEffect(() => { inputRef.current?.focus(); }, [activeId]);
+  useEffect(() => { try { localStorage.setItem(convKey, JSON.stringify(convs)); } catch {} }, [convs, convKey]);
 
-  // Persist on every change
-  useEffect(() => {
-    try { localStorage.setItem(storageKey, JSON.stringify(msgs)); } catch {}
-  }, [msgs, storageKey]);
+  const patchActive = useCallback((fn) => {
+    setConvs(prev => prev.map(c => (c.id === activeId ? fn(c) : c)));
+  }, [activeId]);
 
-  const clearHistory = useCallback(() => {
-    localStorage.removeItem(storageKey);
-    setMsgs([{ role: 'assistant', text: initialMsg }]);
-  }, [storageKey, initialMsg]);
+  const startNew = useCallback(() => {
+    const c = makeConv();
+    setConvs(prev => [c, ...prev]);
+    setActiveId(c.id);
+    setShowList(false);
+    onHighlight?.([]);
+  }, [onHighlight]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const deleteConv = useCallback((id, e) => {
+    e?.stopPropagation();
+    setConvs(prev => {
+      const rest = prev.filter(c => c.id !== id);
+      const next = rest.length ? rest : [makeConv()];
+      if (id === activeId) setActiveId(next[0].id);
+      return next;
+    });
+  }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function send() {
     const text = input.trim();
     if (!text || busy) return;
     setInput('');
-    setMsgs(prev => [...prev, { role: 'user', text }]);
+    patchActive(c => ({
+      ...c,
+      title: c.title === 'Nueva conversación' ? (text.length > 32 ? text.slice(0, 31) + '…' : text) : c.title,
+      msgs: [...c.msgs, { role: 'user', text }],
+    }));
     setBusy(true);
 
     const history = [...msgs, { role: 'user', text }]
@@ -55,66 +87,73 @@ export default function AgentPanel({ node, allNodes, onClose, onHighlight }) {
 
     try {
       const systemPrompt = node
-        ? `Sos el agente de PragmaForge analizando el nodo "${node.label}".
+        ? `Sos el agente de Algedi analizando el nodo "${node.label}".
 Tipo de fuente: ${node.fuente || 'concepto'}.
 Descripción: ${node.desc || '(sin descripción)'}.
 Fragmento clave: ${node.fragmento || '(sin fragmento)'}.
 Conceptos principales: ${(node.conceptos || []).join(', ') || '(ninguno)'}.
-Respondé SIEMPRE en base a esta información sin decir que no podés acceder al recurso. Usá los datos que tenés. Respondé en español con markdown cuando sea útil.`
-        : `Sos el agente global de PragmaForge. Ayudás a explorar relaciones y conceptos del grafo de conocimiento. Respondé en español con markdown.`;
+Respondé en base a esta información. Usá los datos que tenés. Respondé en español con markdown cuando sea útil.`
+        : `Sos el agente global de Algedi. Ayudás a explorar relaciones y conceptos del grafo de conocimiento. Respondé en español con markdown.`;
       const res = await fetch('/api/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ system: systemPrompt, messages: history }),
       });
       const data = await res.json();
-      setMsgs(prev => [...prev, { role: 'assistant', text: data.reply || 'Sin respuesta.' }]);
+      patchActive(c => ({ ...c, msgs: [...c.msgs, { role: 'assistant', text: data.reply || 'Sin respuesta.', veto: !!data.veto, sim: data.max_sim }] }));
       if (data.nodos_relevantes?.length) onHighlight(data.nodos_relevantes);
     } catch {
-      setMsgs(prev => [...prev, { role: 'assistant', text: 'Error al conectar con el agente.' }]);
+      patchActive(c => ({ ...c, msgs: [...c.msgs, { role: 'assistant', text: 'Error al conectar con el agente.' }] }));
     } finally {
       setBusy(false);
     }
   }
 
-  const msgCount = msgs.filter(m => m.role !== 'assistant' || msgs.indexOf(m) > 0).length;
-  const hasHistory = msgCount > 1;
+  const userMsgs = msgs.filter(m => m.role === 'user').length;
 
   return (
     <aside className="side-panel agent-panel">
       <div className="agent-header">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+        <button className="agent-conv-toggle" onClick={() => setShowList(s => !s)} title="Cambiar de conversación">
           <span style={{ color, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            ⬡ {node ? node.label : 'Agente Global'}
+            ⬡ {node ? node.label : (active?.title || 'Agente Global')}
           </span>
-          {hasHistory && (
-            <span style={{ fontSize: 9, color: '#6fcf97', letterSpacing: 1.5 }}>
-              ● MEMORIA ACTIVA · {msgCount} mensajes
-            </span>
-          )}
-        </div>
+          <span className="agent-conv-caret">{showList ? '▴' : '▾'} {convs.length}</span>
+        </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          {hasHistory && (
-            <button
-              className="agent-clear-btn"
-              onClick={clearHistory}
-              title="Borrar historial de esta conversación"
-            >
-              ↺ Borrar
-            </button>
-          )}
+          <button className="agent-clear-btn" onClick={startNew} title="Nueva conversación">＋ Nueva</button>
           <button className="panel-close" onClick={onClose}>✕</button>
         </div>
       </div>
+
+      {showList && (
+        <div className="agent-conv-list">
+          {convs.map(c => (
+            <div
+              key={c.id}
+              className={`agent-conv-item${c.id === activeId ? ' active' : ''}`}
+              onClick={() => { setActiveId(c.id); setShowList(false); }}
+            >
+              <span className="agent-conv-item-title">{c.title}</span>
+              <button className="agent-conv-del" onClick={(e) => deleteConv(c.id, e)} title="Borrar conversación">✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="poi-stripes" />
       <div className="poi-status">
         <span className="poi-status-blink">●</span> AGENT ONLINE · {node ? `NODE ${String(node.id).slice(0, 18)}` : 'GLOBAL'}
+        {userMsgs > 0 && <span style={{ marginLeft: 8, color: '#6fcf97' }}>· {userMsgs} preguntas</span>}
       </div>
 
       <div className="agent-messages">
         {msgs.map((m, i) => (
-          <div key={i} className={`agent-msg ${m.role}`}>
+          <div key={i} className={`agent-msg ${m.role}${m.veto ? ' agent-msg--veto' : ''}`}>
             <div dangerouslySetInnerHTML={{ __html: marked.parse(m.text) }} />
+            {m.role === 'assistant' && typeof m.sim === 'number' && !m.veto && (
+              <div className="agent-msg-afinidad">afinidad máx: {Math.round(m.sim * 100)}%</div>
+            )}
           </div>
         ))}
         {busy && (
@@ -135,14 +174,7 @@ Respondé SIEMPRE en base a esta información sin decir que no podés acceder al
           placeholder="Preguntá algo..."
           disabled={busy}
         />
-        <button
-          className="agent-send"
-          onClick={send}
-          disabled={busy}
-          style={{ borderColor: color, color }}
-        >
-          →
-        </button>
+        <button className="agent-send" onClick={send} disabled={busy} style={{ borderColor: color, color }}>→</button>
       </div>
     </aside>
   );

@@ -7,6 +7,11 @@ const FUENTE_ICON = {
   word: '⬛', ppt: '◳', image: '▣', audio: '♫', video: '▶', concepto: '◈',
 };
 
+function fechaCorta(iso) {
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? '' : d.toLocaleDateString('es-AR', { day: '2-digit', month: 'short', year: '2-digit' });
+}
+
 function ConnectionCount({ nodeId, allLinks }) {
   const count = allLinks.filter(l => {
     const s = l.source?.id ?? l.source;
@@ -104,6 +109,7 @@ function NodeRow({ node, allNodes, allLinks, onNavigate, onDelete, onRename, onR
           </div>
 
           <ConnectionCount nodeId={node.id} allLinks={allLinks} />
+          {node.created_at && <span className="lib-fecha">⏱ {fechaCorta(node.created_at)}</span>}
         </div>
 
         <div className="lib-row-actions">
@@ -185,6 +191,7 @@ const SORTS = [
   { key: 'fuente',      label: 'Tipo' },
   { key: 'connections', label: 'Conexiones' },
   { key: 'cluster',     label: 'Cluster AI' },
+  { key: 'fecha',       label: 'Más viejo' },
 ];
 
 export default function LibraryPanel({ allNodes, allLinks, onClose, onNavigate, onDelete, onRename, onRefresh }) {
@@ -236,6 +243,7 @@ export default function LibraryPanel({ allNodes, allLinks, onClose, onNavigate, 
         }
         if (sortBy === 'connections') return (connMap[b.id] || 0) - (connMap[a.id] || 0);
         if (sortBy === 'fuente') return (a.fuente || '').localeCompare(b.fuente || '');
+        if (sortBy === 'fecha') return new Date(a.created_at || 0) - new Date(b.created_at || 0); // más viejo primero
         return a.label.localeCompare(b.label);
       });
   }, [allNodes, allLinks, search, sortBy, filterType, filterTag, connMap]);

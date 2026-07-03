@@ -28,7 +28,7 @@ export default function SynthesisPanel({ allNodes, selectedIds, onClose, onClear
       `Fragmento: ${n.fragmento || '—'}`
     ).join('\n\n---\n\n');
 
-    const system = `Sos el agente de síntesis de PragmaForge. Se te proporcionan ${selected.length} nodos del grafo de conocimiento. Tu tarea es generar un documento de síntesis estructurado que:
+    const system = `Sos el agente de síntesis de Algedi. Se te proporcionan ${selected.length} nodos del grafo de conocimiento. Tu tarea es generar un documento de síntesis estructurado que:
 1. Identifique los temas centrales y cómo se vinculan entre los nodos
 2. Detecte patrones, convergencias y posibles contradicciones
 3. Proponga oportunidades de integración entre los conceptos

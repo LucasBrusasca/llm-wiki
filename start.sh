@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PragmaForge - Arranque del stack completo (Linux / macOS)
+# Algedi - Arranque del stack completo (Linux / macOS)
 # Doble clic (o ./start.sh) levanta todo con Docker y abre el navegador.
 set -euo pipefail
 
@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "==============================================="
-echo "  PragmaForge - Arranque del stack (Docker)"
+echo "  Algedi - Arranque del stack (Docker)"
 echo "==============================================="
 echo
 

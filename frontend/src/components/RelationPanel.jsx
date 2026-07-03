@@ -184,7 +184,7 @@ export default function RelationPanel({ nodeA, nodeB, linkMeta, onClose, initial
   async function analyzeDeep() {
     if (busy) return;
     setBusy(true); setExpanded(true); setSynth('');
-    const system = `Sos el agente de PragmaForge. Analizá la relación entre dos nodos del grafo de conocimiento. Explicá qué conceptos comparten, qué insights emergen y cómo se complementan. Respondé en español, markdown, conciso (2-3 párrafos).`;
+    const system = `Sos el agente de Algedi. Analizá la relación entre dos nodos del grafo de conocimiento. Explicá qué conceptos comparten, qué insights emergen y cómo se complementan. Respondé en español, markdown, conciso (2-3 párrafos).`;
     const userMsg = `Nodo A: "${nodeA.label}" — ${nodeA.desc || ''}
 Nodo B: "${nodeB.label}" — ${nodeB.desc || ''}
 Similitud: ${simPct ?? '?'}%. Temas comunes: ${overlap.join(', ') || 'similitud vectorial'}.
