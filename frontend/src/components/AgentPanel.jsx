@@ -3,7 +3,7 @@ import { marked } from 'marked';
 
 marked.setOptions({ breaks: true, gfm: true });
 
-export default function AgentPanel({ node, allNodes, onClose, onHighlight }) {
+export default function AgentPanel({ node, allNodes, onClose, onHighlight, onNavigate }) {
   const color    = '#00d4ff';
   const convKey  = `algedi_agent_convs_${node?.id || 'global'}`;
   const legacyConvKey = `pragmaforge_agent_convs_${node?.id || 'global'}`; // migración: convs guardadas con el nombre anterior
@@ -100,7 +100,7 @@ Respondé en base a esta información. Usá los datos que tenés. Respondé en e
         body: JSON.stringify({ system: systemPrompt, messages: history }),
       });
       const data = await res.json();
-      patchActive(c => ({ ...c, msgs: [...c.msgs, { role: 'assistant', text: data.reply || 'Sin respuesta.', veto: !!data.veto, sim: data.max_sim }] }));
+      patchActive(c => ({ ...c, msgs: [...c.msgs, { role: 'assistant', text: data.reply || 'Sin respuesta.', veto: !!data.veto, sim: data.max_sim, fundamentos: data.fundamentos || [] }] }));
       if (data.nodos_relevantes?.length) onHighlight(data.nodos_relevantes);
     } catch {
       patchActive(c => ({ ...c, msgs: [...c.msgs, { role: 'assistant', text: 'Error al conectar con el agente.' }] }));
@@ -151,6 +151,28 @@ Respondé en base a esta información. Usá los datos que tenés. Respondé en e
         {msgs.map((m, i) => (
           <div key={i} className={`agent-msg ${m.role}${m.veto ? ' agent-msg--veto' : ''}`}>
             <div dangerouslySetInnerHTML={{ __html: marked.parse(m.text) }} />
+            {m.role === 'assistant' && m.fundamentos?.length > 0 && (
+              <div className="agent-fund">
+                <div className="agent-fund-head" onClick={() => onHighlight?.(m.fundamentos.map(f => f.id))}
+                  title="Resaltar estos documentos en el grafo">
+                  ◉ {m.fundamentos.length} documentos relacionados · marcar en el grafo
+                </div>
+                {m.fundamentos.map(f => {
+                  const nodo = allNodes?.find(n => n.id === f.id);
+                  return (
+                    <div key={f.id} className="agent-fund-item"
+                      onClick={() => nodo && onNavigate?.(nodo)} title={nodo ? 'Abrir documento' : ''}>
+                      <span className="agent-fund-aff">{Math.round((f.sim || 0) * 100)}%</span>
+                      <span className="agent-fund-label">{f.label}</span>
+                      {nodo?.fuente_url && (
+                        <a href={nodo.fuente_url} target="_blank" rel="noreferrer"
+                          className="agent-fund-link" onClick={e => e.stopPropagation()} title="Abrir fuente">↗</a>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             {m.role === 'assistant' && typeof m.sim === 'number' && !m.veto && (
               <div className="agent-msg-afinidad">afinidad máx: {Math.round(m.sim * 100)}%</div>
             )}

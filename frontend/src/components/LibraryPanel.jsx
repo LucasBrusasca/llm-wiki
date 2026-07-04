@@ -194,7 +194,24 @@ const SORTS = [
   { key: 'fecha',       label: 'Más viejo' },
 ];
 
-export default function LibraryPanel({ allNodes, allLinks, onClose, onNavigate, onDelete, onRename, onRefresh }) {
+export default function LibraryPanel({ allNodes, allLinks, onClose, onNavigate, onDelete, onRename, onRefresh, onReset, onExport, seccion }) {
+  const [importing, setImporting] = useState(false);
+  const importar = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setImporting(true);
+    try {
+      const texto = await file.text();
+      const r = await fetch('/api/import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: texto,
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { window.alert('No se pudo importar: ' + (d.detail || `error ${r.status}`)); }
+      else { window.alert(`Importados ${d.nodos_importados} nodos. Recalculando relaciones…`); onRefresh?.(); }
+    } catch { window.alert('El archivo no es un backup válido (JSON).'); }
+    finally { setImporting(false); }
+  };
   const [search, setSearch]   = useState('');
   const [sortBy, setSortBy]   = useState('label');
   const [filterType, setFilterType] = useState('all');
@@ -257,7 +274,12 @@ export default function LibraryPanel({ allNodes, allLinks, onClose, onNavigate, 
         </div>
 
         <div className="library-ingest">
-          <IngestPanel onRefresh={onRefresh} inline={true} />
+          {seccion && (
+            <div style={{ fontSize: 11.5, color: '#8fa1bd', marginBottom: 8 }}>
+              Cargando en la sección: <b style={{ color: '#aecbe6' }}>{seccion}</b>
+            </div>
+          )}
+          <IngestPanel onRefresh={onRefresh} inline={true} seccion={seccion} />
         </div>
 
         <div className="library-toolbar" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
@@ -345,6 +367,32 @@ export default function LibraryPanel({ allNodes, allLinks, onClose, onNavigate, 
               })
           }
         </div>
+
+        {/* Backup: exportar / importar el grafo completo */}
+        <div className="library-backup">
+          <div className="library-danger-txt" style={{ color: '#8fa1bd' }}>
+            <span style={{ display: 'block', color: '#aebdd2', fontWeight: 700, marginBottom: 3 }}>⤓ Backup</span>
+            Guardá o restaurá todo el grafo (documentos, temas, posiciones) como un archivo. El reset hace un backup automático antes de borrar.
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
+            <button className="library-backup-btn" onClick={onExport}>⬇ Exportar</button>
+            <label className="library-backup-btn" style={{ cursor: importing ? 'default' : 'pointer' }}>
+              {importing ? '⏳ Importando…' : '⬆ Importar'}
+              <input type="file" accept=".json,application/json" style={{ display: 'none' }}
+                onChange={importar} disabled={importing} />
+            </label>
+          </div>
+        </div>
+
+        {onReset && (
+          <div className="library-danger">
+            <div className="library-danger-txt">
+              <span className="library-danger-title">⚠ Zona de peligro</span>
+              Borra <b>permanentemente</b> todos los documentos, relaciones, temas e issues. Hace un <b>backup automático</b> antes, pero igual es irreversible.
+            </div>
+            <button className="library-danger-btn" onClick={onReset}>⌫ Resetear todo el grafo…</button>
+          </div>
+        )}
       </div>
     </div>
   );

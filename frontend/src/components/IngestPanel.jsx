@@ -64,7 +64,7 @@ function ProgressToast({ status, queueInfo, onCancel }) {
   );
 }
 
-export default function IngestPanel({ onRefresh, inline = false }) {
+export default function IngestPanel({ onRefresh, inline = false, seccion = 'personal' }) {
   const [url, setUrl]         = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [status, setStatus]   = useState({ state: 'idle', message: '', label: '', progress: 0 });
@@ -137,6 +137,7 @@ export default function IngestPanel({ onRefresh, inline = false }) {
   const sendFile = useCallback(async (file, skipUmap) => {
     const form = new FormData();
     form.append('file', file);
+    form.append('seccion', seccion);
     if (skipUmap) form.append('skip_umap', 'true');
     setStatus({ state: 'processing', message: 'Enviando…', label: '', progress: 5 });
     try {
@@ -158,11 +159,12 @@ export default function IngestPanel({ onRefresh, inline = false }) {
       setQueueInfo(null);
       return false;
     }
-  }, [startPolling]);
+  }, [startPolling, seccion]);
 
   const sendUrl = useCallback(async (urlVal) => {
     const form = new FormData();
     form.append('url', urlVal);
+    form.append('seccion', seccion);
     setStatus({ state: 'processing', message: 'Enviando…', label: '', progress: 5 });
     try {
       const r = await fetch('/api/ingest', { method: 'POST', body: form });
@@ -177,7 +179,7 @@ export default function IngestPanel({ onRefresh, inline = false }) {
       setStatus({ state: 'error', message: 'No se pudo conectar con el backend', label: '', progress: 0 });
       return false;
     }
-  }, [startPolling]);
+  }, [startPolling, seccion]);
 
   // This function is stored in processNextRef so the polling interval always calls
   // the current version, avoiding stale closures. Updated every render.
