@@ -176,8 +176,11 @@ function makeDotTexture() {
   c.width = c.height = s;
   const g = c.getContext('2d');
   const grd = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  // Disco DEFINIDO (núcleo lleno + borde suave y ajustado) → se lee como punto nítido y
+  // profesional, no como blob difuso/glow.
   grd.addColorStop(0,    'rgba(255,255,255,1)');
-  grd.addColorStop(0.35, 'rgba(255,255,255,0.75)');
+  grd.addColorStop(0.60, 'rgba(255,255,255,0.98)');
+  grd.addColorStop(0.80, 'rgba(255,255,255,0.70)');
   grd.addColorStop(1,    'rgba(255,255,255,0)');
   g.fillStyle = grd;
   g.fillRect(0, 0, s, s);
@@ -310,12 +313,14 @@ function buildNode(node, degree, maxDegree, texReg) {
 function buildClusterTextSprite(text, color) {
   const H = 66, fontPx = 26, leftPad = 48, rightPad = 26;
   const font = `bold ${fontPx}px 'Courier New', monospace`;
-  // Truncar SÓLO si es absurdamente largo, y en borde de palabra (no a mitad).
+  // La caja se dimensiona al texto (más abajo), así que dejamos que la etiqueta se
+  // vea COMPLETA. Sólo truncamos si es absurdamente larga (evita un sprite gigante),
+  // y en borde de palabra.
   let display = text || '';
-  if (display.length > 46) {
-    display = display.slice(0, 45);
+  if (display.length > 64) {
+    display = display.slice(0, 63);
     const sp = display.lastIndexOf(' ');
-    if (sp > 24) display = display.slice(0, sp);
+    if (sp > 40) display = display.slice(0, sp);
     display += '…';
   }
   // Medir el texto y dimensionar la caja para que NO se corte.
@@ -370,7 +375,7 @@ function fibonacciSphere(n, r, cx, cz) {
 
 // Pins nodes to pre-computed 3D cluster positions (stable, no simulation drift)
 function applyDensityLayout(nodes) {
-  const PAD = 13; // minimum separation between node centers in world units
+  const PAD = 16; // minimum separation between node centers in world units
   const clusters = {};
   nodes.forEach(n => {
     const k = groupKey(n);
@@ -386,7 +391,7 @@ function applyDensityLayout(nodes) {
 
   if (nGroups === 1) {
     // Single cluster: Fibonacci sphere so it looks 3D from every camera angle
-    const r = Math.max(PAD * 1.5, PAD * Math.cbrt(maxGroupSize) * 1.2);
+    const r = Math.max(PAD * 1.8, PAD * Math.cbrt(maxGroupSize) * 1.6);
     const pts = fibonacciSphere(allGroups[0].length, r, 0, 0);
     allGroups[0].forEach((n, i) => {
       Object.assign(n, pts[i]);
@@ -396,13 +401,15 @@ function applyDensityLayout(nodes) {
     return;
   }
 
-  // Multiple clusters: ring of cluster centers, each cluster on its own Fibonacci sphere
-  const groupR = Math.max(55, maxGroupSize * PAD * 0.9);
+  // Multiple clusters: ring of cluster centers, each cluster on its own Fibonacci sphere.
+  // Radio de esfera más grande → las tarjetas (que son billboards y se ven de frente)
+  // se separan en pantalla en vez de encimarse al proyectar la esfera a 2D.
+  const groupR = Math.max(75, maxGroupSize * PAD * 1.15);
   allGroups.forEach((members, gi) => {
     const angle = (gi / nGroups) * Math.PI * 2;
     const cx = Math.cos(angle) * groupR;
     const cz = Math.sin(angle) * groupR;
-    const r = Math.max(PAD, PAD * Math.cbrt(members.length) * 0.9);
+    const r = Math.max(PAD * 1.4, PAD * Math.cbrt(members.length) * 1.5);
     const pts = fibonacciSphere(members.length, r, cx, cz);
     members.forEach((n, i) => {
       Object.assign(n, pts[i]);
@@ -462,6 +469,9 @@ export default function Graph3D({
   const texReg                = useRef(new Set()); // texturas/materiales de miniaturas (para dispose)
   const wakeRef               = useRef(() => {});  // render-on-demand: despertar el loop
   const idleTimer             = useRef(null);      // timer para volver a dormir
+  const prevLayoutRef         = useRef(null);      // detectar cambio de layout vs refresh
+  const didFitRef             = useRef(false);     // ya encuadró alguna vez
+  const fitPendingRef         = useRef(true);      // encuadrar en el próximo asentamiento
 
   /* ── CANAL: centralidad = grado (cantidad de aristas conectadas) ── */
   const { degreeMap, maxDegree } = useMemo(() => {
@@ -546,6 +556,24 @@ export default function Graph3D({
       });
       fg.d3Force('charge')?.strength(0);
       fg.d3Force('link')?.strength(0);
+    } else if (layoutMode === 'force') {
+      // Relacional: las ARISTAS dan la forma. Soltamos las posiciones fijas y dejamos
+      // correr la simulación física — repulsión fuerte (nodos bien separados) +
+      // atracción por relación. Así saltan a la vista hubs, puentes y aislados.
+      graphData.nodes.forEach(n => {
+        n.fx = undefined; n.fy = undefined; n.fz = undefined;
+        if (n.x == null || !Number.isFinite(n.x)) {
+          n.x = (Math.random() - 0.5) * 140;
+          n.y = (Math.random() - 0.5) * 140;
+          n.z = (Math.random() - 0.5) * 140;
+        }
+        n.vx = 0; n.vy = 0; n.vz = 0;
+      });
+      const charge = fg.d3Force('charge');
+      if (charge) charge.strength(-230).distanceMax(SCALE * 12);  // separación amplia, sin explotar
+      const link = fg.d3Force('link');
+      if (link) link.distance(SCALE * 1.4).strength(0.32);
+      fg.d3ReheatSimulation?.();
     }
 
     // Etiqueta flotante por cluster — SOLO en modo Densidad, donde los nodos de un
@@ -606,18 +634,19 @@ export default function Graph3D({
       });
     }
 
+    // reheat SIEMPRE: aplica las posiciones nuevas (los layouts fijos "acomodan" los nodos;
+    // Relacional corre la física). El ENCUADRE de cámara lo hace handleEngineStop una sola
+    // vez tras asentarse, y SOLO si cambió el modo o es la primera carga → no se viene encima
+    // en cada refresh de datos.
     fg.d3ReheatSimulation();
-    wakeRef.current();  // el reheat reinicia ticks → mantener el render vivo
-    userInteracted.current = false;
+    wakeRef.current();
 
-    if (layoutMode === 'components') {
-      // UMAP: padding más chico → vista un poco MÁS CERCA (sigue en "puntos", no tarjetas).
-      const t1 = setTimeout(() => { if (!userInteracted.current) fgRef.current?.zoomToFit(700, 50); }, 200);
-      const t2 = setTimeout(() => { if (!userInteracted.current) fgRef.current?.zoomToFit(1000, 30); }, 1500);
-      return () => { clearTimeout(t1); clearTimeout(t2); };
-    } else {
-      const t = setTimeout(() => { if (!userInteracted.current) fgRef.current?.zoomToFit(800, 60); }, 80);
-      return () => clearTimeout(t);
+    const layoutChanged = prevLayoutRef.current !== layoutMode;
+    prevLayoutRef.current = layoutMode;
+    if (layoutChanged || !didFitRef.current) {
+      didFitRef.current = true;
+      fitPendingRef.current = true;
+      userInteracted.current = false;
     }
   }, [graphData, layoutMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -628,18 +657,19 @@ export default function Graph3D({
       if (!ud?.face) return;
       const isSel = selectedNode?.id === id;
       const isDim = highlighted.size > 0 && !highlighted.has(id);
-      ud.face.material.opacity    = isDim ? 0.22 : 1;
-      ud.caption.material.opacity = isDim ? 0.12 : (isSel ? 1 : 0.7);
-      const fs = isSel ? 1.28 : 1;
+      // Resalte SOBRIO: menos escala y menos glow que antes (se veía "gamer" al hover).
+      ud.face.material.opacity    = isDim ? 0.28 : 1;
+      ud.caption.material.opacity = isDim ? 0.14 : (isSel ? 1 : 0.7);
+      const fs = isSel ? 1.14 : 1;
       ud.face.scale.set(ud.baseFW * fs, ud.baseFH * fs, 1);
-      // Punto LOD (vista lejana): mismo estado de resalte.
+      // Punto LOD (vista lejana): mismo estado de resalte, contenido.
       if (ud.dot) {
-        ud.dot.material.color.set(isSel ? '#00d4ff' : ud.dotColor);
-        ud.dot.material.opacity = isDim ? 0.14 : 1;
-        ud.dot.scale.setScalar(isSel ? ud.dotBase * 1.6 : ud.dotBase);
+        ud.dot.material.color.set(isSel ? '#8fd0e0' : ud.dotColor); // cian apagado, no neón
+        ud.dot.material.opacity = isDim ? 0.18 : (isSel ? 1 : 0.9);
+        ud.dot.scale.setScalar(isSel ? ud.dotBase * 1.3 : ud.dotBase);
       }
-      // Halo de grupo (vista cercana): atenuar / realzar.
-      if (ud.halo) ud.halo.material.opacity = isDim ? 0.06 : (isSel ? 0.5 : 0.28);
+      // Halo de grupo (vista cercana): atenuar / realzar, sutil.
+      if (ud.halo) ud.halo.material.opacity = isDim ? 0.05 : (isSel ? 0.3 : 0.22);
     });
     wakeRef.current();  // renderizar el cambio de highlight/selección (luego idle)
   }, [highlighted, selectedNode]);
@@ -701,7 +731,7 @@ export default function Graph3D({
     const prev = prevNodeCount.current;
     prevNodeCount.current = n;
     if (prev === 0 || n <= prev) return; // primer render o sin altas → no tocar la cámara
-    const t = setTimeout(() => { fgRef.current?.zoomToFit(800, 45); wakeRef.current(); }, 700);
+    const t = setTimeout(() => { fgRef.current?.zoomToFit(800, 16); wakeRef.current(); }, 700);
     return () => clearTimeout(t);
   }, [graphData.nodes.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -709,7 +739,7 @@ export default function Graph3D({
   useEffect(() => {
     if (fitTrigger === 0 || !fgRef.current) return;
     userInteracted.current = false;
-    fgRef.current.zoomToFit(800, 50);
+    fgRef.current.zoomToFit(800, 18);
     wakeRef.current();
   }, [fitTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -738,7 +768,7 @@ export default function Graph3D({
             Math.max(2, Math.round(size.x / 2)),
             Math.max(2, Math.round(size.y / 2)),
           );
-          const bloom = new UnrealBloomPass(bloomRes, 0.12, 0.3, 0.9); // strength, radius, threshold
+          const bloom = new UnrealBloomPass(bloomRes, 0.05, 0.3, 0.92); // strength, radius, threshold — sutil, no gamer
           composer.addPass(bloom);
           composer.addPass(new OutputPass());
         }
@@ -755,7 +785,7 @@ export default function Graph3D({
       controls.maxDistance = 1800;
       if ('enableDamping' in controls) {
         controls.enableDamping = true;
-        controls.dampingFactor = 0.12;  // glide suave al soltar
+        controls.dampingFactor = 0.32;  // freno rápido: se queda donde lo soltás, sin drift
         controls.rotateSpeed   = 0.55;
         controls.zoomSpeed     = 0.7;
         controls.panSpeed      = 0.5;
@@ -826,8 +856,10 @@ export default function Graph3D({
       if (changed) LOD_FAR = far;
       if (changed || far) {
         // En modo lejos, escalar los puntos ∝ distancia → tamaño ~constante en pantalla
-        // (un sprite normal se achica con la distancia y desaparecería).
-        const dotScale = Math.max(2.5, d * 0.02);
+        // (un sprite normal se achica con la distancia y desaparecería). El coeficiente
+        // 0.02 es el look original; el Math.min(...) es un TOPE para que al alejarte mucho
+        // no crezcan sin límite y se vuelvan blobs brillantes (era el "brilla al zoom").
+        const dotScale = Math.min(7, Math.max(2.5, d * 0.02));
         spriteMap.current.forEach(obj => {
           const ud = obj.userData;
           if (changed) setNodeLOD(ud, far);
@@ -901,8 +933,12 @@ export default function Graph3D({
   }, [graphData]);
 
   const handleEngineStop = useCallback(() => {
-    if (!userInteracted.current && (layoutMode === 'components' || layoutMode === 'pca')) {
-      fgRef.current?.cameraPosition({ x: 0, y: 0, z: 120 }, { x: 0, y: 0, z: 0 }, 800);
+    // Encuadrar UNA sola vez, al asentarse la simulación, y solo si quedó pendiente (cambio
+    // de modo / primera carga). En un refresh de datos NO se toca la cámara → no se viene
+    // encima. zoomToFit se adapta al contenido → no queda "lejos" como la posición fija.
+    if (fitPendingRef.current && !userInteracted.current) {
+      fitPendingRef.current = false;
+      fgRef.current?.zoomToFit(700, layoutMode === 'components' ? 8 : 6);
     }
     wakeRef.current();  // render del frame final asentado (luego entra en idle)
   }, [layoutMode]);
@@ -931,9 +967,9 @@ export default function Graph3D({
         showNavInfo={false}
         d3AlphaDecay={0.06}
         d3VelocityDecay={0.6}
-        warmupTicks={20}
-        cooldownTicks={60}
-        cooldownTime={3500}
+        warmupTicks={layoutMode === 'force' ? 20 : 0}
+        cooldownTicks={layoutMode === 'force' ? 320 : 6}
+        cooldownTime={layoutMode === 'force' ? 9000 : 600}
       />
     </div>
   );

@@ -145,8 +145,8 @@ export default function ProcessPanel({ onClose, onHighlight, allNodes }) {
     <div className="proc-overlay">
       <div className="proc-panel">
         <div className="proc-header">
-          <span className="proc-title">⛭ PROCESOS · fundado en tu grafo</span>
-          <button className="panel-close" onClick={onClose}>✕</button>
+          <span className="proc-title">⚙ DISEÑAR PROCESO · fundado en tu grafo</span>
+          <button className="panel-close" onClick={onClose} title="Volver a Issue">←</button>
         </div>
 
         <div className="proc-input-row">

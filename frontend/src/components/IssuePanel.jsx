@@ -64,7 +64,7 @@ function SynthesisView({ syn }) {
 
 // ── Formulario de nuevo issue ───────────────────────────────────────────────
 // Subcomponente para evitar que el re-render afecte la lista lateral al escribir
-function NewIssueForm({ onRefresh, setSelectedIssueId }) {
+function NewIssueForm({ onRefresh, setSelectedIssueId, onOpenProcess }) {
   const [desc, setDesc]           = useState('');
   const [refUrl, setRefUrl]       = useState('');
   const [file, setFile]           = useState(null);
@@ -150,6 +150,28 @@ function NewIssueForm({ onRefresh, setSelectedIssueId }) {
 
       {!isDone ? (
         <div className="issue-input-section" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          {/* Dos intenciones del módulo Issue: diagnosticar (acá) o diseñar un proceso. */}
+          {onOpenProcess && (
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{
+                flex: 1, padding: '12px 14px', borderRadius: 8,
+                border: '1px solid var(--gold)', background: 'rgba(245,166,35,0.08)',
+                color: 'var(--gold)', fontSize: 13, fontWeight: 600,
+              }}>
+                ⚠ Diagnosticar un problema
+                <div style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-mid)', marginTop: 3 }}>Estás acá — describilo abajo</div>
+              </div>
+              <button onClick={onOpenProcess} style={{
+                flex: 1, padding: '12px 14px', borderRadius: 8, cursor: 'pointer', textAlign: 'left',
+                border: '1px solid var(--border)', background: 'rgba(255,255,255,0.03)',
+                color: 'var(--text)', fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
+              }}>
+                ⚙ Diseñar un proceso nuevo →
+                <div style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-mid)', marginTop: 3 }}>Flujograma + qué medir + brief</div>
+              </button>
+            </div>
+          )}
+
           <div className="issue-hint" style={{ fontSize: 14 }}>
             Describí un problema o un proceso paso a paso. El agente intentará extraer un flujograma interactivo y conectarlo automáticamente con tu base de conocimientos.
           </div>
@@ -254,7 +276,7 @@ function NewIssueForm({ onRefresh, setSelectedIssueId }) {
 
 
 // ── Panel principal ─────────────────────────────────────────────────────────
-export default function IssuePanel({ allNodes, onClose, onRefresh, onNavigate }) {
+export default function IssuePanel({ allNodes, onClose, onRefresh, onNavigate, onOpenProcess }) {
   const [selectedIssueId, setSelectedIssueId] = useState('new');
   const [search, setSearch] = useState('');
 
@@ -414,8 +436,9 @@ Descripción general: ${selectedIssue.desc || 'Sin descripción'}
       const data = await res.json();
 
       let texto = data.result || 'No se recibió respuesta.';
-      if (typeof data.max_sim === 'number' && data.max_sim > 0) {
-        texto += `\n\n<small style="color:#7a8699">⊙ fundado en tu grafo · afinidad máx ${Math.round(data.max_sim * 100)}%</small>`;
+      // Mostrar la afinidad SOLO cuando hay respaldo real del grafo (no en cada respuesta).
+      if (typeof data.max_sim === 'number' && data.max_sim >= 0.4) {
+        texto += `\n\n<small style="color:#6a7686">⊙ fundado en tu grafo · afinidad ${Math.round(data.max_sim * 100)}%</small>`;
       }
       const aiMsg = { role: 'assistant', text: texto };
       setChatHistories(prev => ({
@@ -508,7 +531,7 @@ Descripción general: ${selectedIssue.desc || 'Sin descripción'}
           <button className="panel-close" onClick={onClose} style={{ position: 'absolute', top: 16, right: 20, zIndex: 10, fontSize: 16 }}>✕</button>
 
           {selectedIssueId === 'new' ? (
-            <NewIssueForm onRefresh={onRefresh} setSelectedIssueId={setSelectedIssueId} />
+            <NewIssueForm onRefresh={onRefresh} setSelectedIssueId={setSelectedIssueId} onOpenProcess={onOpenProcess} />
           ) : (
             // --- VISTA: DETALLE DEL ISSUE (pestañas Reporte / Flujograma / Chat) ---
             selectedIssue && (

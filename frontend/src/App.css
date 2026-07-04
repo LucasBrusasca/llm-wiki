@@ -1730,3 +1730,132 @@ body {
   transition: width 0.4s ease;
 }
 .ingest-toast-step { color: #8fa1bd; font-size: 11.5px; line-height: 1.4; }
+
+/* ── Separadores del header (agrupan módulos / vista / recalcular / reset) ── */
+.hdr-sep {
+  width: 1px; height: 18px; flex-shrink: 0; align-self: center;
+  background: rgba(140, 160, 190, 0.16); margin: 0 4px;
+}
+.hdr-sep--strong { background: rgba(140, 160, 190, 0.30); margin: 0 7px; }
+
+/* ── Menú de herramientas del grafo (⋯) — saca los utilitarios de la navegación ── */
+.hdr-menu-wrap { position: relative; display: inline-flex; }
+.hdr-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.hdr-menu {
+  position: absolute; top: calc(100% + 9px); right: 0; z-index: 41;
+  min-width: 224px; padding: 7px;
+  background: rgba(10, 14, 24, 0.98);
+  border: 1px solid rgba(90, 120, 160, 0.35);
+  border-radius: 11px; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.hdr-menu-label {
+  font-size: 10px; letter-spacing: 1.4px; text-transform: uppercase;
+  color: #6f7d92; padding: 6px 11px 3px;
+}
+.hdr-menu-item {
+  display: flex; align-items: center; gap: 11px;
+  width: 100%; padding: 9px 11px; border-radius: 7px;
+  background: none; border: none; cursor: pointer;
+  color: #cdd6e6; font-size: 13px; text-align: left; font-family: inherit;
+  transition: background 0.12s, color 0.12s;
+}
+.hdr-menu-item:hover { background: rgba(120, 160, 220, 0.12); color: #eaf1fb; }
+.hdr-menu-item:disabled { opacity: 0.5; cursor: default; background: none; }
+.hdr-menu-ico { width: 16px; text-align: center; opacity: 0.85; flex-shrink: 0; }
+.hdr-menu-sep { height: 1px; background: rgba(140, 160, 190, 0.14); margin: 5px 3px; }
+.hdr-menu-item--danger { color: #e8877a; }
+.hdr-menu-item--danger:hover { background: rgba(232, 100, 90, 0.15); color: #ff9b8f; }
+
+/* ── Zona de peligro (Reset) — al fondo de la Biblioteca, separada y sobria ── */
+.library-danger {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  margin-top: 14px; padding: 14px 18px; border-radius: 9px;
+  border: 1px solid rgba(232, 90, 80, 0.35);
+  background: rgba(232, 60, 50, 0.06);
+}
+.library-danger-txt { font-size: 12px; color: #b9909a; line-height: 1.5; }
+.library-danger-title { display: block; color: #e8776e; font-weight: 700; letter-spacing: 0.5px; margin-bottom: 3px; }
+.library-danger-btn {
+  flex-shrink: 0; padding: 9px 16px; border-radius: 7px; cursor: pointer;
+  background: rgba(232, 60, 50, 0.12); border: 1px solid rgba(232, 90, 80, 0.5);
+  color: #ff8f83; font-size: 12.5px; font-weight: 600; font-family: inherit;
+  transition: background 0.15s;
+}
+.library-danger-btn:hover { background: rgba(232, 60, 50, 0.24); }
+
+/* ── Backup (exportar / importar) en Biblioteca ── */
+.library-backup {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  margin-top: 14px; padding: 14px 18px; border-radius: 9px;
+  border: 1px solid rgba(90, 130, 180, 0.28); background: rgba(90, 130, 180, 0.05);
+}
+.library-backup-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 15px; border-radius: 7px;
+  background: rgba(120, 160, 220, 0.10); border: 1px solid rgba(120, 160, 220, 0.4);
+  color: #b9cbe6; font-size: 12.5px; font-weight: 600; font-family: inherit; cursor: pointer;
+  transition: background 0.15s;
+}
+.library-backup-btn:hover { background: rgba(120, 160, 220, 0.2); }
+
+/* ── Selector de sección (grafo activo) ── */
+.seccion-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 34px; padding: 0 13px; border-radius: 8px; cursor: pointer;
+  background: rgba(120, 160, 220, 0.08); border: 1px solid rgba(120, 160, 220, 0.28);
+  color: #c4d3e8; font-size: 12.5px; font-weight: 600; font-family: inherit;
+  letter-spacing: 0.3px; text-transform: capitalize; transition: background 0.15s;
+}
+.seccion-btn:hover { background: rgba(120, 160, 220, 0.16); }
+.seccion-dot { width: 8px; height: 8px; border-radius: 50%; background: #4aa3c7; flex-shrink: 0; }
+.seccion-caret { opacity: 0.6; font-size: 10px; }
+.hdr-menu-item--active { background: rgba(120, 160, 220, 0.10); color: #eaf1fb; }
+
+/* ── Filas de sección con acciones por fila (renombrar / eliminar) ── */
+.seccion-row { display: flex; align-items: center; border-radius: 7px; padding-right: 6px; }
+.seccion-row:hover { background: rgba(120, 160, 220, 0.08); }
+.seccion-row.active { background: rgba(120, 160, 220, 0.12); }
+.seccion-row-main {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 11px;
+  padding: 10px 6px 10px 11px; background: none; border: none; cursor: pointer;
+  color: #cdd6e6; font-size: 13px; text-align: left; font-family: inherit;
+}
+.seccion-row.active .seccion-row-main { color: #eaf1fb; }
+.seccion-row-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: capitalize; }
+.seccion-row-count { opacity: 0.42; font-size: 11px; padding-left: 10px; flex-shrink: 0; }
+/* Los íconos reservan su espacio siempre (aparecen en hover) → sin reflow ni apretón. */
+.seccion-row-act {
+  background: none; border: none; cursor: pointer; color: #7a8699;
+  width: 26px; height: 26px; flex-shrink: 0; font-size: 12.5px; border-radius: 6px;
+  visibility: hidden; transition: color 0.12s, background 0.12s;
+}
+.seccion-row:hover .seccion-row-act { visibility: visible; }
+.seccion-row-act:hover { color: #b9cbe6; background: rgba(120, 160, 220, 0.14); }
+.seccion-row-act--danger:hover { color: #ff9b8f; background: rgba(232, 100, 90, 0.14); }
+
+/* ── Documentos que consultó el agente (clickeables + marcar en el grafo) ── */
+.agent-fund {
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid rgba(0, 212, 255, 0.14);
+}
+.agent-fund-head {
+  font-size: 11px; color: #4fd0e0; font-weight: 600; letter-spacing: 0.3px;
+  cursor: pointer; margin-bottom: 6px; user-select: none;
+}
+.agent-fund-head:hover { color: #7fe3ef; text-decoration: underline; }
+.agent-fund-item {
+  display: flex; align-items: center; gap: 8px; padding: 5px 7px; border-radius: 6px;
+  cursor: pointer; transition: background 0.12s;
+}
+.agent-fund-item:hover { background: rgba(0, 212, 255, 0.08); }
+.agent-fund-aff {
+  flex-shrink: 0; font-size: 10.5px; font-weight: 700; color: #4fd0e0;
+  min-width: 34px; text-align: right; font-family: monospace;
+}
+.agent-fund-label {
+  flex: 1; font-size: 12px; color: #bcd4e2; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.agent-fund-link { flex-shrink: 0; color: #7a8699; text-decoration: none; font-size: 13px; }
+.agent-fund-link:hover { color: #4fd0e0; }

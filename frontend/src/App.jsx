@@ -13,21 +13,20 @@ import ProcessPanel from './components/ProcessPanel.jsx';
 import { computeDiscoveries } from './discoveries.js';
 
 // Paleta azul marino tecnológica — azules / cianes, sin ámbar.
-// Paleta CATEGÓRICA: tonos DISTINTOS (no todos azules) para diferenciar clusters.
-// Saturación media → legibles y elegantes sobre fondo casi negro, sin ser neón.
+// Paleta CATEGÓRICA "jewel tones": tonos JOYA profundos y saturados pero elegantes —
+// ricos sobre el fondo negro (no pálidos, no neón). Brillo calibrado para que un punto
+// chico se vea bien sobre negro. Moderna y profesional. Cada tema conserva su color.
 export const CLUSTER_PALETTE = [
-  '#5b9bd5', // azul
-  '#48c9b0', // teal
-  '#5fd38d', // verde
-  '#e8c35a', // ámbar
-  '#e8915a', // naranja
-  '#e87a6e', // coral
-  '#c98bd9', // violeta
-  '#f0a3b8', // rosa
-  '#8fcf6a', // lima
-  '#6ec6d8', // celeste-agua
-  '#d4a373', // tierra
-  '#9b8fce', // lavanda
+  '#2c3e94', // índigo profundo
+  '#0b6b4a', // esmeralda profunda
+  '#4a2b96', // violeta profundo
+  '#8c1d44', // vino / frambuesa
+  '#0c6675', // petróleo
+  '#6a2580', // púrpura profundo
+  '#1f7031', // verde bosque
+  '#8a5f12', // oro viejo / bronce
+  '#9a3410', // óxido
+  '#1a5a8a', // azul acero profundo
 ];
 
 export function clusterColor(cluster) {
@@ -39,6 +38,17 @@ export function ytId(url) {
   const m = url?.match(/(?:youtu\.be\/|v=|embed\/)([a-zA-Z0-9_-]{11})/);
   return m ? m[1] : null;
 }
+
+// Secciones conocidas localmente (incluye las VACÍAS recién creadas, que el backend aún
+// no lista porque no tienen documentos). Se mergean con las del backend.
+const SEC_KEY = 'algedi_secciones_known';
+const getKnownSecciones = () => {
+  try { const a = JSON.parse(localStorage.getItem(SEC_KEY) || '["personal"]'); return Array.isArray(a) && a.length ? a : ['personal']; }
+  catch { return ['personal']; }
+};
+const setKnownSecciones = (arr) => {
+  try { localStorage.setItem(SEC_KEY, JSON.stringify([...new Set(arr)])); } catch {}
+};
 
 // Poda de relaciones: con umbral bajo casi todo se conecta (telaraña). Conservamos
 // por nodo sus K relaciones MÁS FUERTES (por score = similitud coseno). Una arista
@@ -116,6 +126,12 @@ export default function App() {
   const [discoveriesOpen, setDiscoveriesOpen] = useState(false);
   const [processOpen, setProcessOpen]   = useState(false);
   const [relayouting, setRelayouting]   = useState(false);
+  const [toolsOpen, setToolsOpen]       = useState(false);
+  // Secciones = grafos de conocimiento independientes (por `dominio`).
+  const [seccion, setSeccionState]      = useState(() => localStorage.getItem('algedi_seccion') || 'personal');
+  const [sections, setSections]         = useState([{ nombre: 'personal', count: 0 }]);
+  const [seccionOpen, setSeccionOpen]   = useState(false);
+  const [securityEnabled, setSecurityEnabled] = useState(false);
   const [layoutMode, setLayoutMode]     = useState('components');
   const [focusTrigger, setFocusTrigger] = useState(0);  // botón "enfocar" del panel
   const [fitTrigger, setFitTrigger]     = useState(0);  // botón "ver todo" (desenfocar)
@@ -142,10 +158,47 @@ export default function App() {
     }
   }, []);
 
+  const loadSections = useCallback(() => {
+    fetch('/api/sections')
+      .then(r => r.json())
+      .then(d => {
+        const backend = Array.isArray(d.secciones) ? d.secciones : [];
+        const map = new Map(backend.map(s => [s.nombre, s]));
+        // Mergear con las conocidas localmente (incluye vacías). La activa ya está en
+        // "conocidas" (la agrega cambiarSeccion) → no la re-agregamos acá con un nombre
+        // que podría ser el viejo tras un rename.
+        [...getKnownSecciones(), 'personal'].forEach(n => {
+          if (n && !map.has(n)) map.set(n, { nombre: n, count: 0 });
+        });
+        const list = [...map.values()].sort(
+          (a, b) => (a.nombre !== 'personal') - (b.nombre !== 'personal') || a.nombre.localeCompare(b.nombre)
+        );
+        setSections(list);
+        setKnownSecciones(list.map(s => s.nombre));
+      })
+      .catch(() => {});
+  }, []);
+
+  const cambiarSeccion = useCallback((nombre) => {
+    setSeccionState(nombre);
+    try { localStorage.setItem('algedi_seccion', nombre); } catch {}
+    setKnownSecciones([...getKnownSecciones(), nombre]);  // la activa siempre en conocidas
+    setSeccionOpen(false);
+  }, []);
+
+  const nuevaSeccion = useCallback(() => {
+    const n = window.prompt('Nombre de la nueva sección (un grafo aparte):');
+    const nombre = (n || '').trim();
+    if (!nombre) return;
+    setKnownSecciones([...getKnownSecciones(), nombre]);
+    setSections(prev => prev.some(s => s.nombre === nombre) ? prev : [...prev, { nombre, count: 0 }]);
+    cambiarSeccion(nombre);
+  }, [cambiarSeccion]);
+
   const loadGraph = useCallback(() => {
     setLoading(true);
     setFetchError(false);
-    fetch('/api/graph')
+    fetch(`/api/graph?seccion=${encodeURIComponent(seccion)}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(data => { setGraphData(buildGraphData(data)); setLoading(false); })
       .catch(() => {
@@ -155,9 +208,50 @@ export default function App() {
           .then(data => { setGraphData(buildGraphData(data)); setLoading(false); })
           .catch(() => { setFetchError(true); setLoading(false); });
       });
-  }, []);
+  }, [seccion]);
+
+  const renombrarSeccion = useCallback(async (nombre) => {
+    setSeccionOpen(false);
+    const nuevo = (window.prompt(`Nuevo nombre para «${nombre}»:`, nombre) || '').trim();
+    if (!nuevo || nuevo === nombre) return;
+    try {
+      const r = await fetch('/api/sections/rename', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: nombre, to: nuevo }),
+      });
+      if (!r.ok) { window.alert('No se pudo renombrar.'); return; }
+      setKnownSecciones(getKnownSecciones().map(x => x === nombre ? nuevo : x));
+      if (seccion === nombre) cambiarSeccion(nuevo);
+      loadGraph(); loadSections();
+    } catch { window.alert('Error de conexión.'); }
+  }, [seccion, cambiarSeccion, loadGraph, loadSections]);
+
+  const eliminarSeccion = useCallback(async (nombre) => {
+    setSeccionOpen(false);
+    if (!window.confirm(`¿Eliminar la sección «${nombre}» y TODOS sus documentos? No se puede deshacer.`)) return;
+    let password = null;
+    if (securityEnabled) {
+      password = window.prompt(`Clave de seguridad para eliminar «${nombre}»:`);
+      if (password == null) return;
+    }
+    try {
+      const r = await fetch('/api/sections/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nombre, password }),
+      });
+      if (r.status === 403) { window.alert('Clave de seguridad incorrecta. La sección está intacta.'); return; }
+      if (!r.ok) { window.alert('No se pudo eliminar.'); return; }
+      setKnownSecciones(getKnownSecciones().filter(x => x !== nombre));
+      if (seccion === nombre) cambiarSeccion('personal');
+      loadGraph(); loadSections();
+    } catch { window.alert('Error de conexión.'); }
+  }, [seccion, securityEnabled, cambiarSeccion, loadGraph, loadSections]);
 
   useEffect(() => { loadGraph(); }, [loadGraph]);
+  useEffect(() => { loadSections(); }, [loadSections]);
+  useEffect(() => {
+    fetch('/api/security').then(r => r.json()).then(d => setSecurityEnabled(!!d.enabled)).catch(() => {});
+  }, []);
 
   // activeNode: solo click (para mostrar el panel)
   // highlightNode: click O hover (para resaltar en el grafo)
@@ -269,13 +363,44 @@ export default function App() {
     loadGraph();
   }, [loadGraph]);
 
+  const descargarBackup = useCallback(async () => {
+    const resp = await fetch('/api/export');
+    if (!resp.ok) throw new Error('export falló');
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `algedi-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, []);
+
   const handleReset = useCallback(async () => {
-    if (!window.confirm('¿Resetear el grafo? Esto elimina todos los nodos y relaciones.')) return;
-    await fetch('/api/reset', { method: 'POST' });
+    // Con clave configurada → se pide la clave. Sin clave → hay que escribir "BORRAR".
+    let password = null;
+    if (securityEnabled) {
+      password = window.prompt('⚠️ Esto BORRA TODO de forma permanente y NO se puede deshacer.\n\nIngresá la CLAVE DE SEGURIDAD para confirmar:');
+      if (password == null) return;
+    } else {
+      const r = window.prompt('⚠️ ESTO BORRA TODO de forma permanente (documentos, relaciones, temas, issues) y NO se puede deshacer.\n\nEscribí BORRAR (en mayúsculas) para confirmar:');
+      if (r == null) return;
+      if (r.trim() !== 'BORRAR') { window.alert('Cancelado — no escribiste "BORRAR" exacto. El grafo está intacto.'); return; }
+    }
+    // Red de seguridad: descargar un backup ANTES de borrar. Si falla, preguntar.
+    try {
+      await descargarBackup();
+    } catch {
+      if (!window.confirm('No se pudo generar el backup automático. ¿Resetear IGUAL, sin respaldo?')) return;
+    }
+    const resp = await fetch('/api/reset', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    if (resp.status === 403) { window.alert('Clave de seguridad incorrecta. El grafo está intacto.'); return; }
+    if (!resp.ok) { window.alert('No se pudo resetear.'); return; }
     setFixedNode(null); setHoverNode(null);
     setAgentOpen(false); setSynthSelected(new Set()); setSelectedLink(null);
-    loadGraph();
-  }, [loadGraph]);
+    loadGraph(); loadSections();
+  }, [loadGraph, loadSections, securityEnabled, descargarBackup]);
 
   const toggleSynth = useCallback(() => {
     setSynthMode(m => {
@@ -347,6 +472,39 @@ export default function App() {
           <span className="header-brand-icon">◈</span>
           <span>ALGEDI</span>
         </div>
+
+        {/* Selector de SECCIÓN (grafo de conocimiento activo) */}
+        <div className="hdr-menu-wrap">
+          <button className="seccion-btn"
+            onClick={() => { setSeccionOpen(o => !o); loadSections(); }}
+            title="Sección activa — cada sección es un grafo de conocimiento aparte">
+            <span className="seccion-dot" /> {seccion} <span className="seccion-caret">▾</span>
+          </button>
+          {seccionOpen && (<>
+            <div className="hdr-menu-backdrop" onClick={() => setSeccionOpen(false)} />
+            <div className="hdr-menu" style={{ left: 0, right: 'auto', minWidth: 290 }}>
+              <div className="hdr-menu-label">Secciones (grafos aparte)</div>
+              {sections.map(s => (
+                <div key={s.nombre} className={`seccion-row${s.nombre === seccion ? ' active' : ''}`}>
+                  <button className="seccion-row-main" onClick={() => cambiarSeccion(s.nombre)} title="Cambiar a esta sección">
+                    <span className="hdr-menu-ico">{s.nombre === seccion ? '●' : '○'}</span>
+                    <span className="seccion-row-name">{s.nombre}</span>
+                    <span className="seccion-row-count">{s.count}</span>
+                  </button>
+                  <button className="seccion-row-act" title={`Renombrar «${s.nombre}»`}
+                    onClick={() => renombrarSeccion(s.nombre)}>✎</button>
+                  <button className="seccion-row-act seccion-row-act--danger" title={`Eliminar «${s.nombre}»`}
+                    onClick={() => eliminarSeccion(s.nombre)}>🗑</button>
+                </div>
+              ))}
+              <div className="hdr-menu-sep" />
+              <button className="hdr-menu-item" onClick={nuevaSeccion}>
+                <span className="hdr-menu-ico">＋</span> Nueva sección…
+              </button>
+            </div>
+          </>)}
+        </div>
+
         <input
           className="search-input"
           placeholder={semanticIds ? `⬡ ${semanticIds.size} resultados` : 'Buscar con IA…'}
@@ -354,68 +512,88 @@ export default function App() {
           onChange={handleSearchChange}
         />
         <div className="header-actions">
+          {/* ── Contenido ── */}
           <button
             className={`btn-synth${libraryOpen ? ' active' : ''}`}
             onClick={() => setLibraryOpen(o => !o)}
-            title="Biblioteca de nodos"
+            title="Biblioteca — cargá y gestioná tus documentos"
           >
             ⊞ Biblioteca
           </button>
-          <button
-            className={`btn-synth btn-issue${issueOpen ? ' active' : ''}`}
-            onClick={() => setIssueOpen(o => !o)}
-            title="Módulo de issues"
-          >
-            ⚠ Issue
-          </button>
+
+          <span className="hdr-sep" />
+
+          {/* ── Explorar el conocimiento ── */}
           <button
             className={`btn-synth${globalAgent ? ' active' : ''}`}
             onClick={toggleGlobalAgent}
-            title="Agente global"
+            title="Agente — preguntá sobre tu conocimiento (fundado en el grafo)"
           >
             ⬡ Agente
           </button>
           <button
-            className={`btn-synth${synthMode ? ' active' : ''}`}
-            onClick={toggleSynth}
-            title="Modo síntesis"
-          >
-            ◈ Síntesis
-          </button>
-          <button
             className={`btn-synth${discoveriesOpen ? ' active' : ''}`}
             onClick={() => setDiscoveriesOpen(o => !o)}
-            title="Descubrimientos: puentes, huecos y nodos aislados (sin IA, sobre tus datos)"
+            title="Descubrir — puentes, silos y nodos aislados (sin IA, sobre tus datos)"
           >
             ◎ Descubrir
           </button>
           <button
-            className={`btn-synth${processOpen ? ' active' : ''}`}
-            onClick={() => setProcessOpen(o => !o)}
-            title="Procesos: describí un proceso y lo estructura + funda en tu grafo"
+            className={`btn-synth${synthMode ? ' active' : ''}`}
+            onClick={toggleSynth}
+            title="Síntesis — combiná varios nodos en un documento"
           >
-            ⛭ Procesos
+            ◈ Síntesis
           </button>
-          <button className="btn-reload" onClick={() => setFitTrigger(t => t + 1)}
-            title="Ver todo (desenfocar / volver a la vista general)">⊡</button>
-          <button className="btn-reload" onClick={loadGraph} title="Recargar">↺</button>
-          <button className="btn-reload" title="Recalcular relaciones"
-            onClick={async () => { await fetch('/api/recompute-relations', { method: 'POST' }); loadGraph(); }}>
-            ⟳
+
+          <span className="hdr-sep" />
+
+          {/* ── Issue: módulo unificado (diagnosticar problema · diseñar proceso) ── */}
+          <button
+            className={`btn-synth btn-issue${issueOpen || processOpen ? ' active' : ''}`}
+            onClick={() => setIssueOpen(o => !o)}
+            title="Issue — diagnosticá un problema o diseñá un proceso, fundado en tu grafo"
+          >
+            ⚠ Issue
           </button>
-          <button className="btn-reload" disabled={relayouting}
-            title="Reagrupar con IA — reasigna los temas del grafo (taxonomía por LLM)"
-            onClick={async () => {
-              setRelayouting(true);
-              try { await fetch('/api/taxonomy?apply=true', { method: 'POST' }); await loadGraph(); }
-              finally { setRelayouting(false); }
-            }}>
-            {relayouting ? '…' : '✦'}
-          </button>
-          <button className="btn-reset" onClick={handleReset} title="Resetear grafo">⌫</button>
+
+          <span className="hdr-sep" />
+
+          {/* ── Herramientas del grafo (fuera de la navegación, para no hacer ruido) ── */}
+          <div className="hdr-menu-wrap">
+            <button className={`btn-reload${toolsOpen ? ' active' : ''}`}
+              onClick={() => setToolsOpen(o => !o)} title="Herramientas del grafo">⋯</button>
+            {toolsOpen && (<>
+              <div className="hdr-menu-backdrop" onClick={() => setToolsOpen(false)} />
+              <div className="hdr-menu">
+                <div className="hdr-menu-label">Vista</div>
+                <button className="hdr-menu-item" onClick={() => { setFitTrigger(t => t + 1); setToolsOpen(false); }}>
+                  <span className="hdr-menu-ico">⊡</span> Ver todo (encuadrar)
+                </button>
+                <button className="hdr-menu-item" onClick={() => { loadGraph(); setToolsOpen(false); }}>
+                  <span className="hdr-menu-ico">↺</span> Recargar grafo
+                </button>
+                <div className="hdr-menu-sep" />
+                <div className="hdr-menu-label">Recalcular</div>
+                <button className="hdr-menu-item"
+                  onClick={async () => { setToolsOpen(false); await fetch('/api/recompute-relations', { method: 'POST' }); loadGraph(); }}>
+                  <span className="hdr-menu-ico">⟳</span> Recalcular relaciones
+                </button>
+                <button className="hdr-menu-item" disabled={relayouting}
+                  onClick={async () => {
+                    setRelayouting(true);
+                    try { await fetch('/api/taxonomy?apply=true', { method: 'POST' }); await loadGraph(); }
+                    finally { setRelayouting(false); setToolsOpen(false); }
+                  }}>
+                  <span className="hdr-menu-ico">✦</span> {relayouting ? 'Reagrupando con IA…' : 'Reagrupar con IA (temas)'}
+                </button>
+              </div>
+            </>)}
+          </div>
+
           {fetchError
             ? <span className="header-stat header-stat--error">Backend no conectado</span>
-            : <span className="header-stat">{graphData.nodes.length} nodos · {graphData.links.length} relaciones</span>
+            : <span className="header-stat">{graphView.nodes.length} nodos · {graphView.links.length} relaciones</span>
           }
         </div>
       </header>
@@ -452,6 +630,7 @@ export default function App() {
         {[
           { id: 'density',    icon: '⊞', label: 'Densidad',   tip: 'Dónde se concentra tu atención: agrupa los documentos por tema, revelando los focos del corpus (los atractores del espacio latente).' },
           { id: 'components', icon: '⬡', label: 'UMAP',       tip: 'La forma real del conocimiento: proyecta los embeddings preservando la vecindad semántica. La distancia entre nodos refleja qué tan relacionados están.' },
+          { id: 'force',      icon: '⧉', label: 'Relacional', tip: 'La estructura de vínculos: las relaciones tiran de los nodos. Lo conectado se junta, lo suelto se aleja — quedan a la vista los hubs, los puentes y los aislados.' },
         ].map(({ id, icon, label, tip }) => (
           <div key={id} className="layout-btn-wrap">
             <button
@@ -500,8 +679,10 @@ export default function App() {
       {fixedNode && agentOpen && !synthMode && (
         <AgentPanel
           node={fixedNode}
+          allNodes={graphData.nodes}
           onClose={() => { setAgentOpen(false); setHighlighted(new Set()); }}
           onHighlight={handleHighlight}
+          onNavigate={node => { setFixedNode(node); setHoverNode(null); }}
         />
       )}
 
@@ -518,6 +699,7 @@ export default function App() {
           allNodes={graphData.nodes}
           onClose={() => setGlobalAgent(false)}
           onHighlight={handleHighlight}
+          onNavigate={node => { setFixedNode(node); setHoverNode(null); }}
         />
       )}
 
@@ -533,7 +715,7 @@ export default function App() {
         <ProcessPanel
           allNodes={graphData.nodes}
           onHighlight={handleHighlight}
-          onClose={() => setProcessOpen(false)}
+          onClose={() => { setProcessOpen(false); setIssueOpen(true); }}
         />
       )}
 
@@ -563,6 +745,7 @@ export default function App() {
           onClose={() => setIssueOpen(false)}
           onRefresh={loadGraph}
           onNavigate={node => { setFixedNode(node); setHoverNode(null); }}
+          onOpenProcess={() => { setIssueOpen(false); setProcessOpen(true); }}
         />
       )}
 
@@ -577,7 +760,10 @@ export default function App() {
           onNavigate={node => { setFixedNode(node); setHoverNode(null); }}
           onDelete={handleDeleteNode}
           onRename={loadGraph}
-          onRefresh={loadGraph}
+          onRefresh={() => { loadGraph(); loadSections(); }}
+          onReset={handleReset}
+          onExport={descargarBackup}
+          seccion={seccion}
         />
       </div>
 

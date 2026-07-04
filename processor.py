@@ -10,12 +10,19 @@ load_dotenv()
 
 _embed_model = None
 
+# Modelo MULTILINGÜE (384d, misma dimensión que el anterior → sin migración de DB).
+# Antes se usaba 'all-MiniLM-L6-v2' (inglés, chico) sobre un corpus en español, lo que
+# achataba las similitudes ("todo se parece ~0.4"). Este está pensado para español y es
+# el mismo que valida la tesis (paraphrase-multilingual-MiniLM-L12-v2) → mejor separación.
+EMBED_MODEL_NAME = 'paraphrase-multilingual-MiniLM-L12-v2'
+
+
 def get_embed_model():
     global _embed_model
     if _embed_model is None:
         from sentence_transformers import SentenceTransformer
-        print("Cargando modelo de embeddings (primera vez: ~80MB)...")
-        _embed_model = SentenceTransformer('all-MiniLM-L6-v2')
+        print(f"Cargando modelo de embeddings ({EMBED_MODEL_NAME}, primera vez: ~470MB)...")
+        _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
         print("✓ Modelo listo")
     return _embed_model
 
@@ -723,100 +730,131 @@ def _conceptos_overlap(ca_list, cb_list):
     return False
 
 
+import unicodedata
+
+# Palabras vacías del español que no aportan a comparar conceptos.
+_STOP_ES = {"de", "la", "el", "los", "las", "del", "con", "por", "para", "que",
+            "una", "uno", "unos", "unas", "y", "en", "su", "sus", "al", "es",
+            "como", "sobre", "entre", "sin", "the", "of", "and", "to", "in"}
+
+
+def _norm_txt(s: str) -> str:
+    """Minúsculas + sin acentos (NFKD → ASCII). Para comparar sin ruido diacrítico."""
+    return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower()
+
+
+def _tokens_concepto(concepto: str) -> set:
+    """Palabras de contenido de un concepto (normalizadas, ≥4 letras, sin stopwords)."""
+    limpio = _norm_txt(concepto).replace("/", " ").replace("-", " ").replace(",", " ")
+    return {w for w in limpio.split() if len(w) >= 4 and w not in _STOP_ES}
+
+
+def _palabra_comun(ta: set, tb: set) -> bool:
+    """True si dos conceptos comparten una palabra COMPLETA (no substring): igual, o
+    prefijo con diferencia ≤3 letras (tolera plural/género: red↔redes, modelo↔modelos).
+    Evita el falso positivo de substring ("dato" dentro de "database")."""
+    for a in ta:
+        for b in tb:
+            if a == b:
+                return True
+            lo, hi = (a, b) if len(a) <= len(b) else (b, a)
+            if hi.startswith(lo) and (len(hi) - len(lo)) <= 3:
+                return True
+    return False
+
+
 def _auto_relaciones(nodos):
     """
-    Genera relaciones con metadata semántica completa.
-    Cada relación incluye score, shared_concepts, label y description.
-    Sin llamadas al LLM — todo determinístico.
+    Genera relaciones con metadata semántica completa. Sin LLM — determinístico.
+
+    Dos mejoras sobre el enfoque anterior:
+    - Conceptos compartidos por PALABRA COMPLETA (no substring) → menos falsos positivos.
+    - Umbral DATA-DRIVEN: kNN por nodo (cada nodo se queda con sus K vínculos más
+      fuertes) + piso por percentil de la distribución real de similitudes. Sin el 0.38
+      mágico → se adapta solo al modelo de embeddings y al corpus.
     """
-    rels, pares = [], set()
+    docs = [n for n in nodos if not n.get("is_centroid")]
+    if len(docs) < 2:
+        return []
 
-    for i, a in enumerate(nodos):
-        if a.get("is_centroid"):
-            continue
-        for b in nodos[i+1:]:
-            if b.get("is_centroid"):
+    toks = {n["id"]: [_tokens_concepto(c) for c in (n.get("conceptos") or [])] for n in docs}
+    names = {n["id"]: (n.get("conceptos") or []) for n in docs}
+
+    # 1. Candidatos: similitud coseno + conceptos compartidos (palabra completa) por par.
+    cand = []
+    for i, a in enumerate(docs):
+        ta_list = toks[a["id"]]
+        for b in docs[i + 1:]:
+            # Secciones = grafos independientes: no conectar nodos de distinta sección.
+            if (a.get("dominio") or "personal") != (b.get("dominio") or "personal"):
                 continue
+            tb_list = toks[b["id"]]
+            shared = []
+            for ci, ta in enumerate(ta_list):
+                if not ta:
+                    continue
+                if any(tb and _palabra_comun(ta, tb) for tb in tb_list):
+                    shared.append(names[a["id"]][ci])
+            shared = list(dict.fromkeys(shared))  # dedup preservando orden
 
-            ca = [c.lower() for c in a.get("conceptos", [])]
-            cb = [c.lower() for c in b.get("conceptos", [])]
-
-            # Conceptos compartidos: exact match + substring match
-            exact = set(ca) & set(cb)
-            partial = set()
-            for x in ca:
-                for y in cb:
-                    if x in exact or y in exact:
-                        continue
-                    if len(x) >= 4 and len(y) >= 4:
-                        if x in y or y in x:
-                            partial.add(x if len(x) <= len(y) else y)
-            shared = list(exact | partial)
-
-            sim = calcular_similitud_coseno(
-                a.get("embedding"), b.get("embedding")
-            )
+            sim = calcular_similitud_coseno(a.get("embedding"), b.get("embedding"))
             sim = round(sim, 2) if sim else 0.0
             comparten = len(shared) >= 2
+            strength = sim + 0.06 * min(len(shared), 4)  # conceptos compartidos suman
+            cand.append({"a": a["id"], "b": b["id"], "sim": sim,
+                         "shared": shared, "comparten": comparten, "strength": strength})
 
-            if not (comparten or sim >= 0.38):
-                continue
+    if not cand:
+        return []
 
-            key = (a["id"], b["id"])
-            if key in pares:
-                continue
-            pares.add(key)
+    # 2. Umbral data-driven: piso = percentil 40 de las similitudes reales. Con un modelo
+    #    de embeddings mejor, la distribución baja y el piso baja SOLO (sin re-tunear).
+    sims = sorted(c["sim"] for c in cand)
+    floor = sims[int(len(sims) * 0.40)]
 
-            # Label determinístico por reglas de prioridad
-            if sim >= 0.75:
-                label = "COMPLEMENTA_A"
-            elif sim >= 0.55 and comparten:
-                label = "PROFUNDIZA_EN"
-            elif sim >= 0.38 and comparten:
-                label = "RELACIONADO_CON"
-            elif comparten:
-                label = "COMPARTE_CONCEPTOS_CON"
-            else:
-                label = "SEMANTICAMENTE_SIMILAR_A"
-
-            # Description automática
-            if shared:
-                nombres = ", ".join(shared[:5])
-                description = (
-                    f"Comparten {len(shared)} conceptos ({nombres}) "
-                    f"con similitud semántica del {int(sim * 100)}%."
-                )
-            else:
-                description = f"Similitud semántica del {int(sim * 100)}%."
-
-            rels.append({
-                "source":          a["id"],
-                "target":          b["id"],
-                "score":           sim,
-                "shared_concepts": shared,
-                "label":           label,
-                "description":     description,
-            })
-
-    # ── Poda top-K por nodo ─────────────────────────────────────────────
-    # El umbral solo conecta ~30% de los pares (conceptos genéricos tipo
-    # "modelo"/"datos" + coseno alto de base en MiniLM) → bola de pelos de
-    # cientos de aristas que ensucia el grafo y castiga el render 3D.
-    # Conservamos una arista sólo si está entre las K más fuertes de alguno
-    # de sus dos extremos: cada nodo mantiene sus vínculos más significativos
-    # y ninguno queda desconectado por la poda.
+    # 3. kNN por nodo: cada nodo conserva sus K vínculos más fuertes (por encima del piso).
+    #    Una arista sobrevive si está en el top-K de ALGUNO de sus extremos, o si
+    #    comparten ≥2 conceptos (señal explícita fuerte, siempre vale). Así el K hace de
+    #    parámetro tipo "clustering" y ningún outlier se llena de líneas débiles.
     K = 5
-    fuerza = lambda r: r["score"] + 0.05 * min(len(r["shared_concepts"]), 4)
     por_nodo = {}
-    for r in rels:
-        por_nodo.setdefault(r["source"], []).append(r)
-        por_nodo.setdefault(r["target"], []).append(r)
+    for c in cand:
+        por_nodo.setdefault(c["a"], []).append(c)
+        por_nodo.setdefault(c["b"], []).append(c)
     keep = set()
     for lst in por_nodo.values():
-        lst.sort(key=fuerza, reverse=True)
-        for r in lst[:K]:
-            keep.add((r["source"], r["target"]))
-    return [r for r in rels if (r["source"], r["target"]) in keep]
+        lst.sort(key=lambda c: c["strength"], reverse=True)
+        for c in lst[:K]:
+            # Piso data-driven, salvo que compartan conceptos explícitos (señal fuerte que
+            # puede valer aunque el coseno sea algo menor). Igual respeta el tope top-K por
+            # nodo → no rearma el hairball.
+            if c["sim"] >= floor or c["comparten"]:
+                keep.add((c["a"], c["b"]))
+
+    # 4. Relaciones finales con label/description (el label describe la fuerza, no filtra).
+    rels = []
+    for c in cand:
+        if (c["a"], c["b"]) not in keep:
+            continue
+        sim, shared, comparten = c["sim"], c["shared"], c["comparten"]
+        if sim >= 0.75:
+            label = "COMPLEMENTA_A"
+        elif sim >= 0.55 and comparten:
+            label = "PROFUNDIZA_EN"
+        elif sim >= 0.38 and comparten:
+            label = "RELACIONADO_CON"
+        elif comparten:
+            label = "COMPARTE_CONCEPTOS_CON"
+        else:
+            label = "SEMANTICAMENTE_SIMILAR_A"
+        if shared:
+            description = (f"Comparten {len(shared)} conceptos ({', '.join(shared[:5])}) "
+                          f"con similitud semántica del {int(sim * 100)}%.")
+        else:
+            description = f"Similitud semántica del {int(sim * 100)}%."
+        rels.append({"source": c["a"], "target": c["b"], "score": sim,
+                     "shared_concepts": shared, "label": label, "description": description})
+    return rels
 
 
 def asignar_tema(nodo: dict):

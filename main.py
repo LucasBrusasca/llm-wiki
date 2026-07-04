@@ -12,8 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func
 from sqlalchemy import delete as sql_delete
+from sqlalchemy import update as sql_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -230,6 +231,7 @@ def _save_node_sync(nodo_data: dict):
                 "label": n.label,
                 "conceptos": n.conceptos or [],
                 "embedding": emb,
+                "dominio": n.dominio or "personal",
                 "is_centroid": False,
             })
 
@@ -265,7 +267,8 @@ def _recompute_edges_background():
             nodes_dicts.append({
                 "id": n.id, "label": n.label,
                 "conceptos": n.conceptos or [],
-                "embedding": emb, "is_centroid": False,
+                "embedding": emb, "dominio": n.dominio or "personal",
+                "is_centroid": False,
             })
         new_rels = _auto_relaciones(nodes_dicts)
         session.execute(sync_delete(EdgeModel))
@@ -276,13 +279,35 @@ def _recompute_edges_background():
 
 # ── Graph data ────────────────────────────────────────────────────────
 
+@app.get("/api/sections")
+async def get_sections(db: AsyncSession = Depends(get_async_session)):
+    """Lista las secciones (dominios) existentes con su cantidad de documentos.
+    Cada sección es un grafo de conocimiento independiente."""
+    rows = (await db.execute(
+        select(Node.dominio, func.count()).where(
+            Node.is_centroid == False, Node.is_issue == False
+        ).group_by(Node.dominio)
+    )).all()
+    secciones = [{"nombre": (d or "personal"), "count": c} for d, c in rows]
+    if not any(s["nombre"] == "personal" for s in secciones):
+        secciones.insert(0, {"nombre": "personal", "count": 0})
+    secciones.sort(key=lambda s: (s["nombre"] != "personal", s["nombre"].lower()))
+    return {"secciones": secciones}
+
+
 @app.get("/api/graph")
-async def get_graph(db: AsyncSession = Depends(get_async_session)):
-    nodes_rows = (await db.execute(select(Node))).scalars().all()
+async def get_graph(seccion: str = None, db: AsyncSession = Depends(get_async_session)):
+    # Filtro por sección: cada sección es un grafo independiente. Los issues NO se filtran
+    # (viven en su módulo, fuera del grafo). Sin 'seccion' → todo (compat / vista global).
+    stmt = select(Node)
+    if seccion:
+        stmt = stmt.where((Node.dominio == seccion) | (Node.is_issue == True))
+    nodes_rows = (await db.execute(stmt)).scalars().all()
     edges_rows = (await db.execute(select(Edge))).scalars().all()
 
     rng = random.Random(42)
     nodes_list = []
+    node_ids = set()
     for n in nodes_rows:
         nd = node_to_dict(n)
         if nd["x3d"] is None:
@@ -290,11 +315,12 @@ async def get_graph(db: AsyncSession = Depends(get_async_session)):
             nd["y3d"] = rng.uniform(-1, 1)
             nd["z3d"] = rng.uniform(-1, 1)
         nodes_list.append(nd)
+        node_ids.add(n.id)
 
-    return {
-        "nodos": nodes_list,
-        "relaciones": [edge_to_dict(e) for e in edges_rows],
-    }
+    # Solo aristas cuyos DOS extremos están en la sección visible.
+    relaciones = [edge_to_dict(e) for e in edges_rows
+                  if e.source in node_ids and e.target in node_ids]
+    return {"nodos": nodes_list, "relaciones": relaciones}
 
 
 # ── File serving ──────────────────────────────────────────────────────
@@ -569,10 +595,132 @@ async def get_thumb(node_id: str, db: AsyncSession = Depends(get_async_session))
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
+# ── Backup: export / import ───────────────────────────────────────────
+
+def _row_to_dict_full(row, model) -> dict:
+    """Serializa TODAS las columnas de una fila (para un backup completo, no la vista liviana)."""
+    d = {}
+    for col in model.__table__.columns:
+        v = getattr(row, col.key)
+        if hasattr(v, "tolist"):
+            v = v.tolist()          # vector de embedding
+        elif hasattr(v, "isoformat"):
+            v = v.isoformat()       # datetime
+        d[col.key] = v
+    return d
+
+
+@app.get("/api/export")
+async def export_graph(db: AsyncSession = Depends(get_async_session)):
+    """Backup COMPLETO del grafo (todos los nodos + relaciones) como JSON descargable."""
+    import json as _json
+    nodes_rows = (await db.execute(select(Node))).scalars().all()
+    edges_rows = (await db.execute(select(Edge))).scalars().all()
+    payload = {
+        "algedi_backup": 1,
+        "nodos": [_row_to_dict_full(n, Node) for n in nodes_rows],
+        "relaciones": [_row_to_dict_full(e, Edge) for e in edges_rows],
+    }
+    return Response(
+        content=_json.dumps(payload, ensure_ascii=False),
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="algedi-backup.json"'},
+    )
+
+
+@app.post("/api/import")
+async def import_graph(request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Restaura un backup: upsert de nodos (conserva posiciones, temas, etc.) y recalcula
+    relaciones. NO borra lo existente — mergea por id, así podés unir backups."""
+    import asyncio
+    body = await request.json()
+    nodos = body.get("nodos") or []
+    if not nodos:
+        raise HTTPException(400, "El backup no contiene nodos.")
+    node_cols = {c.key for c in Node.__table__.columns}
+    skip = {"created_at", "updated_at"}
+    n_ok = 0
+    for nd in nodos:
+        datos = {k: v for k, v in nd.items() if k in node_cols and k not in skip and v is not None}
+        if not datos.get("id"):
+            continue
+        await db.execute(
+            pg_insert(Node).values(**datos).on_conflict_do_update(index_elements=["id"], set_=datos)
+        )
+        n_ok += 1
+    await db.commit()
+    # Las relaciones son derivadas → recalcularlas con el algoritmo actual.
+    await asyncio.to_thread(_recompute_edges_background)
+    return {"ok": True, "nodos_importados": n_ok}
+
+
+# ── Seguridad (clave para acciones destructivas) ──────────────────────
+
+def _security_enabled() -> bool:
+    return bool((os.getenv("ALGEDI_ADMIN_PASSWORD") or "").strip())
+
+
+def _check_password(pwd) -> bool:
+    """True si la clave es correcta, o si no hay clave configurada (no se exige)."""
+    real = (os.getenv("ALGEDI_ADMIN_PASSWORD") or "").strip()
+    if not real:
+        return True
+    return (str(pwd or "")).strip() == real
+
+
+async def _read_body(request: Request) -> dict:
+    try:
+        return await request.json()
+    except Exception:
+        return {}
+
+
+@app.get("/api/security")
+async def security_status():
+    """Le dice al frontend si hay clave configurada (para pedirla en acciones destructivas)."""
+    return {"enabled": _security_enabled()}
+
+
+# ── Secciones: renombrar / eliminar ───────────────────────────────────
+
+@app.post("/api/sections/rename")
+async def rename_section(request: Request, db: AsyncSession = Depends(get_async_session)):
+    body = await _read_body(request)
+    origen = (body.get("from") or "").strip()
+    destino = (body.get("to") or "").strip()
+    if not origen or not destino:
+        raise HTTPException(400, "Faltan nombres (from/to).")
+    await db.execute(sql_update(Node).where(Node.dominio == origen).values(dominio=destino))
+    await db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/sections/delete")
+async def delete_section(request: Request, db: AsyncSession = Depends(get_async_session)):
+    body = await _read_body(request)
+    nombre = (body.get("nombre") or "").strip()
+    if not nombre:
+        raise HTTPException(400, "Falta el nombre de la sección.")
+    if not _check_password(body.get("password")):
+        raise HTTPException(403, "Clave de seguridad incorrecta.")
+    # Borra los documentos de la sección (las aristas caen por cascade). No toca issues.
+    ids = (await db.execute(
+        select(Node.id).where(Node.dominio == nombre, Node.is_issue == False)
+    )).scalars().all()
+    if ids:
+        await db.execute(sql_delete(Edge).where(Edge.source.in_(ids) | Edge.target.in_(ids)))
+        await db.execute(sql_delete(Node).where(Node.id.in_(ids)))
+        await db.commit()
+    return {"ok": True, "borrados": len(ids)}
+
+
 # ── Reset / clear ─────────────────────────────────────────────────────
 
 @app.post("/api/reset")
-async def reset_graph(db: AsyncSession = Depends(get_async_session)):
+async def reset_graph(request: Request, db: AsyncSession = Depends(get_async_session)):
+    body = await _read_body(request)
+    if not _check_password(body.get("password")):
+        raise HTTPException(403, "Clave de seguridad incorrecta.")
     await db.execute(sql_delete(Edge))
     await db.execute(sql_delete(Node))
     await db.commit()
@@ -654,12 +802,18 @@ async def taxonomy(apply: bool = False, db: AsyncSession = Depends(get_async_ses
     )
     user = f"""Tengo {len(docs)} documentos. Para cada uno te doy id, título y conceptos clave.
 
-1) Proponé una taxonomía de entre 6 y 10 TEMAS con nombres cortos y legibles en español
-   (ej: "Estadística", "LLMs", "RAG / Retrieval", "Diffusion y Visión",
-   "Redes neuronales / Deep learning", "ML clásico", "Agentes", "IA y sociedad").
-   Los temas deben reflejar los temas REALES de ESTOS documentos, no una lista genérica.
+1) Proponé una taxonomía con nombres cortos y legibles en español (las que hagan falta,
+   típicamente 6 a 12), p.ej.: "Estadística", "LLMs", "RAG / Retrieval",
+   "Diffusion y Visión", "Redes neuronales / Deep learning", "ML clásico", "Agentes",
+   "Neurociencia / Cognición", "IA y sociedad". Los temas deben reflejar los REALES de
+   ESTOS documentos, no una lista genérica.
+   IMPORTANTE: cubrí TODOS los documentos. Si dos o más comparten un tema —aunque sea de
+   nicho (ej. neurociencia, filosofía, historia)— CREÁ esa categoría; no los descartes por
+   ser "de otro palo". Cada documento merece la etiqueta que le corresponde.
 2) Asigná CADA documento a exactamente UN tema de tu taxonomía.
-   Si un documento no encaja claramente en ninguno, asignalo a "Sin clasificar" — no lo fuerces.
+   Usá "Sin clasificar" SÓLO como último recurso: un documento único, sin ningún otro
+   parecido, que realmente no forma tema con nadie. Si tiene al menos un "primo", creale
+   la categoría.
 
 Documentos:
 {listado}
@@ -895,6 +1049,8 @@ async def agent_endpoint(
     scored = await _nodos_relevantes_scored(ultima, max_n=6, db=db) if ultima else []
     node_ids = [s["id"] for s in scored]
     max_sim = scored[0]["sim"] if scored else 0.0
+    # Documentos recuperados → el frontend los lista (clickeables) y los marca en el grafo.
+    fundamentos = [{"id": s["id"], "label": s["label"], "sim": round(s["sim"], 2)} for s in scored]
 
     # VETO: si la mejor coincidencia es muy débil, el agente se abstiene (no inventa).
     if ultima and max_sim < AGENT_VETO_UMBRAL:
@@ -906,7 +1062,8 @@ async def agent_endpoint(
         )
         db.add(AuditLog(query=ultima, agent_mode="VETO", node_ids_consulted=node_ids, response=reply[:2000]))
         await db.commit()
-        return {"reply": reply, "nodos_relevantes": node_ids, "veto": True, "max_sim": round(max_sim, 2)}
+        return {"reply": reply, "nodos_relevantes": node_ids, "fundamentos": fundamentos,
+                "veto": True, "max_sim": round(max_sim, 2)}
 
     # Grounding: inyectar el conocimiento recuperado CON su % de afinidad. El LLM usa esos
     # números para auto-vetar con criterio (decir "no me alcanza" si la afinidad es baja).
@@ -916,9 +1073,17 @@ async def agent_endpoint(
             for s in scored
         )
         system = (
-            f"{system}\n\nCONOCIMIENTO RELEVANTE DE TU GRAFO (con % de afinidad a la pregunta). "
-            f"Fundamentá la respuesta SÓLO en esto. Si las afinidades son bajas (≲45%) o el "
-            f"contenido no cubre la pregunta, DECILO con honestidad y NO inventes:\n{contexto}"
+            f"{system}\n\n"
+            "CONOCIMIENTO RELEVANTE DE TU GRAFO (recuperado por similitud SEMÁNTICA, con % de "
+            "afinidad). Estos ya son los documentos más relacionados con la pregunta — la "
+            "relevancia es semántica, NO depende de que aparezca la palabra exacta.\n"
+            "• Si te preguntan '¿qué material/documentos tengo sobre X?' o piden enumerar, "
+            "LISTÁ estos documentos por título, ordenados por afinidad, con una línea de por "
+            "qué se relacionan. NUNCA digas que no hay nada solo porque no aparece el término "
+            "literal — si están acá, es porque se relacionan.\n"
+            "• Fundamentá SÓLO en esta lista. Recién si NINGUNO tiene que ver con la pregunta, "
+            "decilo con honestidad.\n\n"
+            f"{contexto}"
         )
     try:
         from processor import query_llm
@@ -934,7 +1099,8 @@ async def agent_endpoint(
     ))
     await db.commit()
 
-    return {"reply": reply, "nodos_relevantes": node_ids, "veto": False, "max_sim": round(max_sim, 2)}
+    return {"reply": reply, "nodos_relevantes": node_ids, "fundamentos": fundamentos,
+            "veto": False, "max_sim": round(max_sim, 2)}
 
 
 @app.post("/api/synthesize")
@@ -972,12 +1138,14 @@ async def synthesize_endpoint(request: Request, db: AsyncSession = Depends(get_a
 
     system = (
         "Sos el agente de Algedi ayudando a diagnosticar y mejorar un proceso o problema. "
-        "Respondé en español, con markdown, conciso y accionable. "
-        "Fundamentá SÓLO en el CONTEXTO EN FOCO y el CONOCIMIENTO DEL GRAFO de abajo. "
-        "Si las afinidades del grafo son bajas (≲45%) o no cubren la pregunta, DECILO con "
-        "honestidad y ofrecé lo que sí puedas desde el contexto en foco, sin inventar datos.\n\n"
+        "Respondé en español, con markdown, conciso y accionable. Andá DIRECTO a la ayuda "
+        "útil sobre el proceso/etapa en foco — NO empieces con disclaimers sobre las "
+        "afinidades del grafo. El grafo es apoyo opcional: si algún documento aporta, "
+        "citalo; si no, respondé igual con criterio experto sobre el proceso. Solo aclarás "
+        "una limitación si de verdad te falta info para algo puntual. No inventes datos "
+        "específicos (números, fuentes) que no tengas.\n\n"
         f"CONTEXTO EN FOCO (el proceso/etapa):\n{contexto_focos or '(sin contexto específico)'}\n\n"
-        f"CONOCIMIENTO RELEVANTE DEL GRAFO (con % de afinidad):\n{contexto_grafo}"
+        f"CONOCIMIENTO DEL GRAFO que puede aportar (opcional):\n{contexto_grafo}"
     )
 
     try:
@@ -1089,7 +1257,7 @@ def _es_playlist_youtube(url: str) -> bool:
     return "list=" in u and "watch?v=" not in u
 
 
-def _ingest_playlist(url: str, skip_umap: bool = False):
+def _ingest_playlist(url: str, skip_umap: bool = False, seccion: str = "personal"):
     """Expande una playlist de YouTube y crea UN NODO POR VIDEO (cada uno enlazable).
     Secuencial (respeta el rate-limit del LLM) y UMAP una sola vez al final."""
     global _ingest
@@ -1115,6 +1283,7 @@ def _ingest_playlist(url: str, skip_umap: bool = False):
             # Pasamos título y canal de yt-dlp como respaldo (el oembed a veces viene vacío).
             resultado = procesar_youtube(v["url"], title_hint=v.get("title"), author_hint=v.get("channel"))
             for nodo in resultado.get("nodos", []):
+                nodo["dominio"] = seccion or "personal"
                 _save_node_sync(nodo)
                 ok += 1
         except Exception as e:
@@ -1134,12 +1303,12 @@ def _ingest_playlist(url: str, skip_umap: bool = False):
         _ingest = {"state": "done", "message": msg, "label": "Playlist", "progress": 100}
 
 
-def _run_ingest(entrada: str, skip_umap: bool = False):
+def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"):
     global _ingest
     try:
         # Playlist de YouTube → un nodo por video (camino propio, sale temprano).
         if entrada.startswith("http") and _es_playlist_youtube(entrada):
-            _ingest_playlist(entrada, skip_umap)
+            _ingest_playlist(entrada, skip_umap, seccion)
             return
         from processor import (
             acumular_resultado,
@@ -1215,8 +1384,9 @@ def _run_ingest(entrada: str, skip_umap: bool = False):
         except Exception as e:
             print(f"Error generando rich_html en ingesta: {e}")
 
-        # Guardar cada nodo en PostgreSQL
+        # Guardar cada nodo en PostgreSQL, etiquetado con la sección activa.
         for nodo in resultado.get("nodos", []):
+            nodo["dominio"] = seccion or "personal"
             _save_node_sync(nodo)
 
         if not skip_umap:
@@ -1243,7 +1413,9 @@ async def ingest(
     file: UploadFile = File(default=None),
     url: str = Form(default=None),
     skip_umap: bool = Form(default=False),
+    seccion: str = Form(default="personal"),
 ):
+    seccion = (seccion or "personal").strip() or "personal"
     with _ingest_lock:
         if _ingest["state"] == "processing":
             raise HTTPException(409, "Ya hay una ingesta en progreso")
@@ -1269,7 +1441,7 @@ async def ingest(
 
     for idx, entrada in enumerate(entradas):
         is_last = idx == len(entradas) - 1
-        background_tasks.add_task(_run_ingest, entrada, skip_umap if is_last else True)
+        background_tasks.add_task(_run_ingest, entrada, skip_umap if is_last else True, seccion)
 
     return {"ok": True, "count": len(entradas)}
 
