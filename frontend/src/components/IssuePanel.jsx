@@ -283,10 +283,17 @@ export default function IssuePanel({ allNodes, onClose, onRefresh, onNavigate, o
   // Chat por issue — persistido en localStorage para no perder el diagnóstico
   // al cerrar el panel (mismo criterio que AgentPanel).
   const CHATS_KEY = 'algedi_issue_chats';
+  // Estructura: { [issueId]: { [etapaId | 'general']: mensajes[] } } — un hilo POR ETAPA.
+  // Migra el formato viejo (un solo array por issue) al hilo "general".
   const [chatHistories, setChatHistories] = useState(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem(CHATS_KEY) || '{}');
-      return (saved && typeof saved === 'object') ? saved : {};
+      const raw = JSON.parse(localStorage.getItem(CHATS_KEY) || '{}');
+      const out = {};
+      for (const [iid, v] of Object.entries(raw || {})) {
+        if (Array.isArray(v)) out[iid] = { general: v };
+        else if (v && typeof v === 'object') out[iid] = v;
+      }
+      return out;
     } catch { return {}; }
   });
   useEffect(() => {
@@ -308,7 +315,8 @@ export default function IssuePanel({ allNodes, onClose, onRefresh, onNavigate, o
   }, [allNodes, search]);
 
   const selectedIssue = useMemo(() => issues.find(i => i.id === selectedIssueId), [issues, selectedIssueId]);
-  const currentChat = selectedIssueId && selectedIssueId !== 'new' ? (chatHistories[selectedIssueId] || []) : [];
+  const stageKey = selectedStage?.id || 'general';   // hilo de la etapa en foco (o 'general')
+  const currentChat = (selectedIssueId !== 'new' && chatHistories[selectedIssueId]?.[stageKey]) || [];
 
   // Reset al cambiar de issue: foco de etapa y pestaña por defecto (reporte si existe).
   useEffect(() => {
@@ -326,8 +334,13 @@ export default function IssuePanel({ allNodes, onClose, onRefresh, onNavigate, o
 
   const clearChat = useCallback(() => {
     if (!selectedIssue) return;
-    setChatHistories(prev => { const next = { ...prev }; delete next[selectedIssue.id]; return next; });
-  }, [selectedIssue]);
+    const key = selectedStage?.id || 'general';
+    setChatHistories(prev => {
+      const ic = { ...(prev[selectedIssue.id] || {}) };
+      delete ic[key];
+      return { ...prev, [selectedIssue.id]: ic };
+    });
+  }, [selectedIssue, selectedStage]);
 
   const deleteIssue = useCallback(async () => {
     if (!selectedIssue) return;
@@ -373,23 +386,27 @@ export default function IssuePanel({ allNodes, onClose, onRefresh, onNavigate, o
       filas.forEach((e, i) => { posDe[e.id] = { x: x0 + i * (NODE_W + COL_GAP), y: Number(lvl) * ROW_H + 40 }; });
     });
 
-    const rfNodes = etapas.map(etapa => ({
+    const rfNodes = etapas.map(etapa => {
+      const sel = selectedStage?.id === etapa.id;
+      const tieneChat = (chatHistories[selectedIssue.id]?.[etapa.id]?.length || 0) > 0;
+      return {
       id: etapa.id,
-      data: { label: `${etapa.label}\n\n${etapa.desc || ''}` },
+      data: { label: `${tieneChat ? '💬 ' : ''}${etapa.label}\n\n${etapa.desc || ''}` },
       position: posDe[etapa.id] || { x: 300, y: 40 },
       style: {
-        background: selectedStage?.id === etapa.id ? 'rgba(245,166,35,0.2)' : 'rgba(10,14,30,0.9)',
-        color: selectedStage?.id === etapa.id ? '#f5a623' : '#c4c8d6',
-        border: `1px solid ${selectedStage?.id === etapa.id ? '#f5a623' : 'rgba(80,100,150,0.4)'}`,
+        background: sel ? 'rgba(245,166,35,0.2)' : 'rgba(10,14,30,0.9)',
+        color: sel ? '#f5a623' : '#c4c8d6',
+        border: `1px solid ${sel ? '#f5a623' : (tieneChat ? 'rgba(0,212,255,0.55)' : 'rgba(80,100,150,0.4)')}`,
         borderRadius: '6px',
         width: 250,
         fontSize: '12px',
         textAlign: 'center',
         cursor: 'pointer',
-        boxShadow: selectedStage?.id === etapa.id ? '0 0 15px rgba(245,166,35,0.3)' : 'none',
+        boxShadow: sel ? '0 0 15px rgba(245,166,35,0.3)' : 'none',
         transition: 'all 0.2s'
       }
-    }));
+    };
+    });
 
     const rfEdges = conexiones.map((c, i) => ({
       id: `e${i}-${c.source}-${c.target}`,
@@ -402,17 +419,20 @@ export default function IssuePanel({ allNodes, onClose, onRefresh, onNavigate, o
     }));
 
     return { nodes: rfNodes, edges: rfEdges };
-  }, [selectedIssue, selectedStage]);
+  }, [selectedIssue, selectedStage, chatHistories]);
 
   // ---- Chat del issue ----
   const handleSendMessage = async () => {
     if (!inputText.trim() || !selectedIssue) return;
 
     const userMsg = { role: 'user', text: inputText };
-    setChatHistories(prev => ({
-      ...prev,
-      [selectedIssue.id]: [...(prev[selectedIssue.id] || []), userMsg]
-    }));
+    const key = selectedStage?.id || 'general';   // el hilo de la etapa en foco
+    const push = (msg) => setChatHistories(prev => {
+      const ic = { ...(prev[selectedIssue.id] || {}) };
+      ic[key] = [...(ic[key] || []), msg];
+      return { ...prev, [selectedIssue.id]: ic };
+    });
+    push(userMsg);
     setInputText('');
     setIsTyping(true);
 
@@ -440,16 +460,9 @@ Descripción general: ${selectedIssue.desc || 'Sin descripción'}
       if (typeof data.max_sim === 'number' && data.max_sim >= 0.4) {
         texto += `\n\n<small style="color:#6a7686">⊙ fundado en tu grafo · afinidad ${Math.round(data.max_sim * 100)}%</small>`;
       }
-      const aiMsg = { role: 'assistant', text: texto };
-      setChatHistories(prev => ({
-        ...prev,
-        [selectedIssue.id]: [...(prev[selectedIssue.id] || []), aiMsg]
-      }));
+      push({ role: 'assistant', text: texto });
     } catch (e) {
-      setChatHistories(prev => ({
-        ...prev,
-        [selectedIssue.id]: [...(prev[selectedIssue.id] || []), { role: 'assistant', text: 'Error de conexión con el agente.' }]
-      }));
+      push({ role: 'assistant', text: 'Error de conexión con el agente.' });
     } finally {
       setIsTyping(false);
     }
