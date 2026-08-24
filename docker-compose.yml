@@ -10,7 +10,9 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pragma}"]
+      # pg_isready usa por defecto una DB con el nombre del usuario. En Algedi ambos
+      # pueden diferir, por eso la base debe indicarse explícitamente.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pragma} -d ${POSTGRES_DB:-pragmaforge}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -20,6 +22,11 @@ services:
       context: .
       dockerfile: Dockerfile.backend
       target: dev
+    # El CMD de la imagen todavía trae --reload (la imagen es de mayo; el Dockerfile
+    # se corrigió después y no se rebuildeó). El reloader de watchfiles crashea sobre
+    # el bind-mount de Windows con "os error 5" y TUMBA el backend — ya pasó tres veces
+    # en una sola sesión. Este override no depende de rebuildear: gana sobre el CMD.
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pragma}:${POSTGRES_PASSWORD:-pragma}@db:5432/${POSTGRES_DB:-pragmaforge}
       DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-pragma}:${POSTGRES_PASSWORD:-pragma}@db:5432/${POSTGRES_DB:-pragmaforge}
@@ -54,6 +61,9 @@ services:
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
+      # Sin este montaje, Vite sirve el index.html horneado en la imagen: el título
+      # y cualquier <link> del head quedan congelados en la versión del build.
+      - ./frontend/index.html:/app/index.html
     environment:
       VITE_API_URL: http://localhost:8000
       # Target del proxy de Vite (lado servidor, dentro del contenedor).

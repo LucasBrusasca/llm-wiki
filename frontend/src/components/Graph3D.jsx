@@ -1,4 +1,4 @@
-import React, { useRef, useCallback, useEffect, useMemo } from 'react';
+import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import ForceGraph3D from 'react-force-graph-3d';
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
@@ -7,18 +7,61 @@ import { clusterColor, CLUSTER_PALETTE } from '../App.jsx';
 
 /* ── Mapa plano de documentos (constelación de miniaturas) ── */
 const NODE = {
-  bg:      '#08090c', // fondo casi negro, plano (sin haze sci-fi)
-  card:    '#10151d', // relleno de tarjeta neutra
-  border:  'rgba(190,205,225,0.5)',  // borde fino de tarjeta
-  label:   'rgba(205,215,230,0.85)', // texto de etiqueta
-  line:    '120,178,235',            // líneas de conexión (azul claro, tono del logo) — rgb base
-  issue:   '#ff3060',
+  bg:      '#000000', // negro con sesgo azul: el fondo de un instrumento, no violeta
+  card:    '#0B121B60', // relleno de tarjeta neutra (translúcido)
+  border:  'rgba(150,200,230,0.34)', // borde fino de tarjeta
+  label:   'rgba(214,232,244,0.9)',  // texto de etiqueta
+  line:    '90,200,250',             // conexiones: cian del instrumento (rgb base)
+  issue:   '#FFB44D',                // ámbar: reservado para lo excepcional
+  sel:     '#FFFFFF',                // retícula de selección
 };
+
+// "#7C8CFF" → "124,140,255". Se cachea porque linkColor corre por arista y por frame.
+const _rgbCache = new Map();
+/* El NODO se pinta mas claro que su propia arista. Con la paleta oscura, nodo y
+   arista compartiendo color exacto hacia que las aristas —que son muchisimas mas—
+   dominaran la pantalla y los nodos desaparecieran. Aclarar solo el nodo mantiene
+   la paleta oscura del conjunto y devuelve al nodo la jerarquia que le corresponde:
+   el documento es la entidad, la arista es la relacion. */
+function aclarar(hex, k = 0.14) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const mez = c => Math.round(c + (255 - c) * k);
+  const r = mez((n >> 16) & 255), g = mez((n >> 8) & 255), b = mez(n & 255);
+  return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+}
+
+/* La ARISTA se pinta mas oscura que el nodo, con el mismo matiz. Al subir el
+   brillo de la paleta, las aristas heredaron ese brillo — y son un orden de
+   magnitud mas numerosas que los nodos, asi que pasaron a ser el elemento
+   dominante de la pantalla. El matiz sigue identificando al grupo; lo que baja
+   es su peso visual. */
+function oscurecer(hex, k = 0.45) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const mez = c => Math.round(c * (1 - k));
+  const r = mez((n >> 16) & 255), g = mez((n >> 8) & 255), b = mez(n & 255);
+  return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+}
+
+function hexToRgb(hex) {
+  const k = String(hex || '');
+  const hit = _rgbCache.get(k);
+  if (hit) return hit;
+  const m = /^#?([0-9a-f]{6})$/i.exec(k.trim());
+  const out = m
+    ? `${parseInt(m[1].slice(0, 2), 16)},${parseInt(m[1].slice(2, 4), 16)},${parseInt(m[1].slice(4, 6), 16)}`
+    : NODE.line;
+  _rgbCache.set(k, out);
+  return out;
+}
 
 // Flag de performance: si FPS < 30 se puede desactivar bloom vía VITE_BLOOM_ENABLED=false.
 // Backdrop y nodos funcionan SIEMPRE, con o sin bloom.
 const BLOOM_ENABLED =
-  String(import.meta.env.VITE_BLOOM_ENABLED ?? 'true').toLowerCase() !== 'false';
+  String(import.meta.env.VITE_BLOOM_ENABLED ?? 'false').toLowerCase() === 'true';
 
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -37,7 +80,10 @@ function roundRect(ctx, x, y, w, h, r) {
 /* ── Tamaño de tarjeta = centralidad (grado de conexiones), chico ── */
 function cardHeight(degree, maxDegree) {
   const norm = maxDegree > 0 ? Math.sqrt(degree / maxDegree) : 0;
-  return 5 + norm * 5; // ~5 (periférico) .. ~10 (hub) en unidades de mundo
+  // Achicadas: con 5..10 las tarjetas se encimaban en UMAP, donde los documentos
+  // quedan naturalmente juntos. El tope de 14 tarjetas simultaneas ayuda, pero si
+  // cada una es grande igual se pisan entre si.
+  return 4.4 + norm * 4.4; // ~4.4 (periferico) .. ~8.8 (hub)
 }
 
 // Dimensiones de la tarjeta normalizadas por ÁREA: un video 16:9 (ancho) y un PDF
@@ -67,7 +113,7 @@ function makeNeutralCardTexture(node, accent) {
   ctx.strokeRect(1.5, 1.5, cw - 3, ch - 3);
   const glyph = GLYPHS[(node.fuente || '').toLowerCase()] || '◇';
   ctx.fillStyle = 'rgba(165,180,200,0.7)';
-  ctx.font = `${glyph.length > 1 ? 26 : 40}px 'Courier New', monospace`;
+  ctx.font = `${glyph.length > 1 ? 26 : 40}px 'JetBrains Mono', 'Courier New', monospace`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(glyph, cw / 2, ch / 2);
   const tex = new THREE.CanvasTexture(cv);
@@ -86,7 +132,7 @@ function makeThumbCardTexture(img, accent) {
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = '#0c1118'; ctx.fillRect(0, 0, cw, ch);
+  ctx.fillStyle = '#0B0B16'; ctx.fillRect(0, 0, cw, ch);
   ctx.drawImage(img, pad, pad, w, h);
   ctx.fillStyle = 'rgba(8,10,14,0.12)'; ctx.fillRect(pad, pad, w, h); // dim sutil
   // Identidad de cluster (plano, no glow): barra de color arriba + marco del mismo color.
@@ -127,7 +173,7 @@ function titleCase(str) {
 function buildCaption(text) {
   const pad = 5, fontPx = 34; // más px = texto más nítido
   const measure = document.createElement('canvas').getContext('2d');
-  const font = `600 ${fontPx}px 'Courier New', monospace`;
+  const font = `600 ${fontPx}px 'JetBrains Mono', 'Courier New', monospace`;
   measure.font = font;
   let label = titleCase(text);
   if (label.length > 26) label = label.slice(0, 25) + '…';
@@ -137,10 +183,10 @@ function buildCaption(text) {
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
   // Placa oscura con leve tinte cian + borde fino cian (identidad sin saturar).
-  ctx.fillStyle = 'rgba(8,18,28,0.62)';
+  ctx.fillStyle = 'rgba(12,12,24,0.72)';
   roundRect(ctx, 0.5, 0.5, cw - 1, ch - 1, 5);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(0,212,255,0.3)'; ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(124,140,255,0.34)'; ctx.lineWidth = 1;
   ctx.stroke();
   ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   // Contorno oscuro para contraste sobre fondos claros (páginas blancas).
@@ -171,24 +217,80 @@ function hasThumb(node) {
 }
 
 // Textura de punto (gradiente radial suave) para el nodo "de lejos" (LOD).
+/* Nodo = núcleo brillante con halo ajustado, no un disco con borde.
+   El aro oscuro anterior los hacía leer como botones; un núcleo saturado con
+   caída rápida se lee como punto de luz, que es lo que hace que una constelación
+   densa se vea como red y no como un puñado de pelotas. */
 function makeDotTexture() {
-  const s = 64, c = document.createElement('canvas');
+  const s = 128, c = document.createElement('canvas');
   c.width = c.height = s;
   const g = c.getContext('2d');
-  const grd = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
-  // Disco DEFINIDO (núcleo lleno + borde suave y ajustado) → se lee como punto nítido y
-  // profesional, no como blob difuso/glow.
-  grd.addColorStop(0,    'rgba(255,255,255,1)');
-  grd.addColorStop(0.60, 'rgba(255,255,255,0.98)');
-  grd.addColorStop(0.80, 'rgba(255,255,255,0.70)');
-  grd.addColorStop(1,    'rgba(255,255,255,0)');
-  g.fillStyle = grd;
-  g.fillRect(0, 0, s, s);
+  const cx = s / 2;
+
+  /* El raycaster usa el sprite ENTERO como area de clic, no la parte visible.
+     Con el nucleo ocupando solo el 38% del ancho, cada nodo tenia una zona de clic
+     2,6x mas grande de lo que se veia, y esa zona invisible se tragaba los clics
+     dirigidos a las lineas cercanas. Achicando el halo y agrandando el nucleo, lo
+     que se ve ocupa casi todo lo que se toca. El tamaño visible no cambia: se
+     compensa reduciendo dotBase en la misma proporcion. */
+  const halo = g.createRadialGradient(cx, cx, 0, cx, cx, s * 0.5);
+  halo.addColorStop(0,    'rgba(255,255,255,0.45)');
+  halo.addColorStop(0.45, 'rgba(255,255,255,0.14)');
+  halo.addColorStop(0.75, 'rgba(255,255,255,0.03)');
+  halo.addColorStop(1,    'rgba(255,255,255,0)');
+  g.fillStyle = halo; g.fillRect(0, 0, s, s);
+
+  // Núcleo: ocupa 2/3 del sprite. Es lo que da la sensación de brillo.
+  const core = g.createRadialGradient(cx, cx, 0, cx, cx, s * 0.33);
+  core.addColorStop(0,    'rgba(255,255,255,1)');
+  core.addColorStop(0.62, 'rgba(255,255,255,1)');
+  core.addColorStop(1,    'rgba(255,255,255,0)');
+  g.fillStyle = core; g.fillRect(0, 0, s, s);
+
   const t = new THREE.CanvasTexture(c);
   t.minFilter = THREE.LinearFilter;
+  t.generateMipmaps = false;
   return t;
 }
 const DOT_TEX = makeDotTexture();
+
+/* Anillo de selección: aro fino y nítido, sin relleno. Marca QUÉ estás tocando
+   sin taparlo ni depender de un cambio de opacidad que casi no se percibe. */
+/* Retícula de selección: aro fino y abierto en cuatro arcos, no un círculo macizo.
+   Un aro pleno tapa el nodo y lee a "botón seleccionado"; los arcos leen a mira de
+   instrumento y dejan ver el nodo que están señalando. */
+function makeRingTexture() {
+  const s = 256, c = document.createElement('canvas');
+  c.width = c.height = s;
+  const g = c.getContext('2d');
+  const cx = s / 2, r = s * 0.36;
+
+  g.strokeStyle = 'rgba(255,255,255,1)';
+  g.lineWidth = s * 0.018;          // fino: el peso lo da el contraste, no el grosor
+  g.lineCap = 'round';
+  const hueco = 0.30;               // porción de cada cuadrante que queda abierta
+  for (let i = 0; i < 4; i++) {
+    const desde = (i * Math.PI / 2) + (hueco * Math.PI / 4);
+    const hasta = ((i + 1) * Math.PI / 2) - (hueco * Math.PI / 4);
+    g.beginPath(); g.arc(cx, cx, r, desde, hasta); g.stroke();
+  }
+
+  // Cuatro marcas radiales cortas en las aberturas: refuerzan la lectura de mira.
+  g.lineWidth = s * 0.014;
+  for (let i = 0; i < 4; i++) {
+    const a = i * Math.PI / 2;
+    g.beginPath();
+    g.moveTo(cx + Math.cos(a) * r * 0.86, cx + Math.sin(a) * r * 0.86);
+    g.lineTo(cx + Math.cos(a) * r * 1.12, cx + Math.sin(a) * r * 1.12);
+    g.stroke();
+  }
+
+  const t = new THREE.CanvasTexture(c);
+  t.minFilter = THREE.LinearFilter;
+  t.generateMipmaps = false;
+  return t;
+}
+const RING_TEX = makeRingTexture();
 
 /* ── Nivel de detalle (LOD) ──
    Lejos: cada nodo es un punto de color por cluster (constelación limpia).
@@ -197,10 +299,18 @@ let LOD_FAR = true; // arranca en "puntos" (vista general); las tarjetas aparece
 
 function setNodeLOD(ud, far) {
   if (!ud) return;
+  if (ud.esFragmento) return;   // siempre punto
   if (ud.face)    ud.face.visible = !far;
-  if (ud.caption) ud.caption.visible = !far;
+  // El nodo elegido y sus vecinos conservan el nombre aunque el LOD los pase a punto.
+  if (ud.caption) ud.caption.visible = !far || !!ud.forzarCaption;
   if (ud.halo)    ud.halo.visible = !far;
   if (ud.dot)     ud.dot.visible = far;
+  // El anillo acompaña el LOD: rodea el punto de lejos y la tarjeta de cerca.
+  if (ud.ring) {
+    ud.ring.scale.setScalar(
+      far ? ud.dotBase * 2.4 : Math.max(ud.baseFW, ud.baseFH) * 1.32
+    );
+  }
 }
 
 // Clave de agrupamiento del grafo: el TEMA (taxonomía asignada por LLM) manda; si un
@@ -214,7 +324,7 @@ function groupKey(node) {
 }
 
 function groupColor(key) {
-  if (key == null) return '#7db2eb';              // sin grupo → azul claro neutro
+  if (key == null) return '#565A78';              // sin grupo → gris frío: retrocede
   if (key.startsWith('c:')) return clusterColor(parseInt(key.slice(2), 10));
   let h = 0;                                       // tema (string) → color estable
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
@@ -223,20 +333,52 @@ function groupColor(key) {
 
 function nodeDotColor(node) {
   if (node.is_issue) return NODE.issue;
+  // El HUB se sobreexpone a blanco. Es lo que produce los nucleos brillantes de las
+  // referencias: no es un color mas de la paleta, es luz saturada en el centro de la
+  // estrella. El color del tema lo siguen aportando los fragmentos que lo rodean.
+  if (node.is_hub) return '#FFFFFF';
   return groupColor(groupKey(node));
 }
+
+// Un fragmento es un punto y nada mas: sin tarjeta, sin etiqueta, sin halo.
+// Con 4.397 fragmentos, cinco sprites por nodo serian 22.000 objetos y el
+// navegador no lo sostiene. Uno solo por fragmento: ~4.800 en total.
+function esFragmento(node) { return node?.type === 'FRAGMENTO'; }
 
 /* ── Nodo = tarjeta rectangular plana con la miniatura del archivo ──
    Sin anillo de mira, sin glow fuerte. Tarjeta neutra para nodos sin miniatura. */
 function buildNode(node, degree, maxDegree, texReg) {
   const group = new THREE.Group();
+
+  if (esFragmento(node)) {
+    const color = nodeDotColor(node);
+    const mat = new THREE.SpriteMaterial({
+      map: DOT_TEX, color, transparent: true, opacity: 0.8,
+      blending: THREE.NormalBlending, depthWrite: false, depthTest: true,
+      fog: false, toneMapped: false,
+    });
+    const dot = new THREE.Sprite(mat);
+    const base = 0.9;
+    dot.scale.setScalar(base);
+    group.add(dot);
+    if (texReg) texReg.add(mat);
+    group.userData = { dot, dotColor: color, dotBase: base, esFragmento: true };
+    return group;
+  }
+
   const faceH = cardHeight(degree, maxDegree);
   const accent = nodeDotColor(node); // color del cluster, reutilizado en borde/punto/halo
 
   // Cara inicial: tarjeta neutra (se reemplaza por la miniatura si carga).
   const { tex, aspect } = makeNeutralCardTexture(node, accent);
   const faceMat = new THREE.SpriteMaterial({
-    map: tex, transparent: true, depthWrite: false, depthTest: true, toneMapped: true,
+    /* depthWrite + alphaTest: la tarjeta escribe profundidad donde es opaca, asi
+       las aristas que pasan POR DETRAS quedan ocultas y solo se ven las que pasan
+       por delante. Antes, con depthWrite en false, la tarjeta no ocluia nada y
+       todas las lineas se dibujaban encima del documento. El alphaTest evita que
+       los pixeles transparentes del borde escriban profundidad. */
+    map: tex, transparent: true, depthWrite: true, alphaTest: 0.45,
+    depthTest: true, toneMapped: true,
   });
   const face = new THREE.Sprite(faceMat);
   let { fw, fh } = cardDims(faceH, aspect);
@@ -247,20 +389,41 @@ function buildNode(node, degree, maxDegree, texReg) {
 
   // Caption: etiqueta chica debajo de la tarjeta.
   const caption = buildCaption(node.label);
+  /* La etiqueta se construye con ALTURA fija y ancho proporcional al largo del
+     texto: un titulo de 26 caracteres terminaba midiendo ~20 unidades, mas del
+     doble que la tarjeta que nombra, y tapaba el grafo. Se reescala para que
+     nunca supere ~1.5x el ancho del documento. */
+  {
+    const anchoMax = Math.max(fw, fh) * 1.5;
+    const anchoAct = caption.scale.x;
+    if (anchoAct > anchoMax) {
+      const k = anchoMax / anchoAct;
+      caption.scale.multiplyScalar(k);
+      caption.userData.worldH *= k;
+    }
+  }
   caption.position.set(0, -(fh / 2) - caption.userData.worldH / 2 - 0.8, 0);
   group.add(caption);
   if (texReg) { texReg.add(caption.material.map); texReg.add(caption.material); }
 
   // Punto LOD: el nodo "de lejos" (color del cluster). Tamaño ~ centralidad.
-  const dotColor = accent;
+  const dotColor = aclarar(accent, 0.14);
   const dotMat = new THREE.SpriteMaterial({
-    // Blending NORMAL (no Additive): el punto NO "flamea" ni se quema al solaparse.
-    // Look plano y elegante, no destello sci-fi.
-    map: DOT_TEX, color: dotColor, transparent: true, opacity: 0.9,
+    // Blending NORMAL, a proposito. El aditivo suma la luz del punto con la de su
+    // propio halo y el resultado tira a blanco: un magenta saturado termina en rosa
+    // palido. Ese truco funciona en Opte o Codebase Memory porque tienen decenas de
+    // miles de puntos diminutos donde la suma ES la señal de densidad; con ~90 nodos
+    // grandes no suma densidad, solo lava el color.
+    map: DOT_TEX, color: dotColor, transparent: true, opacity: 1,
     blending: THREE.NormalBlending, depthWrite: false, depthTest: true, fog: false, toneMapped: false,
   });
   const dot = new THREE.Sprite(dotMat);
-  const dotBase = 2.2 + faceH * 0.18;
+  // Rango amplio a proposito: en las referencias el hub es varias veces la hoja.
+  // Escalado x0.576 respecto del sprite anterior: es exactamente la proporcion en
+  // que crecio el nucleo dentro de la textura, asi que el punto se ve igual de
+  // grande pero su area de clic se reduce casi a la mitad.
+  const dotBase = (node.is_hub ? 2.4 : 1.6)
+    + Math.pow(maxDegree > 0 ? degree / maxDegree : 0, 0.7) * (node.is_hub ? 7.5 : 6.1);
   dot.scale.setScalar(dotBase);
   dot.renderOrder = 1;
   group.add(dot);
@@ -269,7 +432,7 @@ function buildNode(node, degree, maxDegree, texReg) {
   // Halo del color del cluster DETRÁS de la tarjeta → diferencia visual por grupo
   // en la vista cercana (de lejos ya está el punto de color).
   const haloMat = new THREE.SpriteMaterial({
-    // Tinte de color del cluster MUY sutil detrás de la tarjeta (no un aura brillante).
+    // Aura del cluster detras de la tarjeta: tinte sutil, no un aura encendida.
     map: DOT_TEX, color: dotColor, transparent: true, opacity: 0.12,
     blending: THREE.NormalBlending, depthWrite: false, depthTest: true, fog: false, toneMapped: false,
   });
@@ -279,7 +442,24 @@ function buildNode(node, degree, maxDegree, texReg) {
   group.add(clusterHalo);
   if (texReg) { texReg.add(haloMat); }
 
-  group.userData = { face, caption, dot, halo: clusterHalo, dotColor, dotBase, baseFW: fw, baseFH: fh };
+  // Anillo de selección/hover. Vive en ambos LOD (punto y tarjeta) porque marcar
+  // qué estás tocando importa igual de lejos que de cerca. Oculto por defecto.
+  const ringMat = new THREE.SpriteMaterial({
+    map: RING_TEX, color: NODE.sel, transparent: true, opacity: 0,
+    blending: THREE.NormalBlending, depthWrite: false, depthTest: false,
+    fog: false, toneMapped: false,
+  });
+  const ring = new THREE.Sprite(ringMat);
+  ring.scale.setScalar(dotBase * 2.4);
+  ring.renderOrder = 3;
+  ring.visible = false;
+  group.add(ring);
+  if (texReg) { texReg.add(ringMat); }
+
+  group.userData = {
+    face, caption, dot, halo: clusterHalo, ring,
+    dotColor, dotBase, baseFW: fw, baseFH: fh,
+  };
   setNodeLOD(group.userData, LOD_FAR); // estado inicial según el zoom actual
 
   // ── Miniatura real (lazy-load): reemplaza la tarjeta neutra al cargar ──
@@ -312,7 +492,7 @@ function buildNode(node, degree, maxDegree, texReg) {
 // brillante. El color la distingue de los captions de nodo y de otros clusters.
 function buildClusterTextSprite(text, color) {
   const H = 66, fontPx = 26, leftPad = 48, rightPad = 26;
-  const font = `bold ${fontPx}px 'Courier New', monospace`;
+  const font = `bold ${fontPx}px 'JetBrains Mono', 'Courier New', monospace`;
   // La caja se dimensiona al texto (más abajo), así que dejamos que la etiqueta se
   // vea COMPLETA. Sólo truncamos si es absurdamente larga (evita un sprite gigante),
   // y en borde de palabra.
@@ -462,9 +642,39 @@ export default function Graph3D({
   projectRef, focusTrigger = 0, fitTrigger = 0,
 }) {
   const fgRef                 = useRef();
+  const stageRef              = useRef(null);      // contenedor real del lienzo
+  // react-force-graph usa el tamaño de la VENTANA si no se le pasa width/height.
+  // Con la barra lateral eso desencuadraba el grafo: dibujaba 1280px de ancho dentro
+  // de un hueco de 1048px, y el zoomToFit centraba sobre un área que no existe.
+  const [stageSize, setStageSize] = React.useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const medir = () => {
+      const r = el.getBoundingClientRect();
+      setStageSize(prev =>
+        (Math.abs(prev.w - r.width) < 1 && Math.abs(prev.h - r.height) < 1)
+          ? prev
+          : { w: Math.round(r.width), h: Math.round(r.height) }
+      );
+    };
+    medir();
+    const ro = new ResizeObserver(medir);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  // Al cambiar el tamaño útil (abrir un panel lateral, redimensionar la ventana),
+  // reencuadrar si el usuario no movió la cámara a mano.
+  useEffect(() => {
+    if (!stageSize.w || !stageSize.h) return;
+    if (userInteracted.current) return;
+    const t = setTimeout(() => { fgRef.current?.zoomToFit(500, 40); wakeRef.current(); }, 180);
+    return () => clearTimeout(t);
+  }, [stageSize.w, stageSize.h]);
   const spriteMap             = useRef(new Map()); // id -> THREE.Group del nodo
   const userInteracted        = useRef(false);
   const clusterLabelSprites   = useRef([]);
+  const clusterHulls          = useRef([]);   // burbuja translucida por grupo
   const sceneReady            = useRef(false); // evita doble setup (StrictMode dev)
   const texReg                = useRef(new Set()); // texturas/materiales de miniaturas (para dispose)
   const wakeRef               = useRef(() => {});  // render-on-demand: despertar el loop
@@ -582,8 +792,15 @@ export default function Graph3D({
     const scene = fg.scene();
     clusterLabelSprites.current.forEach(s => scene.remove(s));
     clusterLabelSprites.current = [];
+    clusterHulls.current.forEach(m => {
+      scene.remove(m); m.geometry?.dispose?.(); m.material?.dispose?.();
+    });
+    clusterHulls.current = [];
 
-    if (layoutMode === 'density') {
+    // Densidad y UMAP: en ambos los grupos quedan espacialmente juntos, asi que
+    // la burbuja y la etiqueta significan algo. En Relacional manda la fisica de
+    // vinculos y los grupos se entremezclan: ahi la burbuja mentiria.
+    if (layoutMode === 'density' || layoutMode === 'components') {
       const clusterGroups = {};
       graphData.nodes.forEach(n => {
         const k = groupKey(n);
@@ -626,8 +843,47 @@ export default function Graph3D({
         usedLabels.add(labelText);
 
         const color = groupColor(key);
+
+        /* Burbuja del grupo: esfera translucida que encierra a sus miembros.
+           Responde a "no se a que cluster corresponde cada nodo": el color solo
+           obliga a recordar diez tonos; el encierro se ve de una. Se dibuja por
+           dentro (BackSide) y sin escribir profundidad para que NO tape nodos. */
+        const cyG = members.reduce((a, n) => a + (n.fy ?? n.y ?? 0), 0) / members.length;
+        // Radio ROBUSTO: percentil 75 de las distancias, no el maximo. Un solo nodo
+        // lejano inflaba la esfera hasta cubrir la pantalla; el percentil encierra
+        // el cuerpo del grupo e ignora al outlier.
+        const dist = members
+          .map(n => Math.hypot(
+            (n.fx ?? n.x ?? 0) - cx, (n.fy ?? n.y ?? 0) - cyG, (n.fz ?? n.z ?? 0) - cz,
+          ))
+          .sort((a, b) => a - b);
+        const p75 = dist[Math.min(dist.length - 1, Math.floor(dist.length * 0.75))] || 0;
+        const radio = Math.max(5, Math.min(p75 * 1.15, 46));
+        const hull = new THREE.Mesh(
+          new THREE.SphereGeometry(radio, 24, 18),
+          new THREE.MeshBasicMaterial({
+            color, transparent: true, opacity: 0.045,
+            side: THREE.BackSide, depthWrite: false, depthTest: true,
+            // NORMAL, no aditivo: con aditivo la luz se ACUMULA donde dos burbujas
+            // se solapan y el centro del grafo se volvia una mancha gris.
+            blending: THREE.NormalBlending, toneMapped: false, fog: false,
+          }),
+        );
+        hull.position.set(cx, cyG, cz);
+        hull.renderOrder = -1;
+        hull.userData.cid = key;
+        // Burbuja desactivada: en las referencias los grupos se distinguen por
+        // SEPARACION y por color de arista interna, no por un volumen encima.
+        hull.visible = false;
+        scene.add(hull);
+        clusterHulls.current.push(hull);
+
         const sprite = buildClusterTextSprite(labelText, color);
-        sprite.position.set(cx, maxY + 8, cz);
+        // La etiqueta va SOBRE el centro de su grupo, no arriba del nodo mas alto:
+        // con maxY quedaban todas amontonadas en el techo y no se sabia a cual
+        // correspondia cada una. Un desplazamiento chico alcanza para no tapar nodos.
+        const cyLbl = members.reduce((a, n) => a + (n.fy ?? n.y ?? 0), 0) / members.length;
+        sprite.position.set(cx, cyLbl + 4, cz);
         sprite.userData.cid = key;
         scene.add(sprite);
         clusterLabelSprites.current.push(sprite);
@@ -652,27 +908,57 @@ export default function Graph3D({
 
   // Estado visual: atenuar las tarjetas no resaltadas, agrandar la seleccionada.
   useEffect(() => {
+    // Vecinos directos del nodo elegido (para mostrarles el nombre).
+    const conectados = new Set();
+    if (selectedNode) {
+      graphData.links.forEach(l => {
+        const s = l.source?.id ?? l.source, t2 = l.target?.id ?? l.target;
+        if (s === selectedNode.id) conectados.add(t2);
+        else if (t2 === selectedNode.id) conectados.add(s);
+      });
+    }
     spriteMap.current.forEach((obj, id) => {
       const ud = obj.userData;
       if (!ud?.face) return;
       const isSel = selectedNode?.id === id;
       const isDim = highlighted.size > 0 && !highlighted.has(id);
-      // Resalte SOBRIO: menos escala y menos glow que antes (se veía "gamer" al hover).
-      ud.face.material.opacity    = isDim ? 0.28 : 1;
-      ud.caption.material.opacity = isDim ? 0.14 : (isSel ? 1 : 0.7);
-      const fs = isSel ? 1.14 : 1;
+      // Lo seleccionado se marca por FORMA (anillo + escala), no sólo por opacidad:
+      // un delta de 0.9 a 1.0 en un punto de 2px era imperceptible.
+      // Lo atenuado baja más que antes, para que el foco realmente destaque.
+      ud.face.material.opacity    = isDim ? 0.16 : 1;
+      ud.caption.material.opacity = isDim ? 0.08 : (isSel ? 1 : 0.62);
+      const fs = isSel ? 1.18 : 1;
       ud.face.scale.set(ud.baseFW * fs, ud.baseFH * fs, 1);
-      // Punto LOD (vista lejana): mismo estado de resalte, contenido.
+
+      // Punto LOD (vista lejana): conserva SU color de grupo — cambiarlo a cian
+      // hacía perder la referencia de a qué tema pertenece el nodo elegido.
       if (ud.dot) {
-        ud.dot.material.color.set(isSel ? '#8fd0e0' : ud.dotColor); // cian apagado, no neón
-        ud.dot.material.opacity = isDim ? 0.18 : (isSel ? 1 : 0.9);
-        ud.dot.scale.setScalar(isSel ? ud.dotBase * 1.3 : ud.dotBase);
+        ud.dot.material.color.set(ud.dotColor);
+        ud.dot.material.opacity = isDim ? 0.12 : (isSel ? 1 : 0.88);
+        ud.dot.scale.setScalar(isSel ? ud.dotBase * 1.45 : ud.dotBase);
       }
       // Halo de grupo (vista cercana): atenuar / realzar, sutil.
-      if (ud.halo) ud.halo.material.opacity = isDim ? 0.05 : (isSel ? 0.3 : 0.22);
+      if (ud.halo) ud.halo.material.opacity = isDim ? 0.03 : (isSel ? 0.34 : 0.2);
+
+      // Anillo: la señal principal de "esto es lo que estás tocando".
+      // Al seleccionar, los VECINOS muestran su nombre: saber con que se conecta
+      // es la pregunta que uno se hace al clickear, y antes habia que adivinarla.
+      if (ud.caption) {
+        const vecino = selectedNode ? conectados.has(id) : false;
+        /* `conectados` son los VECINOS, no incluye al nodo elegido: sin isSel aca,
+           el documento en foco era el unico sin nombre visible. */
+        ud.caption.visible = isSel || vecino || (!isDim && !LOD_FAR);
+        if (isSel) ud.caption.material.opacity = 1;
+        else if (vecino) ud.caption.material.opacity = 0.95;
+        ud.forzarCaption = isSel || vecino;
+      }
+      if (ud.ring) {
+        ud.ring.visible = false;   // retícula retirada a pedido: molestaba mas de lo que marcaba
+        ud.ring.material.opacity = 0;
+      }
     });
     wakeRef.current();  // renderizar el cambio de highlight/selección (luego idle)
-  }, [highlighted, selectedNode]);
+  }, [highlighted, selectedNode, graphData]);
 
   // (Sin fly-to automático al seleccionar: clickear un nodo NO mueve el grafo.)
   // Enfoque + destello EXPLÍCITO (botón ⌖ del panel): acerca la cámara al nodo y
@@ -731,7 +1017,11 @@ export default function Graph3D({
     const prev = prevNodeCount.current;
     prevNodeCount.current = n;
     if (prev === 0 || n <= prev) return; // primer render o sin altas → no tocar la cámara
-    const t = setTimeout(() => { fgRef.current?.zoomToFit(800, 16); wakeRef.current(); }, 700);
+    // Vista inicial ALEJADA: se entra viendo todo el grafo, no metido adentro.
+    const t = setTimeout(() => {
+      fgRef.current?.zoomToFit(900, 60);
+      wakeRef.current();
+    }, 700);
     return () => clearTimeout(t);
   }, [graphData.nodes.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -739,7 +1029,7 @@ export default function Graph3D({
   useEffect(() => {
     if (fitTrigger === 0 || !fgRef.current) return;
     userInteracted.current = false;
-    fgRef.current.zoomToFit(800, 18);
+    fgRef.current.zoomToFit(800, 70);
     wakeRef.current();
   }, [fitTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -781,14 +1071,16 @@ export default function Graph3D({
     // Evita el giro brusco/descontrolado de TrackballControls ("se va para cualquier lado").
     const controls = fg.controls();
     if (controls) {
-      controls.minDistance = 20;
-      controls.maxDistance = 1800;
+      controls.minDistance = 8;      // deja acercarse de verdad a leer una tarjeta
+      controls.maxDistance = 2600;   // y alejarse a ver el corpus entero
       if ('enableDamping' in controls) {
         controls.enableDamping = true;
-        controls.dampingFactor = 0.32;  // freno rápido: se queda donde lo soltás, sin drift
-        controls.rotateSpeed   = 0.55;
-        controls.zoomSpeed     = 0.7;
-        controls.panSpeed      = 0.5;
+        // Damping algo más bajo: el movimiento se siente continuo en vez de cortado,
+        // sin llegar al drift que obligaba a corregir de más.
+        controls.dampingFactor = 0.18;
+        controls.rotateSpeed   = 0.6;
+        controls.zoomSpeed     = 1.05;  // el 0.7 anterior exigía muchas vueltas de rueda
+        controls.panSpeed      = 0.6;
       } else {
         controls.zoomSpeed = 0.6; // fallback trackball
       }
@@ -848,22 +1140,41 @@ export default function Graph3D({
       const R = graphRadius();
       // Bien sesgado a tarjetas: hay que alejarse a ~3-4× el radio para ver puntos.
       // Puntos en la vista general; tarjetas SÓLO al acercarse (zoom < ~1.6× el radio).
-      const FAR_IN = R * 2.3, FAR_OUT = R * 1.6;
+      // Umbral mas exigente: las tarjetas aparecen recien bien cerca, cuando hay
+      // pocos documentos en cuadro y hay lugar para leerlas.
+      const FAR_IN = R * 2.0, FAR_OUT = R * 1.45;
       const d = cam.position.distanceTo(ctr.target);
       let far = LOD_FAR;
       if (d > FAR_IN) far = true; else if (d < FAR_OUT) far = false;
       const changed = far !== LOD_FAR;
       if (changed) LOD_FAR = far;
-      if (changed || far) {
+      if (true) {
         // En modo lejos, escalar los puntos ∝ distancia → tamaño ~constante en pantalla
         // (un sprite normal se achica con la distancia y desaparecería). El coeficiente
         // 0.02 es el look original; el Math.min(...) es un TOPE para que al alejarte mucho
         // no crezcan sin límite y se vuelvan blobs brillantes (era el "brilla al zoom").
         const dotScale = Math.min(7, Math.max(2.5, d * 0.02));
-        spriteMap.current.forEach(obj => {
+
+        // TOPE DE TARJETAS. Antes, al acercarse, TODOS los nodos mostraban su
+        // tarjeta con titulo: 65 tarjetas superpuestas eran ilegibles (y con miles
+        // seria imposible). Ahora solo las N mas cercanas a la camara se abren;
+        // el resto queda como punto. Es tambien lo que hace viable escalar.
+        const MAX_TARJETAS = 12;
+        let cercanos = null;
+        if (!far) {
+          cercanos = new Set(
+            [...spriteMap.current.entries()]
+              .map(([id, obj]) => [id, cam.position.distanceToSquared(obj.position)])
+              .sort((a, b) => a[1] - b[1])
+              .slice(0, MAX_TARJETAS)
+              .map(([id]) => id),
+          );
+        }
+        spriteMap.current.forEach((obj, id) => {
           const ud = obj.userData;
-          if (changed) setNodeLOD(ud, far);
-          if (far && ud.dot) ud.dot.scale.setScalar(dotScale);
+          const comoPunto = far || (cercanos ? !cercanos.has(id) : false);
+          setNodeLOD(ud, comoPunto);
+          if (comoPunto && ud.dot) ud.dot.scale.setScalar(far ? dotScale : ud.dotBase);
         });
         // NO llamar a wake() acá: este handler corre dentro del evento 'change' de los
         // controles; el otro listener ya despierta el loop. Llamar resumeAnimation acá
@@ -882,34 +1193,113 @@ export default function Graph3D({
   }, [filteredIds]);
 
   // Líneas finas tipo telaraña: blanco/gris claro, rectas (sin cian grueso).
-  const linkColor = useCallback(link => {
-    const isIssueLink = link.source?.is_issue || link.target?.is_issue;
-    const L = NODE.line; // rgb gris claro
-    if (isIssueLink) {
-      if (!selectedNode && !highlighted.size) return 'rgba(255,48,96,0.45)';
-      const s = link.source?.id ?? link.source, t = link.target?.id ?? link.target;
-      return (s === selectedNode?.id || t === selectedNode?.id) ? '#ff3060' : 'rgba(255,48,96,0.08)';
-    }
-    if (!selectedNode && !highlighted.size) return `rgba(${L},0.16)`;
-    const s = link.source?.id ?? link.source, t = link.target?.id ?? link.target;
-    return (s === selectedNode?.id || t === selectedNode?.id)
-      ? `rgba(${L},0.7)`
-      : `rgba(${L},0.04)`;
-  }, [selectedNode, highlighted]);
+  /* Las aristas son el cuerpo visual de la red, no un detalle de fondo.
+     Toman el color del nodo de origen: así el tejido se lee por tema y el grafo
+     deja de ser una telaraña gris uniforme. */
+  /* Sin realimentacion visual no habia forma de saber que una linea era
+     apuntable: el cursor cambiaba, pero con lineas de 1px el cursor tapa
+     justamente lo que estas apuntando. Encender la relacion bajo el puntero
+     hace visible el blanco antes de hacer clic. */
+  const [hoverLink, setHoverLink] = useState(null);
 
-  const linkWidth = useCallback(link => {
-    if (!selectedNode && !highlighted.size) return 0.25; // telaraña fina
-    const s = link.source?.id ?? link.source, t = link.target?.id ?? link.target;
-    return (s === selectedNode?.id || t === selectedNode?.id) ? 0.45 : 0.1; // resaltada, pero fina
-  }, [selectedNode, highlighted]);
+  const linkColor = useCallback(link => {
+    const nodoOrigen = typeof link.source === 'object' ? link.source : null;
+    const nodoDestino = typeof link.target === 'object' ? link.target : null;
+    const s = link.source?.id ?? link.source;
+    const t = link.target?.id ?? link.target;
+    const enFoco = s === selectedNode?.id || t === selectedNode?.id;
+    const hayFoco = !!selectedNode || highlighted.size > 0;
+
+    const issue = nodoOrigen?.is_issue || nodoDestino?.is_issue;
+
+    // Regla de las referencias: la arista DENTRO de un grupo toma su color y lo
+    // hace legible como estrella; la arista ENTRE grupos es gris y discreta, y es
+    // justamente eso lo que hace que los grupos se distingan como islas.
+    const gkO = nodoOrigen ? groupKey(nodoOrigen) : null;
+    const gkD = nodoDestino ? groupKey(nodoDestino) : null;
+    const mismoGrupo = gkO != null && gkO === gkD;
+
+    let rgb, alphaBase;
+    if (link.spoke) {
+      // Radio de la estrella: hereda el color del tema, muy tenue. Son miles;
+      // con alfa alto la pantalla se vuelve una masa solida.
+      const gk = nodoDestino ? groupKey(nodoDestino) : (nodoOrigen ? groupKey(nodoOrigen) : null);
+      rgb = hexToRgb(oscurecer(groupColor(gk), 0.45)); alphaBase = 0.16;
+    }
+    else if (issue) { rgb = hexToRgb(NODE.issue); alphaBase = 0.5; }
+    else if (mismoGrupo) { rgb = hexToRgb(oscurecer(groupColor(gkO), 0.45)); alphaBase = 0.34; }
+    else { rgb = '150,160,180'; alphaBase = 0.075; }  // puente entre grupos: gris muy tenue
+    // Son mayoria y, al ser grises, competian con los nodos por atencion.
+
+    // La relacion senalada se enciende con su color VIVO y a opacidad plena: es
+    // la senal de "a esto le vas a pegar si hacés clic".
+    if (hoverLink && link === hoverLink) {
+      // Dentro del grupo: su propio color, sin oscurecer y a opacidad plena.
+      // Entre grupos: el mismo gris de siempre, sólo encendido. El blanco puro
+      // que habia antes cortaba la escena como un tajo.
+      return mismoGrupo
+        ? `rgba(${hexToRgb(groupColor(gkO))},0.95)`
+        : 'rgba(198,212,226,0.85)';
+    }
+
+    const alpha = !hayFoco ? alphaBase : (enFoco ? 0.95 : 0.02);
+    return `rgba(${rgb},${alpha})`;
+  }, [selectedNode, highlighted, hoverLink]);
+
+  /* SIEMPRE 0. Con cualquier valor > 0, react-force-graph deja de dibujar una
+     línea y pasa a construir un CILINDRO en unidades de mundo: al acercar la
+     cámara esos cilindros se agrandan y tapan el grafo (los "fideos" gigantes).
+     Con 0 dibuja THREE.Line, de 1px constante en pantalla a cualquier zoom, que
+     es lo que da el filamento fino. El énfasis se hace por color, no por grosor. */
+
+  /* SIEMPRE 0. Con linkWidth > 0, react-force-graph abandona THREE.Line —que da
+     un trazo de 1px constante en pantalla— y dibuja un cilindro en unidades del
+     mundo, que se engrosa a medida que te acercas. El resaltado del hover se hace
+     por COLOR, nunca por grosor. */
+  const linkWidth = useCallback(() => 0, []);
+
+  /* Curvatura: las líneas rectas leen como diagrama de ingeniería; las curvas
+     leen como filamento. Es el cambio que más acerca el grafo a una red neuronal.
+     Se varía por par de nodos para que las aristas paralelas no se superpongan. */
+  const linkCurvature = useCallback(link => {
+    const s = String(link.source?.id ?? link.source ?? '');
+    const t = String(link.target?.id ?? link.target ?? '');
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
+    return 0.10 + (h % 100) / 100 * 0.10;   // 0.10 .. 0.20
+  }, []);
+
+  // Hover: anillo tenue del color del grupo. Distinto de la selección (anillo blanco
+  // y opaco), para que se distinga "lo que estoy señalando" de "lo que elegí".
+  const hoverIdRef = useRef(null);
+  const paintHover = useCallback((id, on) => {
+    const ud = spriteMap.current.get(id)?.userData;
+    if (!ud?.ring) return;
+    const isSel = selectedNode?.id === id;
+    if (isSel) return;                       // la selección manda: no la piso
+    ud.ring.visible = false;
+    ud.ring.material.opacity = 0;
+    if (ud.dot) ud.dot.scale.setScalar(on ? ud.dotBase * 1.2 : ud.dotBase);
+  }, [selectedNode]);
 
   const handleHover = useCallback(node => {
     document.body.style.cursor = node ? (synthMode ? 'crosshair' : 'pointer') : 'default';
+    const prev = hoverIdRef.current;
+    const next = node?.id ?? null;
+    if (prev !== next) {
+      if (prev) paintHover(prev, false);
+      if (next) paintHover(next, true);
+      hoverIdRef.current = next;
+      wakeRef.current();
+    }
     if (onNodeHover) onNodeHover(node || null);
-  }, [onNodeHover, synthMode]);
+  }, [onNodeHover, synthMode, paintHover]);
 
   const handleLinkHover = useCallback(link => {
     document.body.style.cursor = link ? 'pointer' : 'default';
+    setHoverLink(link || null);
+    wakeRef.current?.();
   }, []);
 
   const handleEngineTick = useCallback(() => {
@@ -920,6 +1310,14 @@ export default function Graph3D({
       const k = groupKey(n);
       if (k == null) return;
       (clusterGroups[k] ??= []).push(n);
+    });
+    clusterHulls.current.forEach(hull => {
+      const members = clusterGroups[hull.userData.cid];
+      if (!members || !members.length) return;
+      const cx = members.reduce((a, n) => a + (n.x || 0), 0) / members.length;
+      const cy = members.reduce((a, n) => a + (n.y || 0), 0) / members.length;
+      const cz = members.reduce((a, n) => a + (n.z || 0), 0) / members.length;
+      hull.position.set(cx, cy, cz);
     });
     clusterLabelSprites.current.forEach(sprite => {
       const cid = sprite.userData.cid;
@@ -932,44 +1330,122 @@ export default function Graph3D({
     });
   }, [graphData]);
 
+  /* Grafo pesado = todos los nodos vienen con posicion fija del backend. Correr
+     la simulacion de fuerzas sobre 4.488 nodos fijos es trabajo puro al pedo: cada
+     tick recalcula fuerzas para moverlos a donde YA estan. Eso es lo que tildaba
+     la maquina al entrar a Fragmentos. */
+  const esPesado = graphData.nodes.length > 500;
+
+  /* Retrocede la camara sobre su propio eje conservando el punto mirado. */
+  const alejar = useCallback((factor) => {
+    const fg = fgRef.current; if (!fg) return;
+    const cam = fg.camera(); const ctr = fg.controls();
+    const tgt = ctr?.target || { x: 0, y: 0, z: 0 };
+    const dx = cam.position.x - tgt.x, dy = cam.position.y - tgt.y, dz = cam.position.z - tgt.z;
+    fg.cameraPosition(
+      { x: tgt.x + dx * factor, y: tgt.y + dy * factor, z: tgt.z + dz * factor }, tgt, 700);
+    wakeRef.current();
+  }, []);
+
   const handleEngineStop = useCallback(() => {
     // Encuadrar UNA sola vez, al asentarse la simulación, y solo si quedó pendiente (cambio
     // de modo / primera carga). En un refresh de datos NO se toca la cámara → no se viene
     // encima. zoomToFit se adapta al contenido → no queda "lejos" como la posición fija.
     if (fitPendingRef.current && !userInteracted.current) {
       fitPendingRef.current = false;
-      fgRef.current?.zoomToFit(700, layoutMode === 'components' ? 8 : 6);
+      // Un solo encuadre. Antes habia tres (700/1600/3000 ms) porque la fisica
+      // seguia expandiendo el grafo despues del primero; ahora el layout llega ya
+      // asentado desde warmupTicks, asi que reencuadrar de nuevo solo se veia como
+      // una camara que no termina de decidirse.
+      const margen = layoutMode === 'density' ? 20
+                   : layoutMode === 'force'   ? 55
+                   : 45;
+      setTimeout(() => {
+        if (userInteracted.current) return;
+        fgRef.current?.zoomToFit(600, margen);
+        wakeRef.current();
+      }, layoutMode === 'force' ? 220 : 0);
     }
     wakeRef.current();  // render del frame final asentado (luego entra en idle)
   }, [layoutMode]);
 
+  /* Zoom explícito: acerca o aleja la cámara sobre su propio eje, conservando el
+     punto que estás mirando. La rueda existía, pero no había control visible. */
+  const zoomBy = useCallback(factor => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    userInteracted.current = true;
+    const cam = fg.camera();
+    const ctr = fg.controls();
+    const tgt = ctr?.target || { x: 0, y: 0, z: 0 };
+    const dx = cam.position.x - tgt.x;
+    const dy = cam.position.y - tgt.y;
+    const dz = cam.position.z - tgt.z;
+    const d  = Math.hypot(dx, dy, dz) || 1;
+    const min = ctr?.minDistance ?? 8;
+    const max = ctr?.maxDistance ?? 2600;
+    const nd  = Math.max(min, Math.min(max, d * factor));
+    const k   = nd / d;
+    fg.cameraPosition(
+      { x: tgt.x + dx * k, y: tgt.y + dy * k, z: tgt.z + dz * k },
+      tgt,
+      260
+    );
+    wakeRef.current();
+  }, []);
+
   return (
-    <div style={{ position: 'fixed', inset: 0 }}>
+    <div className="graph-stage" ref={stageRef}>
+      <div className="zoom-controls" role="group" aria-label="Zoom del grafo">
+        <button className="zoom-btn" onClick={() => zoomBy(0.72)}
+                title="Acercar" aria-label="Acercar">+</button>
+        <button className="zoom-btn" onClick={() => zoomBy(1.38)}
+                title="Alejar" aria-label="Alejar">−</button>
+        <button className="zoom-btn zoom-btn--fit"
+                onClick={() => { userInteracted.current = false; fgRef.current?.zoomToFit(700, 70); wakeRef.current(); }}
+                title="Encuadrar todo" aria-label="Encuadrar todo">⊡</button>
+      </div>
       <ForceGraph3D
         ref={fgRef}
+        width={stageSize.w || undefined}
+        height={stageSize.h || undefined}
         graphData={graphData}
         controlType="orbit"
-        backgroundColor="#08090c"
+        /* enableNodeDrag viene en TRUE por defecto: cualquier arrastre que empiece
+           sobre un nodo lo MUEVE en vez de orbitar la camara. Con las areas de
+           impacto agrandadas, practicamente todo arrastre empezaba sobre algo y la
+           rotacion se volvia imposible. Ademas, mover nodos a mano no tiene sentido
+           aca: las posiciones las calcula UMAP/densidad, no el usuario.
+           Con esto, arrastrar SIEMPRE gira; hacer clic sigue seleccionando. */
+        enableNodeDrag={false}
+        backgroundColor={NODE.bg}
         nodeThreeObject={nodeThreeObject}
         nodeThreeObjectExtend={false}
         nodeVisibility={nodeVisibility}
         nodeLabel=""
         linkColor={linkColor}
         linkWidth={linkWidth}
+        linkCurvature={linkCurvature}
         linkOpacity={1}
         linkDirectionalParticles={0}
         onNodeClick={onNodeClick}
         onNodeHover={handleHover}
         onLinkClick={onLinkClick}
+        /* Una linea de 1px es casi imposible de acertar. Esto ensancha SOLO el area
+           de deteccion del puntero, sin engrosar el trazo dibujado. */
+        linkHoverPrecision={12}
         onLinkHover={handleLinkHover}
         onEngineTick={handleEngineTick}
         onEngineStop={handleEngineStop}
         showNavInfo={false}
-        d3AlphaDecay={0.06}
-        d3VelocityDecay={0.6}
-        warmupTicks={layoutMode === 'force' ? 20 : 0}
-        cooldownTicks={layoutMode === 'force' ? 320 : 6}
-        cooldownTime={layoutMode === 'force' ? 9000 : 600}
+        /* Relacional (force) convergía en ~9 s: demasiado para un cambio de vista.
+           Se acelera el enfriado y se hace más warmup FUERA de pantalla, de modo que
+           al aparecer el layout ya esté casi asentado en vez de reacomodarse a la vista. */
+        d3AlphaDecay={layoutMode === 'force' ? 0.10 : 0.06}
+        d3VelocityDecay={layoutMode === 'force' ? 0.55 : 0.6}
+        warmupTicks={esPesado ? 0 : (layoutMode === 'force' ? 280 : 0)}
+        cooldownTicks={esPesado ? 0 : (layoutMode === 'force' ? 30 : 6)}
+        cooldownTime={esPesado ? 0 : (layoutMode === 'force' ? 800 : 600)}
       />
     </div>
   );

@@ -37,6 +37,7 @@ class Node(Base):
     tema          = Column(String)   # tema/categoría legible asignado por LLM (taxonomía del grafo)
     flujograma    = Column(JSON)     # etapas/conexiones extraídas de un issue con proceso
     synthesis     = Column(JSON)     # reporte 4-agentes del issue (proceso/riesgos/creativo/red_team)
+    solve         = Column(JSON)     # solución trazable + revisión crítica + decisión humana
     is_centroid   = Column(Boolean, default=False)
     is_issue      = Column(Boolean, default=False)
     tags          = Column(JSON, default=list)
@@ -74,3 +75,45 @@ class UserNote(Base):
     content    = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class Source(Base):
+    """Fuente original estable: archivo, URL, video, paper o dataset."""
+    __tablename__ = "sources"
+    id              = Column(String, primary_key=True)
+    kind            = Column(String, nullable=False)
+    locator         = Column(Text, nullable=False)
+    original_name   = Column(String)
+    content_hash    = Column(String, index=True)
+    source_metadata = Column(JSON, default=dict)
+    created_at      = Column(DateTime, server_default=func.now())
+    updated_at      = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class Document(Base):
+    """Versión procesada de una Source y vínculo compatible con el Node actual."""
+    __tablename__ = "documents"
+    id             = Column(String, primary_key=True)
+    source_id      = Column(String, ForeignKey("sources.id", ondelete="CASCADE"), nullable=False)
+    node_id        = Column(String, ForeignKey("nodes.id", ondelete="SET NULL"), unique=True)
+    parser         = Column(String)
+    parser_version = Column(String)
+    content_hash   = Column(String, index=True)
+    created_at     = Column(DateTime, server_default=func.now())
+    updated_at     = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class Chunk(Base):
+    """Pasaje localizable; será la unidad mínima de recuperación y evidencia."""
+    __tablename__ = "chunks"
+    __table_args__ = (UniqueConstraint("document_id", "ordinal"),)
+    id             = Column(String, primary_key=True)
+    document_id    = Column(String, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    ordinal        = Column(Integer, nullable=False)
+    content        = Column(Text, nullable=False)
+    page           = Column(Integer)
+    char_start     = Column(Integer)
+    char_end       = Column(Integer)
+    embedding      = Column(Vector(384) if HAS_PGVECTOR else JSON)
+    chunk_metadata = Column(JSON, default=dict)
+    created_at     = Column(DateTime, server_default=func.now())

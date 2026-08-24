@@ -7,6 +7,21 @@ BASE = Path(__file__).parent.resolve()
 UMAP_MODEL_PATH = BASE / "umap_model.pkl"
 
 
+def _normalization_for(coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Parámetros que llevan cada eje UMAP al rango [-1, 1]."""
+    mins = coords.min(axis=0)
+    ranges = coords.max(axis=0) - mins
+    ranges = np.where(ranges > 0, ranges, 1.0)
+    return mins, ranges
+
+
+def _apply_normalization(coords: np.ndarray, mins, ranges) -> np.ndarray:
+    mins = np.asarray(mins, dtype=np.float32)
+    ranges = np.asarray(ranges, dtype=np.float32)
+    ranges = np.where(ranges > 0, ranges, 1.0)
+    return (coords - mins) / ranges * 2 - 1
+
+
 def main():
     from database.connection import get_sync_session
     from database.models import Node as NodeModel
@@ -16,6 +31,7 @@ def main():
         nodos_db = session.query(NodeModel).filter(
             NodeModel.embedding.isnot(None),
             NodeModel.is_centroid == False,
+            NodeModel.is_issue == False,
         ).all()
 
         if len(nodos_db) < 3:
@@ -64,7 +80,20 @@ def main():
     import umap
     import hdbscan
 
-    if not UMAP_MODEL_PATH.exists() or not nodos_existentes:
+    saved_bundle = None
+    if UMAP_MODEL_PATH.exists():
+        try:
+            with open(UMAP_MODEL_PATH, "rb") as f:
+                candidate = pickle.load(f)
+            if (isinstance(candidate, dict) and candidate.get("version") == 2
+                    and candidate.get("reducer") is not None):
+                saved_bundle = candidate
+            else:
+                print("Modelo UMAP legado detectado; se reentrenará una vez para guardar su escala.")
+        except Exception as exc:
+            print(f"No se pudo cargar el modelo UMAP; se reentrenará: {exc}")
+
+    if saved_bundle is None or not nodos_existentes:
         # Primera ejecución: entrenar UMAP con todos los nodos
         print(f"Entrenando UMAP con {len(nodos_con_emb)} nodos...")
         embeddings = np.array([n["embedding"] for n in nodos_con_emb], dtype=np.float32)
@@ -73,17 +102,17 @@ def main():
             n_components=3, n_neighbors=n_neighbors,
             min_dist=0.1, metric="cosine", random_state=42,
         )
-        coords = reducer.fit_transform(embeddings)
-
-        # Normalizar a [-1, 1]
-        for i in range(3):
-            col = coords[:, i]
-            rng = col.max() - col.min()
-            if rng > 0:
-                coords[:, i] = (col - col.min()) / rng * 2 - 1
+        raw_coords = reducer.fit_transform(embeddings)
+        norm_mins, norm_ranges = _normalization_for(raw_coords)
+        coords = _apply_normalization(raw_coords, norm_mins, norm_ranges)
 
         with open(UMAP_MODEL_PATH, "wb") as f:
-            pickle.dump(reducer, f)
+            pickle.dump({
+                "version": 2,
+                "reducer": reducer,
+                "normalization_mins": norm_mins.tolist(),
+                "normalization_ranges": norm_ranges.tolist(),
+            }, f)
         print(f"✓ Modelo UMAP guardado en {UMAP_MODEL_PATH}")
 
         for nodo, coord in zip(nodos_con_emb, coords):
@@ -102,15 +131,19 @@ def main():
             coords_hdbscan = np.array([[n["x3d"], n["y3d"], n["z3d"]] for n in nodos_con_emb])
         else:
             print(f"Cargando modelo UMAP existente...")
-            with open(UMAP_MODEL_PATH, "rb") as f:
-                reducer = pickle.load(f)
+            reducer = saved_bundle["reducer"]
 
             print(f"Proyectando {len(nodos_nuevos)} nodos nuevos...")
             emb_nuevos = np.array([n["embedding"] for n in nodos_nuevos], dtype=np.float32)
-            coords_nuevos = reducer.transform(emb_nuevos)
+            raw_coords_nuevos = reducer.transform(emb_nuevos)
+            coords_nuevos = _apply_normalization(
+                raw_coords_nuevos,
+                saved_bundle["normalization_mins"],
+                saved_bundle["normalization_ranges"],
+            )
 
-            # Las coordenadas de los nodos nuevos ya están en el espacio del modelo (no renormalizar,
-            # ya que el espacio existente tiene su propia escala)
+            # Reutilizar la escala aprendida evita mezclar coordenadas crudas de
+            # transform() con las coordenadas normalizadas del corpus original.
             for nodo, coord in zip(nodos_nuevos, coords_nuevos):
                 nodo["x3d"] = round(float(coord[0]), 4)
                 nodo["y3d"] = round(float(coord[1]), 4)

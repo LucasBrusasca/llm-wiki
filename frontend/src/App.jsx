@@ -10,27 +10,39 @@ import IssuePanel from './components/IssuePanel.jsx';
 import Footer from './components/Footer.jsx';
 import DiscoveriesPanel from './components/DiscoveriesPanel.jsx';
 import ProcessPanel from './components/ProcessPanel.jsx';
+import ArchitectPanel from './components/ArchitectPanel.jsx';
+import VaultBadge from './components/VaultBadge.jsx';
 import { computeDiscoveries } from './discoveries.js';
 
-// Paleta azul marino tecnológica — azules / cianes, sin ámbar.
-// Paleta CATEGÓRICA "jewel tones": tonos JOYA profundos y saturados pero elegantes —
-// ricos sobre el fondo negro (no pálidos, no neón). Brillo calibrado para que un punto
-// chico se vea bien sobre negro. Moderna y profesional. Cada tema conserva su color.
+// ── Paleta: TONOS JOYA ───────────────────────────────────────────────────────
+// Ni neon ni apagado. Los dos extremos que probamos fallaban por el mismo eje:
+// el neon tiene luminosidad muy alta y se lee estridente; el apagado tiene croma
+// bajo y se lee sucio. El registro elegante esta en el medio: SATURACION alta con
+// LUMINOSIDAD contenida (~50-65%). Es la formula de las piedras preciosas —
+// rubi, esmeralda, zafiro, amatista— y por eso lee como algo caro y no como una
+// pantalla de videojuego.
+//
+// Cada uno conserva al menos un canal RGB bajo, que es lo que mantiene la
+// identidad del matiz y evita el aspecto lavado.
 export const CLUSTER_PALETTE = [
-  '#2c3e94', // índigo profundo
-  '#0b6b4a', // esmeralda profunda
-  '#4a2b96', // violeta profundo
-  '#8c1d44', // vino / frambuesa
-  '#0c6675', // petróleo
-  '#6a2580', // púrpura profundo
-  '#1f7031', // verde bosque
-  '#8a5f12', // oro viejo / bronce
-  '#9a3410', // óxido
-  '#1a5a8a', // azul acero profundo
+  '#C41E3A', // rubí
+  '#0E9594', // turquesa profundo
+  '#0F52BA', // zafiro
+  '#00A86B', // esmeralda
+  '#9B59B6', // amatista
+  '#D4AF37', // oro viejo
+  '#B03A5B', // granate
+  '#3E7CB1', // azul acero
+  '#6A8D3F', // oliva
+  '#C1553C', // terracota
 ];
 
+// Reservado: sólo para lo excepcional (issues, alertas). Si aparece, significa algo.
+export const ALERT_COLOR = '#FFB44D';
+
 export function clusterColor(cluster) {
-  if (cluster === undefined || cluster === null || cluster < 0) return '#5a7a9a';
+  // Sin grupo: gris frío y apagado, para que el ruido retroceda en vez de competir.
+  if (cluster === undefined || cluster === null || cluster < 0) return '#565A78';
   return CLUSTER_PALETTE[cluster % CLUSTER_PALETTE.length];
 }
 
@@ -80,8 +92,10 @@ function buildGraphData(data) {
       base.x = n.x3d * SCALE;
       base.y = n.y3d * SCALE;
       base.z = n.z3d * SCALE;
-      // Only pin nodes that have real UMAP coordinates (embedding field present)
-      if (n.embedding) {
+      // Se fija el nodo si tiene coordenadas reales. `pin` lo declara de forma
+      // explicita: los fragmentos se posicionan alrededor de su documento y no
+      // viajan con embedding (4.397 x 384 floats seria un payload absurdo).
+      if (n.embedding || n.pin) {
         base.fx = n.x3d * SCALE;
         base.fy = n.y3d * SCALE;
         base.fz = n.z3d * SCALE;
@@ -125,6 +139,7 @@ export default function App() {
   const [issueOpen, setIssueOpen]       = useState(false);
   const [discoveriesOpen, setDiscoveriesOpen] = useState(false);
   const [processOpen, setProcessOpen]   = useState(false);
+  const [architectOpen, setArchitectOpen] = useState(false);
   const [relayouting, setRelayouting]   = useState(false);
   const [toolsOpen, setToolsOpen]       = useState(false);
   // Secciones = grafos de conocimiento independientes (por `dominio`).
@@ -133,6 +148,8 @@ export default function App() {
   const [seccionOpen, setSeccionOpen]   = useState(false);
   const [securityEnabled, setSecurityEnabled] = useState(false);
   const [layoutMode, setLayoutMode]     = useState('components');
+  // Vista de FRAGMENTOS: cada documento se abre en la estrella de sus pasajes.
+  const [verFragmentos, setVerFragmentos] = useState(false);
   const [focusTrigger, setFocusTrigger] = useState(0);  // botón "enfocar" del panel
   const [fitTrigger, setFitTrigger]     = useState(0);  // botón "ver todo" (desenfocar)
 
@@ -198,7 +215,8 @@ export default function App() {
   const loadGraph = useCallback(() => {
     setLoading(true);
     setFetchError(false);
-    fetch(`/api/graph?seccion=${encodeURIComponent(seccion)}`)
+    const ruta = verFragmentos ? '/api/graph/chunks' : '/api/graph';
+    fetch(`${ruta}?seccion=${encodeURIComponent(seccion)}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(data => { setGraphData(buildGraphData(data)); setLoading(false); })
       .catch(() => {
@@ -208,7 +226,7 @@ export default function App() {
           .then(data => { setGraphData(buildGraphData(data)); setLoading(false); })
           .catch(() => { setFetchError(true); setLoading(false); });
       });
-  }, [seccion]);
+  }, [seccion, verFragmentos]);
 
   const renombrarSeccion = useCallback(async (nombre) => {
     setSeccionOpen(false);
@@ -467,6 +485,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <VaultBadge onGraphChanged={loadGraph} />
       <header className="header">
         <div className="header-brand">
           <span className="header-brand-icon">◈</span>
@@ -512,7 +531,8 @@ export default function App() {
           onChange={handleSearchChange}
         />
         <div className="header-actions">
-          {/* ── Contenido ── */}
+          {/* ── Etapa 1 · Contexto: lo que el sistema sabe ── */}
+          <span className="hdr-stage">Contexto</span>
           <button
             className={`btn-synth${libraryOpen ? ' active' : ''}`}
             onClick={() => setLibraryOpen(o => !o)}
@@ -523,11 +543,12 @@ export default function App() {
 
           <span className="hdr-sep" />
 
-          {/* ── Explorar el conocimiento ── */}
+          {/* ── Etapa 2 · Explorar: qué hay en el corpus y cómo se relaciona ── */}
+          <span className="hdr-stage">Explorar</span>
           <button
             className={`btn-synth${globalAgent ? ' active' : ''}`}
             onClick={toggleGlobalAgent}
-            title="Agente — preguntá sobre tu conocimiento (fundado en el grafo)"
+            title="Agente — preguntá sobre tu conocimiento (fundado en el grafo, con citas)"
           >
             ⬡ Agente
           </button>
@@ -548,14 +569,29 @@ export default function App() {
 
           <span className="hdr-sep" />
 
-          {/* ── Issue: módulo unificado (diagnosticar problema · diseñar proceso) ── */}
+          {/* ── Etapa 3 · Decidir ──
+                 Una sola entrada. Architect es el paso 1 del recorrido, no un
+                 módulo hermano: clasifica QUÉ intervención corresponde y, si la
+                 ruta amerita desarrollo, entrega el caso a Issue. Tener dos
+                 botones obligaba al usuario a saber de antemano cuál necesitaba,
+                 que es justamente lo que el sistema tiene que resolverle. */}
+          {/* ISSUE es la pantalla principal de esta etapa: ahí se trabaja el
+              problema, el flujograma, el reporte y el chat por etapa.
+              ARCHITECT es un complemento que se acopla: clasifica qué clase de
+              intervención corresponde ANTES de desarrollarla. Entra por Issue,
+              no al revés. */}
+          <span className="hdr-stage">Decidir</span>
           <button
             className={`btn-synth btn-issue${issueOpen || processOpen ? ' active' : ''}`}
-            onClick={() => setIssueOpen(o => !o)}
+            onClick={() => { setArchitectOpen(false); setIssueOpen(o => !o); }}
             title="Issue — diagnosticá un problema o diseñá un proceso, fundado en tu grafo"
           >
             ⚠ Issue
           </button>
+          {/* Architect ya no tiene botón propio: vive como la pestaña «Clasificación»
+              dentro del detalle de un Issue. Era un paso del expediente disfrazado de
+              módulo hermano. El panel suelto sigue en el árbol por si hace falta
+              volver a exponerlo, pero no ocupa lugar en la navegación. */}
 
           <span className="hdr-sep" />
 
@@ -635,7 +671,9 @@ export default function App() {
           <div key={id} className="layout-btn-wrap">
             <button
               className={`layout-btn${layoutMode === id ? ' active' : ''}`}
-              onClick={() => setLayoutMode(id)}
+              /* Encuadrar en cada cambio de modo: cada layout deja el grafo con otra
+               forma y extension, asi que la camara anterior casi nunca sirve. */
+            onClick={() => { setLayoutMode(id); setFitTrigger(f => f + 1); }}
             >
               <span className="layout-btn-icon">{icon}</span>
               <span className="layout-btn-label">{label}</span>
@@ -643,6 +681,9 @@ export default function App() {
             <div className="layout-btn-tooltip">{tip}</div>
           </div>
         ))}
+        {/* La vista de Fragmentos se retira del selector: mostraba densidad pero no
+            respondia ninguna pregunta. El endpoint /api/graph/chunks queda vivo para
+            cuando se conecte con las citas del agente, que es lo que la haria util. */}
       </div>
 
       {/* Botón flotante del Agente (estilo chatbot). Abajo a la DERECHA: el inferior
@@ -716,6 +757,26 @@ export default function App() {
           allNodes={graphData.nodes}
           onHighlight={handleHighlight}
           onClose={() => { setProcessOpen(false); setIssueOpen(true); }}
+        />
+      )}
+
+      {architectOpen && (
+        <ArchitectPanel
+          seccion={seccion}
+          /* Entrega del caso a Issue: Architect decidió la clase de intervención,
+             Issue la desarrolla. Es el paso 2 del mismo recorrido. */
+          onDesarrollar={() => { setArchitectOpen(false); setIssueOpen(true); }}
+          /* Los expedientes se siguen trabajando en el módulo Issue. Architect es
+             la puerta única; Issue sigue existiendo detrás, no desapareció. */
+          onAbrirExpediente={() => { setArchitectOpen(false); setIssueOpen(true); }}
+          onClose={() => setArchitectOpen(false)}
+          onNavigate={nodeId => {
+            const n = graphData.nodes.find(x => x.id === nodeId);
+            if (!n) return;
+            setArchitectOpen(false);
+            setFixedNode(n);
+            setHoverNode(null);
+          }}
         />
       )}
 

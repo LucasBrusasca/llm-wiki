@@ -33,6 +33,64 @@ def generar_embedding(nodo):
     vec = model.encode([texto], show_progress_bar=False)[0]
     nodo['embedding'] = vec.tolist()
 
+
+CHUNK_MAX_CHARS = 1400
+CHUNK_OVERLAP_CHARS = 220
+CHUNK_LIMIT = 200
+
+
+def crear_chunks(texto: str, *, page: int | None = None,
+                 base_offset: int = 0, start_ordinal: int = 0) -> list[dict]:
+    """Divide texto en pasajes solapados, conservando página y posición aproximada."""
+    # PostgreSQL text no admite NUL; algunos PDFs/Office lo incluyen invisiblemente.
+    text = (texto or "").replace("\x00", " ").strip()
+    if not text:
+        return []
+    chunks = []
+    start = 0
+    while start < len(text) and len(chunks) < CHUNK_LIMIT:
+        target = min(len(text), start + CHUNK_MAX_CHARS)
+        end = target
+        if target < len(text):
+            # Cortar cerca de un límite natural sin producir fragmentos demasiado chicos.
+            floor = start + int(CHUNK_MAX_CHARS * 0.6)
+            candidates = [text.rfind(mark, floor, target) for mark in ("\n\n", ". ", "\n", "; ")]
+            natural = max(candidates)
+            if natural >= floor:
+                end = natural + (1 if text[natural:natural + 2] != "\n\n" else 2)
+        content = text[start:end].strip()
+        if content:
+            chunks.append({
+                "ordinal": start_ordinal + len(chunks),
+                "content": content,
+                "page": page,
+                "char_start": base_offset + start,
+                "char_end": base_offset + end,
+            })
+        if end >= len(text):
+            break
+        start = max(start + 1, end - CHUNK_OVERLAP_CHARS)
+    return chunks
+
+
+def crear_chunks_paginas(paginas: list[tuple[int, str]]) -> list[dict]:
+    chunks = []
+    offset = 0
+    for page, text in paginas:
+        remaining = CHUNK_LIMIT - len(chunks)
+        if remaining <= 0:
+            break
+        page_chunks = crear_chunks(
+            text, page=page, base_offset=offset, start_ordinal=len(chunks)
+        )[:remaining]
+        chunks.extend(page_chunks)
+        offset += len(text or "") + 1
+    return chunks
+
+
+def asociar_chunks(chunks: list[dict], node_id: str) -> list[dict]:
+    return [{**chunk, "node_id": node_id} for chunk in chunks]
+
 def parsear_json(texto):
     if texto.startswith("```"):
         texto = re.sub(r'^```\w*\n?', '', texto).rstrip('`').strip()
@@ -76,18 +134,20 @@ IMPORTANTE: "desc" y "conceptos" SIEMPRE en español, aunque el documento sea en
 Incluí entre 8 y 14 conceptos clave. Solo JSON."""
 
 
-def extraer_texto_pdf(ruta_pdf):
+def extraer_paginas_pdf(ruta_pdf) -> list[tuple[int, str]]:
     try:
         import fitz
         doc = fitz.open(ruta_pdf)
-        texto = ""
-        for page in doc:
-            texto += page.get_text()
+        paginas = [(index + 1, page.get_text().strip()) for index, page in enumerate(doc)]
         doc.close()
-        return texto.strip()
+        return [(page, text) for page, text in paginas if text]
     except Exception as e:
         print(f"Error al extraer texto del PDF: {e}")
-        return ""
+        return []
+
+
+def extraer_texto_pdf(ruta_pdf):
+    return "\n".join(text for _, text in extraer_paginas_pdf(ruta_pdf)).strip()
 
 def _post_llm_chat(url, payload, headers, timeout, retries=6):
     """POST a un endpoint OpenAI-compatible con reintentos + backoff ante sobrecarga
@@ -205,16 +265,24 @@ def query_llm(messages: list, system: str = None) -> str:
         # Default: Anthropic
         if not model:
             model = "claude-3-5-sonnet-latest"
-        if "sonnet" in model:
+        # Sólo se resuelven los ALIAS sueltos ("sonnet", "haiku"). Un identificador
+        # completo del .env se respeta tal cual: reescribirlo en silencio rompía el
+        # requisito de "benchmark bloqueado: prompt, modelo y configuración".
+        elif model.strip().lower() in ("sonnet", "claude-sonnet"):
             model = "claude-3-5-sonnet-latest"
-        elif "haiku" in model:
+        elif model.strip().lower() in ("haiku", "claude-haiku"):
             model = "claude-3-5-haiku-latest"
-            
+
         import anthropic
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         resp = client.messages.create(
             model=model,
-            max_tokens=1200,
+            # El tope de 1200 truncaba los JSON largos (plan de Architect: clasificación
+            # + 3 alternativas + matriz de 5 criterios) y el parseo reventaba con 502.
+            max_tokens=int(os.getenv("ALGEDI_MAX_TOKENS", "8000")),
+            # Misma temperatura que la rama Gemini: sin esto, la métrica de
+            # repetibilidad no es comparable entre proveedores.
+            temperature=float(os.getenv("ALGEDI_TEMPERATURE", "0.1")),
             system=system,
             messages=messages
         )
@@ -224,6 +292,8 @@ def query_llm(messages: list, system: str = None) -> str:
 def procesar_pdf(ruta_pdf):
     """Un único nodo por PDF con metadata de conceptos interna."""
     provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
+    paginas = extraer_paginas_pdf(ruta_pdf)
+    pdf_text = "\n".join(text for _, text in paginas)
     
     if provider == "anthropic":
         import base64
@@ -235,7 +305,6 @@ def procesar_pdf(ruta_pdf):
         ]}]
         response_text = query_llm(messages)
     else:
-        pdf_text = extraer_texto_pdf(ruta_pdf)
         prompt = f"Analizá el siguiente documento y generá UN ÚNICO nodo de resumen.\n\nDOCUMENTO:\n{pdf_text[:20000]}\n\n" + _PROMPT_SUFIJO
         messages = [{"role": "user", "content": prompt}]
         response_text = query_llm(messages)
@@ -250,7 +319,8 @@ def procesar_pdf(ruta_pdf):
     nodo["fecha_doc"] = _pdf_fecha(ruta_pdf) # fecha de creación del PDF (si tiene)
     generar_embedding(nodo)
     print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
-    return {"nodos": [nodo], "relaciones": []}
+    chunks = asociar_chunks(crear_chunks_paginas(paginas), nodo["id"])
+    return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 
 def _pdf_autor(ruta_pdf):
@@ -407,7 +477,8 @@ def procesar_youtube(url, title_hint=None, author_hint=None):
                         if author else f"Video: {title} (resumen aproximado).")
     generar_embedding(nodo)
     print(f"✓ YT '{nodo['label']}' | transcript: {'sí' if transcript else 'NO'} | {len(nodo.get('conceptos',[]))} conceptos")
-    return {"nodos": [nodo], "relaciones": []}
+    chunks = asociar_chunks(crear_chunks(transcript or ""), nodo["id"])
+    return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 
 def expandir_playlist(url, limite=12):
@@ -472,7 +543,8 @@ def procesar_excel(ruta_excel):
     nodo["autor"], nodo["fecha_doc"] = _office_meta(ruta_excel)  # xlsx también es OOXML
     generar_embedding(nodo)
     print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
-    return {"nodos": [nodo], "relaciones": []}
+    chunks = asociar_chunks(crear_chunks(contenido), nodo["id"])
+    return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 
 def _extraer_texto_html(html_str: str) -> str:
@@ -492,11 +564,11 @@ def procesar_html(ruta_html):
     """Un único nodo por archivo HTML."""
     try:
         texto = Path(ruta_html).read_text(encoding="utf-8", errors="ignore")
-        texto_limpio = _extraer_texto_html(texto)[:6000]
+        texto_completo = _extraer_texto_html(texto)
     except Exception:
-        texto_limpio = f"[Archivo HTML: {Path(ruta_html).name}]"
+        texto_completo = f"[Archivo HTML: {Path(ruta_html).name}]"
 
-    prompt = f"Contenido HTML:\n{texto_limpio}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    prompt = f"Contenido HTML:\n{texto_completo[:6000]}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
     messages = [{"role": "user", "content": prompt}]
     response_text = query_llm(messages)
     resultado = parsear_json(response_text.strip())
@@ -507,22 +579,23 @@ def procesar_html(ruta_html):
     nodo["fuente_label"] = h_path.stem
     generar_embedding(nodo)
     print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
-    return {"nodos": [nodo], "relaciones": []}
+    chunks = asociar_chunks(crear_chunks(texto_completo), nodo["id"])
+    return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 
 def procesar_url_web(url: str):
     """Descarga y procesa cualquier URL web (artículo, Wikipedia, GitHub, etc.)."""
+    from security_utils import safe_http_get
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; Algedi/1.0; +https://github.com/algedi)"
     }
     try:
-        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            resp = client.get(url, headers=headers)
-            resp.raise_for_status()
-            content_type = resp.headers.get("content-type", "")
-            if "pdf" in content_type:
-                raise ValueError("URL apunta a un PDF — subilo como archivo")
-            html = resp.text
+        resp = safe_http_get(url, timeout=30.0, headers=headers)
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "")
+        if "pdf" in content_type:
+            raise ValueError("URL apunta a un PDF — subilo como archivo")
+        html = resp.text
     except httpx.HTTPStatusError as e:
         raise ValueError(f"No se pudo acceder a la URL: HTTP {e.response.status_code}")
     except Exception as e:
@@ -532,14 +605,14 @@ def procesar_url_web(url: str):
     title_m = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
     page_title = re.sub(r'\s+', ' ', title_m.group(1)).strip() if title_m else ""
 
-    texto_limpio = _extraer_texto_html(html)[:6000]
-    if not texto_limpio.strip():
+    texto_completo = _extraer_texto_html(html)
+    if not texto_completo.strip():
         raise ValueError("No se pudo extraer texto de la página")
 
     title_hint = f'Título de la página: "{page_title}"\n' if page_title else ""
     prompt = (
         f"URL: {url}\n{title_hint}"
-        f"Contenido de la página web:\n{texto_limpio}\n\n"
+        f"Contenido de la página web:\n{texto_completo[:6000]}\n\n"
         f"Generá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
     )
     messages = [{"role": "user", "content": prompt}]
@@ -553,7 +626,8 @@ def procesar_url_web(url: str):
     nodo["fuente_label"] = page_title or url
     generar_embedding(nodo)
     print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
-    return {"nodos": [nodo], "relaciones": []}
+    chunks = asociar_chunks(crear_chunks(texto_completo), nodo["id"])
+    return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 
 def procesar_issue(descripcion: str):
@@ -603,11 +677,11 @@ Incluí 6-10 conceptos clave. Solo JSON."""
 def procesar_txt(ruta: str):
     """Un único nodo por archivo de texto plano o markdown."""
     try:
-        texto = Path(ruta).read_text(encoding="utf-8", errors="ignore").strip()[:6000]
+        texto = Path(ruta).read_text(encoding="utf-8", errors="ignore").strip()
     except Exception:
         texto = f"[Archivo: {Path(ruta).name}]"
 
-    prompt = f"Documento de texto:\n{texto}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    prompt = f"Documento de texto:\n{texto[:6000]}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
     messages = [{"role": "user", "content": prompt}]
     response_text = query_llm(messages)
     resultado = parsear_json(response_text.strip())
@@ -618,7 +692,8 @@ def procesar_txt(ruta: str):
     nodo["fuente_label"] = p.stem
     generar_embedding(nodo)
     print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
-    return {"nodos": [nodo], "relaciones": []}
+    chunks = asociar_chunks(crear_chunks(texto), nodo["id"])
+    return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 
 def _extraer_texto_office(ruta: str, partes: list) -> str:
@@ -666,8 +741,8 @@ def _office_meta(ruta: str):
 
 def procesar_word(ruta: str):
     """Un único nodo por documento de Word (.docx)."""
-    texto = _extraer_texto_office(ruta, ["word/document.xml"])[:20000] or f"[Documento Word: {Path(ruta).name}]"
-    prompt = f"Documento de Word:\n{texto}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    texto = _extraer_texto_office(ruta, ["word/document.xml"]) or f"[Documento Word: {Path(ruta).name}]"
+    prompt = f"Documento de Word:\n{texto[:20000]}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
     response_text = query_llm([{"role": "user", "content": prompt}])
     nodo = parsear_json(response_text.strip())["nodo"]
     p = Path(ruta)
@@ -677,13 +752,14 @@ def procesar_word(ruta: str):
     nodo["autor"], nodo["fecha_doc"] = _office_meta(ruta)
     generar_embedding(nodo)
     print(f"✓ Nodo Word '{nodo['label']}' con {len(nodo.get('conceptos', []))} conceptos")
-    return {"nodos": [nodo], "relaciones": []}
+    chunks = asociar_chunks(crear_chunks(texto), nodo["id"])
+    return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 
 def procesar_pptx(ruta: str):
     """Un único nodo por presentación de PowerPoint (.pptx)."""
-    texto = _extraer_texto_office(ruta, ["ppt/slides/"])[:20000] or f"[Presentación: {Path(ruta).name}]"
-    prompt = f"Presentación de PowerPoint (texto de las diapositivas):\n{texto}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    texto = _extraer_texto_office(ruta, ["ppt/slides/"]) or f"[Presentación: {Path(ruta).name}]"
+    prompt = f"Presentación de PowerPoint (texto de las diapositivas):\n{texto[:20000]}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
     response_text = query_llm([{"role": "user", "content": prompt}])
     nodo = parsear_json(response_text.strip())["nodo"]
     p = Path(ruta)
@@ -693,7 +769,8 @@ def procesar_pptx(ruta: str):
     nodo["autor"], nodo["fecha_doc"] = _office_meta(ruta)
     generar_embedding(nodo)
     print(f"✓ Nodo PPT '{nodo['label']}' con {len(nodo.get('conceptos', []))} conceptos")
-    return {"nodos": [nodo], "relaciones": []}
+    chunks = asociar_chunks(crear_chunks(texto), nodo["id"])
+    return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 
 def calcular_similitud_coseno(a_emb, b_emb):
@@ -928,7 +1005,9 @@ def acumular_resultado(nuevo: dict) -> dict:
     try:
         from main import _save_node_sync
         for nodo in nuevo.get("nodos", []):
-            _save_node_sync(nodo)
+            node_chunks = [c for c in nuevo.get("chunks", [])
+                           if c.get("node_id") == nodo["id"]]
+            _save_node_sync(nodo, node_chunks if "chunks" in nuevo else None)
         asignar_temas_pendientes()   # clasifica el nuevo + los pendientes de intentos fallidos
     except Exception as e:
         print(f"Warning acumular_resultado: {e}")

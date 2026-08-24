@@ -7,8 +7,11 @@ RUN pip install --no-cache-dir -r requirements-fastapi.txt
 RUN playwright install --with-deps chromium
 
 FROM base AS dev
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# En bind-mounts de Windows, watchfiles puede terminar el proceso con os error 5.
+# El frontend mantiene HMR; el backend se reinicia explícitamente cuando cambia código.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 FROM base AS prod
 COPY . .
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# Mientras ingesta/Issue/vault conserven estado y locks en memoria, debe haber un worker.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

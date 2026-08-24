@@ -1,10 +1,14 @@
+import math
 import os
 import random
 import re
 import threading
+import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -19,7 +23,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.connection import get_async_session, get_sync_session
-from database.models import AuditLog, Edge, Node
+from database.models import AuditLog, Chunk, Document, Edge, Node, Source
 
 load_dotenv()
 
@@ -28,20 +32,86 @@ UPLOADS = BASE / "uploads"
 UPLOADS.mkdir(exist_ok=True)
 THUMBS = UPLOADS / "thumbs"
 THUMBS.mkdir(exist_ok=True)
+# Carpeta "mágica" de Ingesta Continua: lo que se suelte acá se ingiere solo.
+VAULT = BASE / "vault"
+VAULT.mkdir(exist_ok=True)
+
+MAX_UPLOAD_MB = max(1, int(os.getenv("ALGEDI_MAX_UPLOAD_MB", "50")))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+INGEST_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".html", ".htm", ".txt", ".md",
+                     ".docx", ".pptx", ".pptm"}
+ISSUE_EXTENSIONS = {".pdf", ".html", ".htm", ".txt", ".md"}
+
+
+async def _save_upload(file: UploadFile, allowed_extensions: set[str]) -> Path:
+    """Guarda un upload por streaming, con límite y sin sobrescribir otro archivo."""
+    safe_name = Path(file.filename or "").name
+    suffix = Path(safe_name).suffix.lower()
+    if not safe_name or safe_name.startswith(".") or suffix not in allowed_extensions:
+        permitidas = ", ".join(sorted(allowed_extensions))
+        raise HTTPException(400, f"Tipo de archivo no permitido. Formatos: {permitidas}")
+
+    save_path = UPLOADS / safe_name
+    if save_path.exists():
+        save_path = UPLOADS / f"{Path(safe_name).stem}-{uuid4().hex[:8]}{suffix}"
+    temp_path = save_path.with_name(f".{save_path.name}.{uuid4().hex}.part")
+    total = 0
+    try:
+        with open(temp_path, "wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, f"El archivo supera el límite de {MAX_UPLOAD_MB} MB")
+                output.write(chunk)
+        temp_path.replace(save_path)
+        return save_path
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from database.init_db import init_db
     await init_db()
+    _start_vault_watcher()
     yield
+
+
+def _start_vault_watcher():
+    """Arranca la Ingesta Continua (carpeta mágica). Opt-out con ALGEDI_VAULT=0."""
+    if os.getenv("ALGEDI_VAULT", "1") not in ("1", "true", "True"):
+        print("[vault] Ingesta Continua deshabilitada (ALGEDI_VAULT=0)")
+        return
+
+    def _vault_ingest(path: str, skip_umap: bool, seccion: str):
+        global _ingest_source, _ingest
+        _ingest_source = "vault"
+        with _ingest_lock:
+            _ingest = {"state": "processing", "message": "Ingesta continua…",
+                       "label": Path(path).name if not path.startswith("http") else path[:60],
+                       "progress": 5}
+        return _run_ingest(path, skip_umap, seccion)
+
+    def _vault_umap():
+        import embeddings_engine
+        embeddings_engine.main()
+
+    try:
+        import vault_watcher
+        vault_watcher.start(VAULT, _vault_ingest, _vault_umap)
+    except Exception as e:
+        print(f"[vault] no se pudo iniciar la Ingesta Continua: {e}")
 
 
 app = FastAPI(title="Algedi", lifespan=lifespan)
 
+CORS_ORIGINS = [origin.strip() for origin in os.getenv(
+    "ALGEDI_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+).split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -52,6 +122,11 @@ app.add_middleware(
 # ── Ingestion state ───────────────────────────────────────────────────
 _ingest = {"state": "idle", "message": "", "label": "", "progress": 0}
 _ingest_lock = threading.Lock()
+# Serializa la EJECUCIÓN de ingestas (subida manual + Ingesta Continua del vault)
+# para que nunca corran dos a la vez y no se pisen el estado/UMAP.
+_INGEST_GATE = threading.Lock()
+# Quién disparó la ingesta en curso: 'user' (subida manual) | 'vault' (carpeta mágica).
+_ingest_source = "user"
 
 # ── Issue state ────────────────────────────────────────────────────────
 _issue_state = {"state": "idle", "message": "", "progress": 0, "result": None}
@@ -60,7 +135,9 @@ _issue_lock = threading.Lock()
 
 def _resolve(rel: str) -> Path:
     target = (BASE / unquote(rel)).resolve()
-    if not str(target).startswith(str(BASE)):
+    try:
+        target.relative_to(BASE)
+    except ValueError:
         raise HTTPException(status_code=403, detail="Forbidden")
     if not target.exists():
         raise HTTPException(status_code=404, detail="Not found")
@@ -102,6 +179,7 @@ def node_to_dict(n) -> dict:
         "tema": n.tema,
         "flujograma": n.flujograma,
         "synthesis": n.synthesis,
+        "solve": n.solve,
         "is_centroid": n.is_centroid or False,
         "is_issue": n.is_issue or False,
         "tags": n.tags or [],
@@ -197,9 +275,49 @@ async def _nodos_relevantes_scored(pregunta: str, max_n: int = 6,
         return []
 
 
-def _save_node_sync(nodo_data: dict):
+async def _chunks_relevantes_scored(pregunta: str, max_n: int = 8,
+                                    db: AsyncSession = None) -> list[dict]:
+    """Recupera pasajes citables, vinculados al documento y nodo de origen."""
+    try:
+        from processor import get_embed_model
+        model = get_embed_model()
+        vec = model.encode([pregunta], show_progress_bar=False)[0].tolist()
+        result = await db.execute(
+            text("""
+                SELECT c.id, c.content, c.page, c.ordinal,
+                       n.id AS node_id, n.label, n.fuente_url, n.fuente_path,
+                       (c.embedding <=> CAST(:vec AS vector)) AS dist
+                FROM chunks c
+                JOIN documents d ON d.id = c.document_id
+                JOIN nodes n ON n.id = d.node_id
+                WHERE c.embedding IS NOT NULL
+                  AND NOT COALESCE(n.is_issue, false)
+                ORDER BY dist
+                LIMIT :lim
+            """),
+            {"vec": str(vec), "lim": max_n},
+        )
+        return [{
+            "id": row.id,
+            "content": row.content,
+            "page": row.page,
+            "ordinal": row.ordinal,
+            "node_id": row.node_id,
+            "label": row.label,
+            "fuente_url": row.fuente_url,
+            "fuente_path": row.fuente_path,
+            "sim": max(0.0, 1.0 - float(row.dist)),
+        } for row in result]
+    except Exception as exc:
+        print(f"chunk retrieval failed: {exc}")
+        return []
+
+
+def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
     """Guarda o actualiza un nodo en PostgreSQL y recalcula relaciones. Síncrona — segura para threads."""
-    from database.models import Node as NodeModel, Edge as EdgeModel
+    import hashlib
+    from database.models import (Chunk as ChunkModel, Document as DocumentModel,
+                                 Edge as EdgeModel, Node as NodeModel, Source as SourceModel)
     from sqlalchemy import delete as sync_delete
     from processor import _auto_relaciones
 
@@ -212,6 +330,94 @@ def _save_node_sync(nodo_data: dict):
             .on_conflict_do_update(index_elements=["id"], set_=datos)
         )
         session.flush()
+
+        # Base de trazabilidad compatible con el modelo actual. Los chunks se poblarán
+        # cuando los conectores entreguen pasajes/páginas, sin perder este vínculo.
+        locator = (nodo_data.get("fuente_url") or nodo_data.get("fuente_path")
+                   or f"node:{nodo_data['id']}")
+        content_hash = None
+        if nodo_data.get("fuente_path"):
+            try:
+                path = _resolve_file(nodo_data["fuente_path"])
+                digest = hashlib.sha256()
+                with open(path, "rb") as source_file:
+                    for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                content_hash = digest.hexdigest()
+            except Exception:
+                pass
+        # La identidad sigue al locator estable; el hash de contenido versiona el archivo
+        # sin cambiar silenciosamente el ID de la fuente.
+        source_fingerprint = hashlib.sha256(locator.encode("utf-8")).hexdigest()
+        source_id = f"src_{source_fingerprint[:24]}"
+        source_values = {
+            "id": source_id,
+            "kind": nodo_data.get("fuente") or "unknown",
+            "locator": locator,
+            "original_name": nodo_data.get("fuente_label"),
+            "content_hash": content_hash,
+            "source_metadata": {
+                "autor": nodo_data.get("autor"),
+                "fecha_doc": nodo_data.get("fecha_doc"),
+                "dominio": nodo_data.get("dominio") or "personal",
+            },
+        }
+        session.execute(
+            pg_insert(SourceModel).values(**source_values)
+            .on_conflict_do_update(index_elements=["id"], set_=source_values)
+        )
+
+        processed_text = "\n".join([
+            nodo_data.get("label") or "",
+            nodo_data.get("desc") or "",
+            nodo_data.get("fragmento") or "",
+            " | ".join(nodo_data.get("conceptos") or []),
+        ])
+        processed_hash = hashlib.sha256(processed_text.encode("utf-8")).hexdigest()
+        document_id = f"doc_{hashlib.sha256(nodo_data['id'].encode('utf-8')).hexdigest()[:24]}"
+        document_values = {
+            "id": document_id,
+            "source_id": source_id,
+            "node_id": nodo_data["id"],
+            "parser": nodo_data.get("fuente") or "unknown",
+            "parser_version": "legacy-node-v1",
+            "content_hash": processed_hash,
+        }
+        session.execute(
+            pg_insert(DocumentModel).values(**document_values)
+            .on_conflict_do_update(index_elements=["id"], set_=document_values)
+        )
+        session.flush()
+
+        if chunks is not None:
+            # Reingerir reemplaza únicamente los pasajes derivados de esta versión.
+            session.execute(sync_delete(ChunkModel).where(ChunkModel.document_id == document_id))
+            valid_chunks = [c for c in chunks if (c.get("content") or "").strip()]
+            if valid_chunks:
+                from processor import get_embed_model
+                model = get_embed_model()
+                vectors = model.encode(
+                    [c["content"] for c in valid_chunks],
+                    batch_size=32,
+                    show_progress_bar=False,
+                )
+                for index, (chunk_data, vector) in enumerate(zip(valid_chunks, vectors)):
+                    ordinal = int(chunk_data.get("ordinal", index))
+                    chunk_fingerprint = hashlib.sha256(
+                        f"{document_id}:{ordinal}:{chunk_data['content']}".encode("utf-8")
+                    ).hexdigest()
+                    session.add(ChunkModel(
+                        id=f"chk_{chunk_fingerprint[:24]}",
+                        document_id=document_id,
+                        ordinal=ordinal,
+                        content=chunk_data["content"],
+                        page=chunk_data.get("page"),
+                        char_start=chunk_data.get("char_start"),
+                        char_end=chunk_data.get("char_end"),
+                        embedding=vector.tolist(),
+                        chunk_metadata={"node_id": nodo_data["id"]},
+                    ))
+                session.flush()
 
         # Los issues/procesos NO participan de las relaciones del grafo de conocimiento:
         # son entidades de otro plano (módulo Issue/Procesos) cuyo fundamento se calcula
@@ -293,6 +499,101 @@ async def get_sections(db: AsyncSession = Depends(get_async_session)):
         secciones.insert(0, {"nombre": "personal", "count": 0})
     secciones.sort(key=lambda s: (s["nombre"] != "personal", s["nombre"].lower()))
     return {"secciones": secciones}
+
+
+@app.get("/api/traceability/status")
+async def traceability_status(db: AsyncSession = Depends(get_async_session)):
+    """Cobertura de la migración Source → Document → Chunk."""
+    async def count(model):
+        return (await db.execute(select(func.count()).select_from(model))).scalar_one()
+
+    linked_nodes = (await db.execute(
+        select(func.count()).select_from(Document).where(Document.node_id.isnot(None))
+    )).scalar_one()
+    return {
+        "sources": await count(Source),
+        "documents": await count(Document),
+        "chunks": await count(Chunk),
+        "linked_nodes": linked_nodes,
+        "nodes": await count(Node),
+    }
+
+
+@app.get("/api/graph/chunks")
+async def get_graph_chunks(seccion: str = None, db: AsyncSession = Depends(get_async_session)):
+    """Vista de FRAGMENTOS: cada documento es una estrella de sus propios pasajes.
+
+    El grafo de documentos muestra 65 nodos; la biblioteca tiene 4.397 chunks. Esta
+    vista los expone sin recalcular nada caro: los pasajes se distribuyen en una
+    esfera alrededor de la posición 3D que su documento ya tiene por UMAP.
+
+    Por qué así y no un UMAP nuevo sobre los chunks: la pertenencia de un pasaje a su
+    documento es un hecho, no una estimación. Colocarlo alrededor lo respeta, sale
+    gratis y produce la topología radial (hub + radios) que el ojo lee como red.
+    """
+    stmt = select(Node).where(Node.is_centroid == False, Node.is_issue == False)
+    if seccion:
+        stmt = stmt.where(Node.dominio == seccion)
+    docs = (await db.execute(stmt)).scalars().all()
+    por_id = {d.id: d for d in docs}
+
+    filas = (await db.execute(text("""
+        SELECT c.id, c.ordinal, c.page, LEFT(c.content, 70) AS preview, d.node_id
+        FROM chunks c JOIN documents d ON d.id = c.document_id
+        WHERE d.node_id = ANY(:ids)
+        ORDER BY d.node_id, c.ordinal
+    """), {"ids": list(por_id.keys())})).all() if por_id else []
+
+    nodos, relaciones = [], []
+    for d in docs:
+        nodos.append({
+            "id": d.id, "label": d.label, "type": "DOCUMENTO",
+            "tema": d.tema, "dominio": d.dominio or "personal",
+            "fuente": d.fuente, "fuente_url": d.fuente_url, "fuente_path": d.fuente_path,
+            "cluster": d.cluster if d.cluster is not None else -1,
+            "x3d": d.x3d, "y3d": d.y3d, "z3d": d.z3d,
+            "is_hub": True, "pin": True,
+        })
+
+    # Esfera de Fibonacci: reparte los pasajes de forma pareja alrededor del hub,
+    # sin los polos apelmazados que produce un muestreo aleatorio.
+    agrupados = {}
+    for f in filas:
+        agrupados.setdefault(f.node_id, []).append(f)
+
+    for node_id, chunks in agrupados.items():
+        doc = por_id.get(node_id)
+        if doc is None or doc.x3d is None:
+            continue
+        n = len(chunks)
+        radio = 0.018 + math.sqrt(n) * 0.006      # las estrellas grandes ocupan más
+        phi = math.pi * (3.0 - math.sqrt(5.0))    # ángulo áureo
+        for i, c in enumerate(chunks):
+            y = 1 - (i / max(1, n - 1)) * 2 if n > 1 else 0.0
+            r = math.sqrt(max(0.0, 1 - y * y))
+            th = phi * i
+            nodos.append({
+                "id": c.id,
+                "label": (c.preview or "").strip()[:64] or f"fragmento {c.ordinal}",
+                "type": "FRAGMENTO",
+                "tema": doc.tema, "dominio": doc.dominio or "personal",
+                "cluster": doc.cluster if doc.cluster is not None else -1,
+                "x3d": doc.x3d + math.cos(th) * r * radio,
+                "y3d": doc.y3d + y * radio,
+                "z3d": doc.z3d + math.sin(th) * r * radio,
+                "parent_id": node_id, "page": c.page, "ordinal": c.ordinal,
+                "is_hub": False, "pin": True,
+            })
+            relaciones.append({"source": node_id, "target": c.id, "score": 1.0, "spoke": True})
+
+    edges = (await db.execute(select(Edge))).scalars().all()
+    ids = {d.id for d in docs}
+    for e in edges:
+        if e.source in ids and e.target in ids:
+            relaciones.append({"source": e.source, "target": e.target,
+                               "score": e.score, "label": e.label})
+
+    return {"nodos": nodos, "relaciones": relaciones}
 
 
 @app.get("/api/graph")
@@ -400,7 +701,11 @@ def _resolve_file(p: str) -> Path:
             r = c.resolve()
         except Exception:
             continue
-        if str(r).startswith(str(BASE)) and r.exists() and r.is_file():
+        try:
+            r.relative_to(BASE)
+        except ValueError:
+            continue
+        if r.exists() and r.is_file():
             return r
     raise HTTPException(status_code=404, detail="Archivo no encontrado")
 
@@ -662,10 +967,11 @@ def _security_enabled() -> bool:
 
 def _check_password(pwd) -> bool:
     """True si la clave es correcta, o si no hay clave configurada (no se exige)."""
+    import hmac
     real = (os.getenv("ALGEDI_ADMIN_PASSWORD") or "").strip()
     if not real:
         return True
-    return (str(pwd or "")).strip() == real
+    return hmac.compare_digest((str(pwd or "")).strip(), real)
 
 
 async def _read_body(request: Request) -> dict:
@@ -736,7 +1042,7 @@ async def reset_graph(request: Request, db: AsyncSession = Depends(get_async_ses
 async def recompute_relations(db: AsyncSession = Depends(get_async_session)):
     from processor import _auto_relaciones
     nodes_rows = (await db.execute(
-        select(Node).where(Node.is_centroid == False)
+        select(Node).where(Node.is_centroid == False, Node.is_issue == False)
     )).scalars().all()
 
     nodes_dicts = []
@@ -749,6 +1055,7 @@ async def recompute_relations(db: AsyncSession = Depends(get_async_session)):
             "label": n.label,
             "conceptos": n.conceptos or [],
             "embedding": emb,
+            "dominio": n.dominio or "personal",
             "is_centroid": False,
         })
 
@@ -1045,45 +1352,77 @@ async def agent_endpoint(
     messages = body.get("messages", [])
     ultima = messages[-1]["content"] if messages else ""
 
-    # Recuperar del grafo CON score → fundamentar la respuesta (RAG real) + VETO epistémico.
+    chunks = await _chunks_relevantes_scored(ultima, max_n=8, db=db) if ultima else []
     scored = await _nodos_relevantes_scored(ultima, max_n=6, db=db) if ultima else []
-    node_ids = [s["id"] for s in scored]
-    max_sim = scored[0]["sim"] if scored else 0.0
-    # Documentos recuperados → el frontend los lista (clickeables) y los marca en el grafo.
-    fundamentos = [{"id": s["id"], "label": s["label"], "sim": round(s["sim"], 2)} for s in scored]
+    max_sim = chunks[0]["sim"] if chunks else (scored[0]["sim"] if scored else 0.0)
+    evidence_sufficient = bool(ultima and max_sim >= AGENT_VETO_UMBRAL)
 
-    # VETO: si la mejor coincidencia es muy débil, el agente se abstiene (no inventa).
-    if ultima and max_sim < AGENT_VETO_UMBRAL:
-        reply = (
-            "🚫 **No tengo suficiente respaldo en tu grafo para responder esto con confianza.**\n\n"
-            f"La mejor coincidencia es de apenas **{int(max_sim * 100)}%** de similitud — por debajo del umbral. "
-            "Prefiero callarme antes que inventarte algo que suene bien pero no esté fundamentado en tus documentos.\n\n"
-            "Probá cargar material sobre el tema, o reformular hacia algo que sí esté en tu corpus."
+    # Documentos relacionados para navegación del grafo, deduplicados por nodo.
+    best_by_node = {}
+    for chunk in chunks:
+        current = best_by_node.get(chunk["node_id"])
+        if current is None or chunk["sim"] > current["sim"]:
+            best_by_node[chunk["node_id"]] = {
+                "id": chunk["node_id"], "label": chunk["label"], "sim": chunk["sim"],
+            }
+    for item in scored:
+        best_by_node.setdefault(item["id"], {
+            "id": item["id"], "label": item["label"], "sim": item["sim"],
+        })
+    fundamentos = [
+        {**item, "sim": round(item["sim"], 2)}
+        for item in sorted(best_by_node.values(), key=lambda value: value["sim"], reverse=True)
+    ][:6]
+    node_ids = [item["id"] for item in fundamentos]
+
+    citations = []
+    if chunks and evidence_sufficient:
+        context_lines = []
+        for index, chunk in enumerate(chunks, 1):
+            marker = f"C{index}"
+            location = f", página {chunk['page']}" if chunk.get("page") else ""
+            context_lines.append(
+                f"[{marker}] {chunk['label']}{location} "
+                f"({int(chunk['sim'] * 100)}% afinidad): {chunk['content']}"
+            )
+            citations.append({
+                "marker": marker,
+                "chunk_id": chunk["id"],
+                "node_id": chunk["node_id"],
+                "label": chunk["label"],
+                "page": chunk.get("page"),
+                "excerpt": chunk["content"][:320],
+                "sim": round(chunk["sim"], 2),
+                "fuente_url": chunk.get("fuente_url"),
+            })
+        system = (
+            f"{system}\n\n"
+            "PASAJES RECUPERADOS DE LA BIBLIOTECA. Cuando una afirmación se apoye en un "
+            "pasaje, citá su marcador exacto, por ejemplo [C1]. No atribuyas a la biblioteca "
+            "nada que no figure en estos pasajes. Podés complementar con conocimiento general, "
+            "pero separalo bajo el subtítulo 'Conocimiento general' y aclaralo.\n\n"
+            + "\n\n".join(context_lines)
         )
-        db.add(AuditLog(query=ultima, agent_mode="VETO", node_ids_consulted=node_ids, response=reply[:2000]))
-        await db.commit()
-        return {"reply": reply, "nodos_relevantes": node_ids, "fundamentos": fundamentos,
-                "veto": True, "max_sim": round(max_sim, 2)}
-
-    # Grounding: inyectar el conocimiento recuperado CON su % de afinidad. El LLM usa esos
-    # números para auto-vetar con criterio (decir "no me alcanza" si la afinidad es baja).
-    if scored:
+    elif scored and evidence_sufficient:
         contexto = "\n".join(
-            f"- [{int(s['sim'] * 100)}% afinidad] {s['label']}: {(s.get('desc') or s.get('fragmento') or '').strip()[:240]}"
+            f"- [{int(s['sim'] * 100)}% afinidad] {s['label']}: "
+            f"{(s.get('desc') or s.get('fragmento') or '').strip()[:240]}"
             for s in scored
         )
         system = (
             f"{system}\n\n"
-            "CONOCIMIENTO RELEVANTE DE TU GRAFO (recuperado por similitud SEMÁNTICA, con % de "
-            "afinidad). Estos ya son los documentos más relacionados con la pregunta — la "
-            "relevancia es semántica, NO depende de que aparezca la palabra exacta.\n"
-            "• Si te preguntan '¿qué material/documentos tengo sobre X?' o piden enumerar, "
-            "LISTÁ estos documentos por título, ordenados por afinidad, con una línea de por "
-            "qué se relacionan. NUNCA digas que no hay nada solo porque no aparece el término "
-            "literal — si están acá, es porque se relacionan.\n"
-            "• Fundamentá SÓLO en esta lista. Recién si NINGUNO tiene que ver con la pregunta, "
-            "decilo con honestidad.\n\n"
-            f"{contexto}"
+            "RESÚMENES RELEVANTES DE LA BIBLIOTECA. Usalos como orientación, pero aclará "
+            "que son resúmenes y todavía no citas por pasaje. Podés complementar con conocimiento "
+            f"general, identificándolo como tal.\n\n{contexto}"
+        )
+    else:
+        system = (
+            f"{system}\n\n"
+            "La biblioteca no ofrece respaldo suficiente para esta consulta. Igual podés brindar "
+            "una explicación útil usando tu conocimiento general, bajo el subtítulo "
+            "'Conocimiento general (sin respaldo en la biblioteca)'. No inventes fuentes ni digas "
+            "que la respuesta proviene de documentos de Algedi. Si la consulta exige datos "
+            "específicos o una decisión de alto impacto, explicá qué evidencia falta."
         )
     try:
         from processor import query_llm
@@ -1093,14 +1432,24 @@ async def agent_endpoint(
 
     db.add(AuditLog(
         query=ultima,
-        agent_mode=system[:50],
+        agent_mode=("RAG_CHUNKS" if citations else
+                    "RAG_SUMMARIES" if evidence_sufficient else "GENERAL_KNOWLEDGE"),
         node_ids_consulted=node_ids,
         response=reply[:2000],
     ))
     await db.commit()
 
-    return {"reply": reply, "nodos_relevantes": node_ids, "fundamentos": fundamentos,
-            "veto": False, "max_sim": round(max_sim, 2)}
+    return {
+        "reply": reply,
+        "nodos_relevantes": node_ids,
+        "fundamentos": fundamentos,
+        "citations": citations,
+        "veto": False,
+        "general_knowledge": not evidence_sufficient,
+        "evidence_mode": ("chunks" if citations else
+                          "summaries" if evidence_sufficient else "general"),
+        "max_sim": round(max_sim, 2),
+    }
 
 
 @app.post("/api/synthesize")
@@ -1160,6 +1509,712 @@ async def synthesize_endpoint(request: Request, db: AsyncSession = Depends(get_a
     await db.commit()
 
     return {"result": reply, "nodos_relevantes": [s["id"] for s in scored], "max_sim": round(max_sim, 2)}
+
+
+# ── Algedi Solve MVP ──────────────────────────────────────────────────
+
+class SolveReview(BaseModel):
+    decision: str
+    note: str = ""
+
+
+class ArchitectAnalyzeRequest(BaseModel):
+    case_name: str = ""
+    problem: str
+    objective: str = ""
+    current_process: str = ""
+    available_data: str = ""
+    constraints: str = ""
+    expected_value: str = ""
+
+
+class ArchitectIntakeRequest(BaseModel):
+    """Conversación de admisión: el usuario escribe libre y Architect repregunta.
+
+    `messages` es el diálogo completo con el formato [{"role": "user"|"assistant",
+    "content": "..."}]. El backend no guarda estado: la conversación viaja entera
+    en cada llamada, igual que el chat del agente.
+    """
+    messages: list = []
+
+
+ARCHITECT_ROUTES = {
+    "redesign": "Rediseño",
+    "rules": "Reglas",
+    "data": "Datos / BI",
+    "assistive": "IA asistiva",
+    "agent": "Agente",
+    "none": "No implementar",
+}
+
+
+def _solve_list(value) -> list:
+    """Normaliza salidas del LLM para mantener estable el contrato del frontend."""
+    return value if isinstance(value, list) else []
+
+
+def _sanitize_solve_citations(value, valid_markers: set[str]):
+    """Impide que el modelo convierta un marcador inexistente en una cita aparente."""
+    invalid = set()
+
+    def walk(item):
+        if isinstance(item, dict):
+            return {key: walk(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [walk(child) for child in item]
+        if isinstance(item, str):
+            def replace(match):
+                marker = f"C{match.group(1)}"
+                if marker in valid_markers:
+                    return match.group(0)
+                invalid.add(marker)
+                return "[cita no válida]"
+            return re.sub(r"\[C(\d+)\]", replace, item)
+        return item
+
+    return walk(value), sorted(invalid)
+
+
+def _normalize_architect_route(value) -> str:
+    """Mantiene la salida del LLM dentro de las seis rutas del producto."""
+    route = str(value or "").strip().lower()
+    aliases = {
+        "rediseño": "redesign", "rediseno": "redesign", "redesign": "redesign",
+        "reglas": "rules", "rules": "rules", "automatización": "rules",
+        "automatizacion": "rules", "datos": "data", "datos / bi": "data",
+        "bi": "data", "data": "data", "ia asistiva": "assistive",
+        "asistiva": "assistive", "assistive": "assistive", "agente": "agent",
+        "agent": "agent", "no implementar": "none", "none": "none",
+    }
+    return aliases.get(route, "none")
+
+
+def _architect_score(value) -> int:
+    """Convierte la matriz del LLM a una escala comparable y acotada de 1 a 5."""
+    try:
+        return max(1, min(5, int(round(float(value)))))
+    except (TypeError, ValueError):
+        return 1
+
+
+@app.get("/architect-demo", include_in_schema=False)
+async def architect_demo():
+    """Sirve la demo desde el backend para que las llamadas sean same-origin."""
+    return FileResponse(BASE / "algedi_architect_interactive.html")
+
+
+ARCHITECT_CAMPOS = ("problem", "objective", "current_process",
+                    "available_data", "constraints", "expected_value")
+
+
+@app.post("/api/architect/intake")
+async def architect_intake(payload: ArchitectIntakeRequest):
+    """Admisión conversacional: el usuario escribe libre y Architect repregunta.
+
+    Reemplaza al formulario de seis campos. El usuario describe su problema como
+    lo diría en voz alta; Architect extrae lo que entendió, detecta qué falta y
+    hace UNA pregunta por turno — sólo cuando ese dato cambiaría la ruta elegida.
+
+    No decide la intervención: sólo prepara el brief. La clasificación sigue
+    siendo trabajo de /api/architect/analyze, con su verificador y su HITL.
+    """
+    import asyncio
+    from processor import parsear_json, query_llm
+
+    mensajes = [m for m in (payload.messages or [])
+                if isinstance(m, dict) and str(m.get("content") or "").strip()]
+    if not mensajes:
+        raise HTTPException(400, "No hay conversación para interpretar")
+
+    dialogo = "\n".join(
+        f"{'USUARIO' if m.get('role') != 'assistant' else 'ARCHITECT'}: "
+        f"{str(m.get('content'))[:4000]}"
+        for m in mensajes[-12:]
+    )
+    turnos_usuario = sum(1 for m in mensajes if m.get("role") != "assistant")
+
+    prompt = f"""Sos la admisión de Algedi Architect. Tu único trabajo es entender el
+caso que trae una persona y dejarlo listo para analizar. NO clasifiques la solución,
+NO propongas tecnología, NO recomiendes nada.
+
+CONVERSACIÓN HASTA ACÁ:
+{dialogo}
+
+Extraé lo que ya se puede afirmar. Lo que la persona no dijo va vacío: no lo inventes
+ni lo completes con supuestos plausibles.
+
+Después decidí si falta algo IMPRESCINDIBLE. Un dato es imprescindible sólo si su
+ausencia cambiaría qué clase de intervención corresponde (rediseño de proceso, reglas
+determinísticas, datos/BI, IA asistiva, agente, o no implementar). Por ejemplo: si no
+se sabe si hay una decisión humana en el medio, o si las reglas son estables, o si el
+proceso siquiera está definido, eso cambia la ruta.
+
+REGLAS DE LA PREGUNTA:
+- Una sola pregunta por turno, concreta y en lenguaje llano.
+- Nunca preguntes algo que la persona ya respondió.
+- Nunca pidas precisión numérica que la persona probablemente no tenga a mano.
+- Van {turnos_usuario} turnos del usuario. A partir del tercero, sé mucho más
+  permisivo: es preferible analizar con huecos declarados que interrogar.
+- Si con lo que hay alcanza para distinguir entre las seis rutas, marcá suficiente.
+
+Devolvé SOLO JSON:
+{{"suficiente": true|false,
+  "pregunta": "la única pregunta a hacer, o null si suficiente",
+  "case_name": "nombre corto del caso, 3 a 6 palabras",
+  "entendido": {{"problem":"...","objective":"...","current_process":"...",
+                 "available_data":"...","constraints":"...","expected_value":"..."}},
+  "faltantes": ["dato ausente que se declarará como hueco, no como supuesto"],
+  "resumen": "una o dos frases devolviéndole a la persona lo que entendiste"}}"""
+
+    try:
+        crudo = await asyncio.to_thread(
+            query_llm,
+            [{"role": "user", "content": prompt}],
+            "Sos la admisión de Algedi Architect. Escuchás y repreguntás lo mínimo. Respondés sólo JSON válido.",
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"No se pudo interpretar el caso: {exc}")
+
+    crudo = (crudo or "").strip()
+    if not crudo:
+        raise HTTPException(502, "No se pudo interpretar el caso: respuesta vacía")
+    try:
+        data = parsear_json(crudo)
+        if not isinstance(data, dict):
+            raise ValueError("la admisión no devolvió un objeto")
+    except Exception as exc:
+        raise HTTPException(502, f"No se pudo interpretar el caso: {exc}")
+
+    entendido = data.get("entendido")
+    if not isinstance(entendido, dict):
+        entendido = {}
+    brief = {campo: str(entendido.get(campo) or "").strip() for campo in ARCHITECT_CAMPOS}
+
+    # El brief manda sobre la autoevaluación del modelo: sin problema no hay caso,
+    # y a partir del cuarto turno se corta para no convertir la admisión en interrogatorio.
+    suficiente = bool(data.get("suficiente")) and bool(brief["problem"])
+    if turnos_usuario >= 4 and brief["problem"]:
+        suficiente = True
+
+    pregunta = str(data.get("pregunta") or "").strip()
+    if suficiente:
+        pregunta = ""
+    elif not pregunta:
+        pregunta = "Contame un poco más: ¿cómo se resuelve hoy ese problema, paso a paso?"
+
+    return {
+        "suficiente": suficiente,
+        "pregunta": pregunta or None,
+        "case_name": str(data.get("case_name") or "").strip()[:120] or "Caso sin título",
+        "brief": brief,
+        "faltantes": _solve_list(data.get("faltantes")),
+        "resumen": str(data.get("resumen") or "").strip(),
+        "turnos_usuario": turnos_usuario,
+    }
+
+
+@app.post("/api/architect/analyze")
+async def analyze_with_architect(
+    payload: ArchitectAnalyzeRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Clasifica una necesidad con evidencia, comparación y verificación independiente.
+
+    La ruta no surge de un árbol fijo: un planificador LLM evalúa seis alternativas
+    sobre evidencia recuperada de Algedi y un segundo LLM objeta el resultado. La
+    respuesta queda pendiente de decisión humana.
+    """
+    import asyncio
+    from processor import parsear_json, query_llm
+
+    problem = payload.problem.strip()[:4000]
+    if len(problem) < 12:
+        raise HTTPException(400, "Describí el problema con al menos 12 caracteres")
+    inputs = {
+        "case_name": payload.case_name.strip()[:200],
+        "problem": problem,
+        "objective": payload.objective.strip()[:2000],
+        "current_process": payload.current_process.strip()[:3000],
+        "available_data": payload.available_data.strip()[:2500],
+        "constraints": payload.constraints.strip()[:2500],
+        "expected_value": payload.expected_value.strip()[:2000],
+    }
+    search_query = "\n".join(value for value in inputs.values() if value)
+    chunks = await _chunks_relevantes_scored(search_query, max_n=10, db=db)
+    evidence_sufficient = bool(chunks and chunks[0]["sim"] >= AGENT_VETO_UMBRAL)
+    citations = []
+    evidence_lines = []
+    if evidence_sufficient:
+        for index, chunk in enumerate(chunks, 1):
+            marker = f"C{index}"
+            location = f", página {chunk['page']}" if chunk.get("page") else ""
+            evidence_lines.append(f"[{marker}] {chunk['label']}{location}: {chunk['content']}")
+            citations.append({
+                "marker": marker,
+                "chunk_id": chunk["id"],
+                "node_id": chunk["node_id"],
+                "label": chunk["label"],
+                "page": chunk.get("page"),
+                "excerpt": chunk["content"][:360],
+                "sim": round(chunk["sim"], 2),
+                "fuente_url": chunk.get("fuente_url"),
+            })
+    evidence_context = "\n\n".join(evidence_lines) or (
+        "No hay pasajes con afinidad suficiente. Razoná con conocimiento general, "
+        "declará esa limitación y no inventes fuentes ni hechos del caso."
+    )
+
+    planner_prompt = f"""CASO
+Nombre: {inputs['case_name'] or '(sin nombre)'}
+Problema: {problem}
+Objetivo: {inputs['objective'] or '(no declarado)'}
+Proceso actual: {inputs['current_process'] or '(no declarado)'}
+Datos disponibles: {inputs['available_data'] or '(no declarados)'}
+Restricciones: {inputs['constraints'] or '(no declaradas)'}
+Valor esperado: {inputs['expected_value'] or '(no declarado)'}
+
+EVIDENCIA RECUPERADA
+{evidence_context}
+
+Actuá como Architect: decidí qué intervención mínima resuelve mejor el problema entre
+redesign, rules, data, assistive, agent y none. No asumas que IA es la respuesta.
+Compará al menos tres rutas plausibles mediante cinco criterios: impacto, preparación
+de datos, complejidad, riesgo y costo. Puntaje 1 es desfavorable y 5 favorable; en
+complejidad, riesgo y costo, 5 significa menor complejidad/riesgo/costo.
+Usá sólo marcadores [C1], [C2], etc. existentes. Si no hay evidencia, escribí
+"conocimiento general" y explicitá qué dato falta.
+
+Devolvé SOLO JSON válido:
+{{
+  "classification":"redesign|rules|data|assistive|agent|none",
+  "problem_understanding":"...",
+  "trace":["recuperación: ...","clasificación: ...","comparación: ...","verificación requerida: ...","decisión humana: pendiente"],
+  "assumptions":["..."],
+  "alternatives":[
+    {{"route":"data","title":"...","proposal":"...","foundation":"... [C1]"}}
+  ],
+  "matrix":[
+    {{"route":"data","impact":1,"data_readiness":1,"complexity":1,"risk":1,"cost":1,"rationale":"..."}}
+  ],
+  "recommendation":{{"route":"data","why":"...","conditions":["..."]}},
+  "missing_information":["..."],
+  "pilot":{{"scope":"...","success_signal":"...","stop_condition":"..."}}
+}}
+Reglas: 3 a 6 alternativas; una fila de matriz por alternativa; no inventes costos,
+ahorros, métricas base ni resultados; español; sólo JSON."""
+    try:
+        raw_plan = await asyncio.to_thread(
+            query_llm,
+            [{"role": "user", "content": planner_prompt}],
+            "Sos Algedi Architect. Comparás opciones y recomendás la intervención mínima suficiente. Respondés sólo JSON válido.",
+        )
+        plan = parsear_json(raw_plan.strip())
+        if not isinstance(plan, dict):
+            raise ValueError("el planificador no devolvió un objeto")
+    except Exception as exc:
+        raise HTTPException(502, f"No se pudo ejecutar Architect: {exc}")
+
+    recommendation_route = (
+        (plan.get("recommendation") or {}).get("route")
+        if isinstance(plan.get("recommendation"), dict)
+        else None
+    )
+    classification = _normalize_architect_route(
+        recommendation_route or plan.get("classification")
+    )
+    plan["classification"] = classification
+    for key in ("trace", "assumptions", "alternatives", "matrix", "missing_information"):
+        plan[key] = _solve_list(plan.get(key))
+    if len(plan["alternatives"]) < 3:
+        raise HTTPException(502, "Architect no comparó al menos tres rutas")
+    plan["alternatives"] = plan["alternatives"][:6]
+    for alternative in plan["alternatives"]:
+        if isinstance(alternative, dict):
+            alternative["route"] = _normalize_architect_route(alternative.get("route"))
+    if len(plan["matrix"]) < 3:
+        raise HTTPException(502, "Architect no produjo una matriz comparable")
+    plan["matrix"] = plan["matrix"][:6]
+    for row in plan["matrix"]:
+        if not isinstance(row, dict):
+            continue
+        row["route"] = _normalize_architect_route(row.get("route"))
+        for criterion in ("impact", "data_readiness", "complexity", "risk", "cost"):
+            row[criterion] = _architect_score(row.get(criterion))
+    if not isinstance(plan.get("recommendation"), dict):
+        plan["recommendation"] = {}
+    plan["recommendation"]["route"] = classification
+    if not isinstance(plan.get("pilot"), dict):
+        plan["pilot"] = {}
+
+    valid_markers = {citation["marker"] for citation in citations}
+    referenced_markers = [f"C{number}" for number in sorted(set(re.findall(
+        r"\[C(\d+)\]", json.dumps(plan, ensure_ascii=False)
+    )))]
+    plan, invalid_markers = _sanitize_solve_citations(plan, valid_markers)
+
+    verifier_prompt = f"""Revisá como agente crítico independiente la recomendación de
+Architect. Detectá si la tecnología propuesta es excesiva, si contradice restricciones,
+si la matriz no justifica la ruta o si faltan datos. No agregues nuevas alternativas.
+
+CASO: {json.dumps(inputs, ensure_ascii=False)}
+MARCADORES VÁLIDOS: {', '.join(valid_markers) or '(ninguno)'}
+MARCADORES INVÁLIDOS RETIRADOS: {', '.join(invalid_markers) or '(ninguno)'}
+ANÁLISIS: {json.dumps(plan, ensure_ascii=False)}
+
+Devolvé SOLO JSON:
+{{"verdict":"viable|viable_with_changes|not_viable",
+  "agrees_with_route":true,
+  "suggested_route":"redesign|rules|data|assistive|agent|none",
+  "objection":"objeción principal concreta",
+  "findings":[{{"severity":"low|medium|high","finding":"...","action":"..."}}],
+  "evidence_gaps":["..."],"required_changes":["..."]}}"""
+    try:
+        raw_review = await asyncio.to_thread(
+            query_llm,
+            [{"role": "user", "content": verifier_prompt}],
+            "Sos el verificador crítico de Algedi Architect. Buscás falsos positivos de IA y evidencia insuficiente. Respondés sólo JSON válido.",
+        )
+        review = parsear_json(raw_review.strip())
+        if not isinstance(review, dict):
+            raise ValueError("el verificador no devolvió un objeto")
+    except Exception as exc:
+        raise HTTPException(502, f"No se pudo verificar Architect: {exc}")
+    review["suggested_route"] = _normalize_architect_route(
+        review.get("suggested_route") or classification
+    )
+    for key in ("findings", "evidence_gaps", "required_changes"):
+        review[key] = _solve_list(review.get(key))
+    if review.get("verdict") not in {"viable", "viable_with_changes", "not_viable"}:
+        review["verdict"] = "not_viable"
+    if invalid_markers:
+        review["verdict"] = "viable_with_changes"
+        review["findings"].append({
+            "severity": "high",
+            "finding": "El planificador intentó usar evidencia inexistente.",
+            "action": "Las citas inválidas se retiraron; validar la afirmación antes de aprobar.",
+        })
+
+    result = {
+        "version": "architect-pilot-v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "inputs": inputs,
+        "classification": classification,
+        "classification_label": ARCHITECT_ROUTES[classification],
+        "problem_understanding": plan.get("problem_understanding") or "",
+        "trace": plan["trace"],
+        "assumptions": plan["assumptions"],
+        "alternatives": plan["alternatives"],
+        "matrix": plan["matrix"],
+        "recommendation": plan["recommendation"],
+        "missing_information": plan["missing_information"],
+        "pilot": plan["pilot"],
+        "critical_review": review,
+        "evidence_mode": "chunks" if evidence_sufficient else "general",
+        "citations": citations,
+        "citation_audit": {
+            "valid_markers": sorted(valid_markers),
+            "referenced_markers": referenced_markers,
+            "invalid_markers": invalid_markers,
+        },
+        "human_review": {"status": "pending", "note": ""},
+    }
+    # ── Architect e Issue son la MISMA cosa ────────────────────────────────
+    # Antes Architect devolvía el análisis y se perdía al cerrar el panel, mientras
+    # Issue guardaba expedientes que Architect nunca había creado: dos módulos que
+    # hacían lo mismo sobre objetos distintos. Ahora la corrida se persiste como
+    # nodo de expediente, con el mismo contrato que consume el módulo Issue
+    # (`Node.solve` + `is_issue`). Por eso la pestaña Expedientes las encuentra.
+    import hashlib as _hashlib
+    huella = _hashlib.sha256(
+        f"{inputs.get('case_name','')}|{problem}".encode("utf-8")
+    ).hexdigest()[:20]
+    expediente_id = f"arq_{huella}"
+
+    existente = (await db.execute(
+        select(Node).where(Node.id == expediente_id)
+    )).scalar_one_or_none()
+
+    if existente is not None:
+        # Reanálisis del mismo caso: se conserva la decisión humana ya registrada.
+        # Pisarla obligaría a volver a aprobar algo que la persona ya aprobó.
+        previa = (existente.solve or {}).get("human_review")
+        if isinstance(previa, dict) and previa.get("status") not in (None, "pending"):
+            result["human_review"] = previa
+        existente.solve = result
+        existente.label = inputs.get("case_name") or existente.label
+        existente.desc = result.get("problem_understanding") or existente.desc
+    else:
+        db.add(Node(
+            id=expediente_id,
+            label=inputs.get("case_name") or "Caso sin título",
+            type="EXPEDIENTE",
+            desc=result.get("problem_understanding") or problem[:600],
+            fragmento=problem[:1200],
+            dominio=(citations[0].get("dominio") if citations else None) or "personal",
+            fuente="architect",
+            is_issue=True,
+            solve=result,
+        ))
+
+    result["expediente_id"] = expediente_id
+
+    db.add(AuditLog(
+        query=search_query[:2000],
+        agent_mode="ARCHITECT_PILOT",
+        node_ids_consulted=[citation["node_id"] for citation in citations],
+        response=json.dumps({
+            "classification": classification,
+            "verdict": review.get("verdict"),
+            "expediente_id": expediente_id,
+        }, ensure_ascii=False)[:2000],
+    ))
+    await db.commit()
+    return result
+
+
+@app.post("/api/issues/{issue_id}/solve")
+async def solve_issue(
+    issue_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Convierte un Issue en una propuesta implementable, trazable y revisable.
+
+    El planificador propone alternativas y un segundo agente actúa como verificador
+    crítico. La investigación web autónoma queda fuera de este MVP: sólo se atribuye
+    evidencia a pasajes realmente recuperados de la biblioteca.
+    """
+    issue = (await db.execute(
+        select(Node).where(Node.id == issue_id, Node.is_issue == True)
+    )).scalar_one_or_none()
+    if issue is None:
+        raise HTTPException(404, "No se encontró el problema")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    objective = str(body.get("objective") or "").strip()[:2000]
+    constraints = str(body.get("constraints") or "").strip()[:3000]
+    available_data = str(body.get("available_data") or "").strip()[:2000]
+    problem = (issue.desc or issue.fragmento or issue.label or "").strip()
+    search_query = "\n".join(filter(None, [issue.label, problem, objective, constraints]))
+
+    chunks = await _chunks_relevantes_scored(search_query, max_n=10, db=db)
+    evidence_sufficient = bool(chunks and chunks[0]["sim"] >= AGENT_VETO_UMBRAL)
+    citations = []
+    evidence_lines = []
+    if evidence_sufficient:
+        for index, chunk in enumerate(chunks, 1):
+            marker = f"C{index}"
+            location = f", página {chunk['page']}" if chunk.get("page") else ""
+            evidence_lines.append(
+                f"[{marker}] {chunk['label']}{location}: {chunk['content']}"
+            )
+            citations.append({
+                "marker": marker,
+                "chunk_id": chunk["id"],
+                "node_id": chunk["node_id"],
+                "label": chunk["label"],
+                "page": chunk.get("page"),
+                "excerpt": chunk["content"][:360],
+                "sim": round(chunk["sim"], 2),
+                "fuente_url": chunk.get("fuente_url"),
+            })
+    evidence_context = "\n\n".join(evidence_lines) or (
+        "No hay pasajes con afinidad suficiente. Podés usar conocimiento general, "
+        "pero no lo presentes como evidencia de la biblioteca."
+    )
+
+    current_flow = json.dumps(issue.flujograma or {}, ensure_ascii=False)
+    planner_prompt = f"""PROBLEMA
+Título: {issue.label}
+Descripción: {problem}
+Objetivo declarado: {objective or '(no declarado)'}
+Datos disponibles: {available_data or '(no declarados)'}
+Restricciones: {constraints or '(no declaradas)'}
+Proceso actual: {current_flow}
+
+EVIDENCIA RECUPERADA
+{evidence_context}
+
+Proponé una solución implementable. Cuando una afirmación se apoye en evidencia, usá
+el marcador exacto [C1], [C2], etc. No inventes fuentes. Si completás con conocimiento
+general, indicá "conocimiento general" en el campo fundamento.
+
+Devolvé SOLO JSON válido con esta estructura:
+{{
+  "problem_understanding": "síntesis del problema y causa probable",
+  "assumptions": ["supuesto a validar"],
+  "alternatives": [
+    {{"id":"A1","title":"...","description":"...","pros":["..."],"cons":["..."],"foundation":"texto con [C1] o conocimiento general"}}
+  ],
+  "recommendation": {{"alternative_id":"A1","why":"...","conditions":["..."]}},
+  "future_process": {{
+    "steps":[{{"id":"f1","label":"...","type":"start|step|decision|end"}}],
+    "connections":[{{"source":"f1","target":"f2","condition":""}}]
+  }},
+  "roadmap": [{{"phase":"...","actions":["..."],"exit_criteria":["..."]}}],
+  "risks": [{{"risk":"...","probability":"low|medium|high","impact":"low|medium|high","mitigation":"..."}}],
+  "kpis": [{{"name":"...","definition":"...","measurement":"...","target":"a definir con línea base"}}],
+  "missing_information": ["dato necesario"]
+}}
+Reglas: generá 2 o 3 alternativas; no inventes costos, métricas base ni resultados; el
+roadmap debe empezar con una validación pequeña; español; sólo JSON."""
+
+    try:
+        import asyncio
+        from processor import parsear_json, query_llm
+        raw_plan = await asyncio.to_thread(
+            query_llm,
+            [{"role": "user", "content": planner_prompt}],
+            "Sos el planificador de Algedi Solve. Proponés soluciones concretas, trazables y verificables. Respondés sólo JSON válido.",
+        )
+        plan = parsear_json(raw_plan.strip())
+        if not isinstance(plan, dict):
+            raise ValueError("el planificador no devolvió un objeto")
+    except Exception as exc:
+        raise HTTPException(502, f"No se pudo generar la solución: {exc}")
+
+    # Contrato estable aunque el modelo omita campos opcionales.
+    for key in ("assumptions", "alternatives", "roadmap", "risks", "kpis", "missing_information"):
+        plan[key] = _solve_list(plan.get(key))
+    if len(plan["alternatives"]) < 2:
+        raise HTTPException(502, "El planificador no produjo al menos dos alternativas")
+    plan["alternatives"] = plan["alternatives"][:3]
+    if not isinstance(plan.get("recommendation"), dict):
+        plan["recommendation"] = {}
+    if not isinstance(plan.get("future_process"), dict):
+        plan["future_process"] = {"steps": [], "connections": []}
+
+    valid_markers = {citation["marker"] for citation in citations}
+    referenced_markers = sorted(set(re.findall(
+        r"\[C(\d+)\]", json.dumps(plan, ensure_ascii=False)
+    )))
+    referenced_markers = [f"C{number}" for number in referenced_markers]
+    plan, invalid_markers = _sanitize_solve_citations(plan, valid_markers)
+
+    verifier_prompt = f"""Actuá como verificador independiente. Revisá el plan contra el
+problema, objetivo, restricciones y evidencia. Una cita sólo es válida si su marcador existe.
+No propongas una cuarta solución; detectá fallas y elegí entre las alternativas existentes.
+
+PROBLEMA: {problem}
+OBJETIVO: {objective or '(no declarado)'}
+RESTRICCIONES: {constraints or '(no declaradas)'}
+MARCADORES VÁLIDOS: {', '.join(c['marker'] for c in citations) or '(ninguno)'}
+MARCADORES INVÁLIDOS DETECTADOS Y RETIRADOS: {', '.join(invalid_markers) or '(ninguno)'}
+PLAN: {json.dumps(plan, ensure_ascii=False)}
+
+Devolvé SOLO JSON:
+{{"verdict":"viable|viable_with_changes|not_viable",
+  "recommended_alternative_id":"A1",
+  "findings":[{{"severity":"low|medium|high","finding":"...","action":"..."}}],
+  "evidence_gaps":["..."],
+  "required_changes":["..."]}}"""
+    try:
+        raw_review = await asyncio.to_thread(
+            query_llm,
+            [{"role": "user", "content": verifier_prompt}],
+            "Sos el agente crítico de Algedi Solve. Verificás viabilidad, restricciones y evidencia. Respondés sólo JSON válido.",
+        )
+        critical_review = parsear_json(raw_review.strip())
+        if not isinstance(critical_review, dict):
+            raise ValueError("el verificador no devolvió un objeto")
+    except Exception as exc:
+        raise HTTPException(502, f"No se pudo verificar la solución: {exc}")
+    critical_review["findings"] = _solve_list(critical_review.get("findings"))
+    critical_review["evidence_gaps"] = _solve_list(critical_review.get("evidence_gaps"))
+    critical_review["required_changes"] = _solve_list(critical_review.get("required_changes"))
+    if critical_review.get("verdict") not in {"viable", "viable_with_changes", "not_viable"}:
+        critical_review["verdict"] = "not_viable"
+    if invalid_markers:
+        critical_review["verdict"] = "viable_with_changes"
+        critical_review["findings"].append({
+            "severity": "high",
+            "finding": "El planificador intentó usar marcadores de evidencia inexistentes.",
+            "action": "Las citas inválidas fueron retiradas; revisar esas afirmaciones antes de aprobar.",
+        })
+
+    now = datetime.now(timezone.utc).isoformat()
+    result = {
+        "version": "solve-mvp-v1",
+        "generated_at": now,
+        "inputs": {
+            "objective": objective,
+            "constraints": constraints,
+            "available_data": available_data,
+        },
+        "problem_understanding": plan.get("problem_understanding") or "",
+        "assumptions": plan["assumptions"],
+        "alternatives": plan["alternatives"],
+        "recommendation": plan["recommendation"],
+        "future_process": plan["future_process"],
+        "roadmap": plan["roadmap"],
+        "risks": plan["risks"],
+        "kpis": plan["kpis"],
+        "missing_information": plan["missing_information"],
+        "critical_review": critical_review,
+        "evidence_mode": "chunks" if evidence_sufficient else "general",
+        "citations": citations,
+        "citation_audit": {
+            "valid_markers": sorted(valid_markers),
+            "referenced_markers": referenced_markers,
+            "invalid_markers": invalid_markers,
+        },
+        "human_review": {"status": "pending", "note": "", "updated_at": None, "history": []},
+    }
+    issue.solve = result
+    db.add(AuditLog(
+        query=search_query[:2000],
+        agent_mode="SOLVE_MVP",
+        node_ids_consulted=[citation["node_id"] for citation in citations],
+        response=json.dumps({
+            "verdict": critical_review.get("verdict"),
+            "recommendation": plan["recommendation"],
+        }, ensure_ascii=False)[:2000],
+    ))
+    await db.commit()
+    return result
+
+
+@app.patch("/api/issues/{issue_id}/solve/review")
+async def review_solve(
+    issue_id: str,
+    review: SolveReview,
+    db: AsyncSession = Depends(get_async_session),
+):
+    decision = review.decision.strip().lower()
+    if decision not in {"approved", "revision_requested"}:
+        raise HTTPException(400, "La decisión debe ser approved o revision_requested")
+    note = review.note.strip()[:4000]
+    if decision == "revision_requested" and not note:
+        raise HTTPException(400, "Indicá qué debe corregirse")
+
+    issue = (await db.execute(
+        select(Node).where(Node.id == issue_id, Node.is_issue == True)
+    )).scalar_one_or_none()
+    if issue is None or not isinstance(issue.solve, dict):
+        raise HTTPException(404, "El problema todavía no tiene una solución")
+
+    updated = dict(issue.solve)
+    previous = updated.get("human_review") if isinstance(updated.get("human_review"), dict) else {}
+    history = list(previous.get("history") or [])
+    event = {
+        "status": decision,
+        "note": note,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    history.append(event)
+    updated["human_review"] = {**event, "history": history[-20:]}
+    issue.solve = updated
+    db.add(AuditLog(
+        query=note or decision,
+        agent_mode="SOLVE_HUMAN_REVIEW",
+        node_ids_consulted=[issue_id],
+        response=decision,
+    ))
+    await db.commit()
+    return updated
 
 
 # ── Procesos (inteligencia de procesos, fundada en el grafo) ──────────
@@ -1272,7 +2327,7 @@ def _ingest_playlist(url: str, skip_umap: bool = False, seccion: str = "personal
             _ingest = {"state": "error",
                        "message": "No se pudieron leer videos de la playlist (¿es pública?)",
                        "label": "", "progress": 0}
-        return
+        return False
     a_cargar = videos_all[:PLAYLIST_LIMIT]
     n = len(a_cargar)
     ok = 0
@@ -1284,7 +2339,9 @@ def _ingest_playlist(url: str, skip_umap: bool = False, seccion: str = "personal
             resultado = procesar_youtube(v["url"], title_hint=v.get("title"), author_hint=v.get("channel"))
             for nodo in resultado.get("nodos", []):
                 nodo["dominio"] = seccion or "personal"
-                _save_node_sync(nodo)
+                node_chunks = [c for c in resultado.get("chunks", [])
+                               if c.get("node_id") == nodo["id"]]
+                _save_node_sync(nodo, node_chunks)
                 ok += 1
         except Exception as e:
             print(f"Error en video {v['url']}: {e}")
@@ -1301,17 +2358,22 @@ def _ingest_playlist(url: str, skip_umap: bool = False, seccion: str = "personal
         msg = f"{ok} de {total} videos de la playlist incorporados."
     with _ingest_lock:
         _ingest = {"state": "done", "message": msg, "label": "Playlist", "progress": 100}
+    return ok > 0
 
 
 def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"):
     global _ingest
+    _INGEST_GATE.acquire()   # una ingesta a la vez (manual o del vault)
     try:
+        with _ingest_lock:
+            _ingest.update({"state": "processing", "message": "Iniciando…",
+                            "label": (entrada[:60] if entrada.startswith("http")
+                                      else Path(entrada).name),
+                            "progress": 5})
         # Playlist de YouTube → un nodo por video (camino propio, sale temprano).
         if entrada.startswith("http") and _es_playlist_youtube(entrada):
-            _ingest_playlist(entrada, skip_umap, seccion)
-            return
+            return _ingest_playlist(entrada, skip_umap, seccion)
         from processor import (
-            acumular_resultado,
             procesar_excel,
             procesar_html,
             procesar_pdf,
@@ -1369,8 +2431,9 @@ def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"
         _stop_ticker.set()
         _set_progress(60, "Generando embeddings…")
 
-        # Acumular solo para contexto de rich_html (fusiona con JSON si existe)
-        acumulado = acumular_resultado(resultado)
+        # El resultado todavía no se guarda: así evitamos recalcular todas las aristas
+        # dos veces. Se persiste una sola vez después de agregar el rich_html.
+        acumulado = resultado
 
         _set_progress(75, "Generando apunte IA…")
         try:
@@ -1387,7 +2450,11 @@ def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"
         # Guardar cada nodo en PostgreSQL, etiquetado con la sección activa.
         for nodo in resultado.get("nodos", []):
             nodo["dominio"] = seccion or "personal"
-            _save_node_sync(nodo)
+            node_chunks = [c for c in resultado.get("chunks", [])
+                           if c.get("node_id") == nodo["id"]]
+            _save_node_sync(nodo, node_chunks if "chunks" in resultado else None)
+        from processor import asignar_temas_pendientes
+        asignar_temas_pendientes()
 
         if not skip_umap:
             _set_progress(85, "Calculando posición 3D (UMAP)…")
@@ -1401,10 +2468,14 @@ def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"
         msg = f'"{label}" guardado.' if skip_umap else f'"{label}" incorporado al grafo.'
         with _ingest_lock:
             _ingest = {"state": "done", "message": msg, "label": label, "progress": 100}
+        return True
 
     except Exception as exc:
         with _ingest_lock:
             _ingest = {"state": "error", "message": str(exc), "label": "", "progress": 0}
+        return False
+    finally:
+        _INGEST_GATE.release()
 
 
 @app.post("/api/ingest")
@@ -1415,21 +2486,23 @@ async def ingest(
     skip_umap: bool = Form(default=False),
     seccion: str = Form(default="personal"),
 ):
+    global _ingest_source
     seccion = (seccion or "personal").strip() or "personal"
     with _ingest_lock:
         if _ingest["state"] == "processing":
             raise HTTPException(409, "Ya hay una ingesta en progreso")
         _ingest.update({"state": "processing", "message": "Iniciando…", "label": "", "progress": 5})
+    _ingest_source = "user"
 
     entradas = []
     if file and file.filename:
-        safe_name = Path(file.filename).name
-        if not safe_name or safe_name.startswith("."):
-            raise HTTPException(400, "Nombre de archivo inválido")
-        save_path = UPLOADS / safe_name
-        content = await file.read()
-        save_path.write_bytes(content)
-        entradas.append(str(save_path))
+        try:
+            save_path = await _save_upload(file, INGEST_EXTENSIONS)
+            entradas.append(str(save_path))
+        except HTTPException:
+            with _ingest_lock:
+                _ingest.update({"state": "idle", "message": "", "label": "", "progress": 0})
+            raise
     elif url and url.strip():
         raw_urls = re.split(r"[,\n]+", url)
         entradas = [u.strip() for u in raw_urls if u.strip().startswith("http")]
@@ -1473,6 +2546,38 @@ def get_ingest_status():
         return dict(_ingest)
 
 
+# ── Vault: Ingesta Continua (carpeta mágica) ──────────────────────────
+
+@app.get("/api/vault/status")
+def vault_status():
+    import vault_watcher
+    w = vault_watcher.get()
+    if w is None:
+        return {"enabled": False, "available": False, "folder": str(VAULT),
+                "count": 0, "queued": 0, "state": "idle", "label": ""}
+    st = w.status()
+    # Si la ingesta en curso la disparó el vault, exponemos su progreso en vivo
+    # para que el badge del front muestre la barra sin depender del panel de subida.
+    if _ingest_source == "vault":
+        with _ingest_lock:
+            st["progress"] = _ingest.get("progress", 0)
+            st["message"] = _ingest.get("message", "")
+            if _ingest.get("state") == "processing":
+                st["state"] = "processing"
+                st["label"] = _ingest.get("label") or st.get("label", "")
+    return st
+
+
+@app.post("/api/vault/rescan")
+def vault_rescan():
+    import vault_watcher
+    w = vault_watcher.get()
+    if w is None:
+        raise HTTPException(400, "La Ingesta Continua no está activa")
+    threading.Thread(target=w.rescan, daemon=True).start()
+    return {"ok": True}
+
+
 # ── Issue module ──────────────────────────────────────────────────────
 
 def _run_issue(descripcion: str, ref_url: str = None, filepath: str = None):
@@ -1484,11 +2589,11 @@ def _run_issue(descripcion: str, ref_url: str = None, filepath: str = None):
             with _issue_lock:
                 _issue_state.update({"progress": 15, "message": "Obteniendo contenido de la URL…"})
             try:
-                import httpx
+                from security_utils import safe_http_get
                 headers = {"User-Agent": "Mozilla/5.0 (compatible; Algedi/1.0)"}
-                with httpx.Client(timeout=20.0, follow_redirects=True) as c:
-                    resp = c.get(ref_url, headers=headers)
-                    url_text = _extraer_texto_html(resp.text)[:3000]
+                resp = safe_http_get(ref_url, timeout=20.0, headers=headers)
+                resp.raise_for_status()
+                url_text = _extraer_texto_html(resp.text)[:3000]
                 descripcion = f"{descripcion}\n\nContenido de referencia ({ref_url}):\n{url_text}"
             except Exception as e:
                 print(f"Warning: URL fetch failed: {e}")
@@ -1529,6 +2634,7 @@ def _run_issue(descripcion: str, ref_url: str = None, filepath: str = None):
         with get_sync_session() as s:
             all_nodes = s.query(NodeModel).filter(
                 NodeModel.is_centroid == False,
+                NodeModel.is_issue == False,
                 NodeModel.embedding.isnot(None),
             ).all()
             try:
@@ -1685,11 +2791,13 @@ async def create_issue(
 
     filepath = None
     if file and file.filename:
-        safe_name = Path(file.filename).name
-        save_path = UPLOADS / safe_name
-        content = await file.read()
-        save_path.write_bytes(content)
-        filepath = str(save_path)
+        try:
+            filepath = str(await _save_upload(file, ISSUE_EXTENSIONS))
+        except HTTPException:
+            with _issue_lock:
+                _issue_state.update({"state": "idle", "message": "", "progress": 0,
+                                     "result": None})
+            raise
 
     ref_url = url.strip() if url and url.strip() else None
     background_tasks.add_task(_run_issue, descripcion, ref_url, filepath)

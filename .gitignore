@@ -12,6 +12,7 @@ frontend/.npm/
 
 # Archivos de la base de datos y subidas (no subir el contenido del usuario)
 uploads/
+vault/
 nodes_generated.json
 edges_generated.json
 *.sqlite3
@@ -27,3 +28,21 @@ Thumbs.db
 # Artefactos / temporales
 *.zip
 test_vigilados.pdf
+# Copias de seguridad del entorno: CONTIENEN CREDENCIALES.
+# El patron .env de arriba no cubre .env.bak-*, .env.local, etc.
+.env.*
+!.env.example
+
+# Capturas de verificacion y previews generados durante la preparacion de
+# entregables. Se regeneran; no son fuente.
+canvas_final-*
+canvas_check*
+canvas_risk_check*
+deck_final-*
+deck_check*
+notas_final-*
+notas_preview-*
+notes_risk_check*
+architect_preview.png
+pptx_preview/
+course_extract/

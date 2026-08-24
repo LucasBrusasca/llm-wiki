@@ -100,7 +100,16 @@ Respondé en base a esta información. Usá los datos que tenés. Respondé en e
         body: JSON.stringify({ system: systemPrompt, messages: history }),
       });
       const data = await res.json();
-      patchActive(c => ({ ...c, msgs: [...c.msgs, { role: 'assistant', text: data.reply || 'Sin respuesta.', veto: !!data.veto, sim: data.max_sim, fundamentos: data.fundamentos || [] }] }));
+      patchActive(c => ({ ...c, msgs: [...c.msgs, {
+        role: 'assistant',
+        text: data.reply || 'Sin respuesta.',
+        veto: !!data.veto,
+        sim: data.max_sim,
+        fundamentos: data.fundamentos || [],
+        citations: data.citations || [],
+        generalKnowledge: !!data.general_knowledge,
+        evidenceMode: data.evidence_mode,
+      }] }));
       if (data.nodos_relevantes?.length) onHighlight(data.nodos_relevantes);
     } catch {
       patchActive(c => ({ ...c, msgs: [...c.msgs, { role: 'assistant', text: 'Error al conectar con el agente.' }] }));
@@ -171,6 +180,31 @@ Respondé en base a esta información. Usá los datos que tenés. Respondé en e
                     </div>
                   );
                 })}
+              </div>
+            )}
+            {m.role === 'assistant' && m.citations?.length > 0 && (
+              <div className="agent-fund">
+                <div className="agent-fund-head">▣ Pasajes citados</div>
+                {m.citations.map(citation => {
+                  const nodo = allNodes?.find(n => n.id === citation.node_id);
+                  return (
+                    <div key={citation.chunk_id} className="agent-fund-item"
+                      onClick={() => nodo && onNavigate?.(nodo)}>
+                      <span className="agent-fund-aff">[{citation.marker}]</span>
+                      <span className="agent-fund-label">
+                        {citation.label}{citation.page ? ` · pág. ${citation.page}` : ''}
+                        <small style={{ display: 'block', opacity: 0.7, marginTop: 3 }}>
+                          {citation.excerpt}
+                        </small>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {m.role === 'assistant' && m.generalKnowledge && (
+              <div className="agent-msg-afinidad">
+                conocimiento general · sin respaldo suficiente en la biblioteca
               </div>
             )}
             {m.role === 'assistant' && typeof m.sim === 'number' && !m.veto && (

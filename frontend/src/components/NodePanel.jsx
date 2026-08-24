@@ -167,7 +167,8 @@ function RichPreviewModal({ node, html, onClose }) {
           </div>
         </div>
         <iframe srcDoc={html} title={`Apunte: ${node.label}`}
-          sandbox="allow-same-origin allow-scripts"
+          sandbox=""
+          referrerPolicy="no-referrer"
           style={{ flex: 1, border: 'none', background: '#f5f1e8' }} />
       </div>
     </div>
