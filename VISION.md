@@ -1,5 +1,8 @@
 # Algedi — Visión y Concepto Central
 
+> **Documento histórico de concepto.** La definición canónica y actual de producto,
+> arquitectura, MVP y roadmap está en [`PLAN_PRODUCTO_ALGEDI.md`](PLAN_PRODUCTO_ALGEDI.md).
+
 > *Knowledge isn't lost in storage. It's lost in the drift between a symbol and its meaning.*
 > **Algedi is the mechanism that snaps it back — and lets you act on it.**
 

@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Algedi Architect — Laboratorio de decisión</title>
+  <style>
+    :root {
+      --paper: #eef2f5;
+      --paper-2: #f9fbfc;
+      --ink: #0b172a;
+      --ink-2: #1d2a40;
+      --muted: #66748a;
+      --line: #cbd5e1;
+      --cyan: #16b9df;
+      --cyan-dark: #0e7490;
+      --amber: #f2a93b;
+      --mint: #2bc48a;
+      --coral: #e34b69;
+      --violet: #7c6aef;
+      --shadow: 0 18px 50px rgba(11, 23, 42, .12);
+      --display: Cambria, Georgia, serif;
+      --body: Aptos, "Segoe UI", sans-serif;
+      --mono: "Cascadia Mono", Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: var(--body);
+      background-color: var(--paper);
+      background-image:
+        linear-gradient(rgba(14, 116, 144, .055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(14, 116, 144, .055) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+
+    button, select, textarea, input { font: inherit; }
+    button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible {
+      outline: 3px solid rgba(22, 185, 223, .35);
+      outline-offset: 3px;
+    }
+
+    .shell { width: min(1460px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 50px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 28px; }
+    .brand { display: flex; gap: 13px; align-items: center; font-family: var(--mono); font-weight: 700; letter-spacing: .12em; font-size: .78rem; }
+    .mark { width: 36px; height: 36px; border: 2px solid var(--cyan-dark); transform: rotate(30deg); display: grid; place-items: center; background: var(--paper-2); }
+    .mark::after { content: "A"; transform: rotate(-30deg); color: var(--cyan-dark); font-size: .82rem; }
+    .status { display: inline-flex; align-items: center; gap: 9px; padding: 8px 12px; border: 1px solid var(--line); background: rgba(249, 251, 252, .86); font-family: var(--mono); font-size: .72rem; color: var(--muted); }
+    .status i { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 5px rgba(242, 169, 59, .15); }
+
+    .hero { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(320px, .7fr); gap: 42px; align-items: end; margin: 42px 0 32px; }
+    .eyebrow { font-family: var(--mono); font-size: .72rem; letter-spacing: .18em; color: var(--cyan-dark); font-weight: 800; text-transform: uppercase; }
+    h1 { margin: 12px 0 16px; font-family: var(--display); font-size: clamp(2.7rem, 5.2vw, 5.7rem); line-height: .96; letter-spacing: -.035em; max-width: 980px; }
+    .hero p { max-width: 760px; margin: 0; font-size: clamp(1rem, 1.3vw, 1.25rem); color: var(--muted); line-height: 1.55; }
+    .thesis { border-left: 4px solid var(--coral); padding: 10px 0 10px 22px; font-family: var(--display); font-size: 1.4rem; line-height: 1.35; }
+    .thesis small { display: block; margin-top: 8px; font-family: var(--mono); font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+
+    .workbench { display: grid; grid-template-columns: minmax(290px, .78fr) minmax(500px, 1.45fr) minmax(320px, .88fr); min-height: 660px; background: var(--paper-2); border: 1px solid #bcc8d6; box-shadow: var(--shadow); overflow: hidden; }
+    .panel { padding: 26px; min-width: 0; }
+    .panel + .panel { border-left: 1px solid var(--line); }
+    .panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 22px; }
+    .panel-head h2 { font-family: var(--display); font-size: 1.45rem; margin: 0; }
+    .panel-no { font-family: var(--mono); color: var(--cyan-dark); font-size: .72rem; }
+
+    .preset-row { margin-bottom: 22px; }
+    label { display: block; font-family: var(--mono); text-transform: uppercase; font-size: .65rem; font-weight: 800; letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; }
+    select { width: 100%; padding: 11px 38px 11px 12px; color: var(--ink); border: 1px solid var(--line); background: white; }
+    textarea, input[type="text"] { width: 100%; padding: 10px 11px; color: var(--ink); border: 1px solid var(--line); background: white; resize: vertical; line-height: 1.35; }
+    textarea { min-height: 66px; }
+    .field { margin: 0 0 13px; }
+    .field.compact textarea { min-height: 52px; }
+    .analyze { width: 100%; border: 0; padding: 13px 14px; background: var(--ink); color: white; cursor: pointer; font-weight: 800; }
+    .analyze:disabled { opacity: .55; cursor: wait; }
+    .runtime { margin-top: 10px; min-height: 36px; color: var(--muted); font-family: var(--mono); font-size: .66rem; line-height: 1.45; }
+    .runtime.error { color: #a32942; }
+    .question { padding: 15px 0; border-top: 1px solid #dbe2ea; }
+    .question:first-of-type { border-top: 0; }
+    .question-title { font-weight: 760; font-size: .94rem; line-height: 1.3; margin-bottom: 10px; }
+    .segmented { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    .segmented.three { grid-template-columns: repeat(3, 1fr); }
+    .choice { position: relative; }
+    .choice input { position: absolute; opacity: 0; pointer-events: none; }
+    .choice span { display: grid; place-items: center; min-height: 38px; padding: 7px 8px; border: 1px solid var(--line); background: white; color: var(--muted); font-size: .78rem; text-align: center; cursor: pointer; transition: 160ms ease; }
+    .choice input:checked + span { border-color: var(--ink); background: var(--ink); color: white; transform: translateY(-1px); }
+    .choice input:focus-visible + span { outline: 3px solid rgba(22, 185, 223, .35); outline-offset: 2px; }
+
+    .map-panel { position: relative; background: #0b172a; color: white; overflow: hidden; }
+    .map-panel::before { content: ""; position: absolute; inset: 0; opacity: .16; background-image: radial-gradient(circle, #7c8da6 1px, transparent 1px); background-size: 18px 18px; }
+    .map-panel > * { position: relative; z-index: 1; }
+    .map-panel .panel-head h2 { color: white; }
+    .map-panel .panel-no { color: var(--cyan); }
+    .map { position: relative; height: 520px; margin-top: 12px; }
+    .trunk { position: absolute; left: 15%; top: 50%; width: 35%; height: 2px; background: #4b5d78; transform-origin: left center; }
+    .origin { position: absolute; left: 2%; top: calc(50% - 47px); width: 124px; height: 94px; border: 1px solid #53637d; background: #152238; display: grid; place-items: center; text-align: center; font-family: var(--mono); font-size: .72rem; }
+    .gate { position: absolute; left: 41%; top: calc(50% - 64px); width: 128px; height: 128px; background: #123b53; border: 2px solid var(--cyan); clip-path: polygon(25% 7%, 75% 7%, 100% 50%, 75% 93%, 25% 93%, 0 50%); display: grid; place-items: center; text-align: center; font-family: var(--mono); font-size: .72rem; font-weight: 800; letter-spacing: .05em; }
+    .route-lines { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+    .route-lines path { fill: none; stroke: #344760; stroke-width: 2; vector-effect: non-scaling-stroke; transition: 240ms ease; }
+    .route-lines path.active { stroke: var(--route-color, var(--cyan)); stroke-width: 5; filter: drop-shadow(0 0 6px var(--route-color, var(--cyan))); stroke-dasharray: 10 8; animation: route 1.2s linear infinite; }
+    .outputs { position: absolute; right: 0; top: 10px; bottom: 10px; width: 38%; display: grid; grid-template-rows: repeat(6, 1fr); gap: 8px; }
+    .output { --tone: #7c8da6; position: relative; border: 1px solid #43546e; background: #142137; color: #aab7ca; padding: 10px 12px 10px 42px; text-align: left; cursor: default; transition: 180ms ease; }
+    .output::before { content: ""; position: absolute; left: 14px; top: 50%; translate: 0 -50%; width: 14px; height: 14px; border-radius: 50%; background: var(--tone); box-shadow: 0 0 0 5px color-mix(in srgb, var(--tone) 20%, transparent); }
+    .output strong { display: block; color: white; font-size: .88rem; }
+    .output small { font-family: var(--mono); font-size: .62rem; }
+    .output.active { border-color: var(--tone); transform: translateX(-10px); background: color-mix(in srgb, var(--tone) 18%, #142137); box-shadow: 0 8px 28px rgba(0,0,0,.25); }
+    .output[data-result="redesign"] { --tone: var(--amber); }
+    .output[data-result="rules"] { --tone: var(--mint); }
+    .output[data-result="data"] { --tone: var(--cyan); }
+    .output[data-result="assistive"] { --tone: var(--violet); }
+    .output[data-result="agent"] { --tone: var(--coral); }
+    .output[data-result="none"] { --tone: #98a6ba; }
+
+    .result-strip { position: absolute; left: 2%; bottom: 2px; width: 58%; border-top: 1px solid #43546e; padding-top: 15px; }
+    .result-strip span { font-family: var(--mono); color: var(--cyan); font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; }
+    .result-strip strong { display: block; margin-top: 6px; font-family: var(--display); font-size: 1.35rem; }
+
+    .dossier { background: #f5f7fa; }
+    .decision-class { display: flex; align-items: center; gap: 12px; margin: 8px 0 20px; }
+    .decision-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 0 6px rgba(22, 185, 223, .14); }
+    .decision-class strong { font-family: var(--display); font-size: 1.35rem; }
+    .trace { list-style: none; padding: 0; margin: 0 0 22px; counter-reset: trace; }
+    .trace li { position: relative; padding: 0 0 16px 28px; color: var(--muted); font-size: .82rem; line-height: 1.45; }
+    .trace li::before { counter-increment: trace; content: counter(trace); position: absolute; left: 0; top: 0; width: 18px; height: 18px; display: grid; place-items: center; border: 1px solid var(--line); background: white; font-family: var(--mono); font-size: .6rem; color: var(--ink); }
+    .objection { border: 1px solid #f2bac5; background: #fff1f4; padding: 15px; margin-bottom: 18px; }
+    .objection b { display: block; color: #9e2943; font-family: var(--mono); font-size: .66rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 7px; }
+    .objection p { margin: 0; color: #6f3441; font-size: .82rem; line-height: 1.45; }
+    .actions { display: grid; gap: 8px; }
+    .actions button { border: 1px solid var(--ink); padding: 11px 12px; background: transparent; color: var(--ink); cursor: pointer; font-weight: 750; }
+    .actions button.primary { background: var(--ink); color: white; }
+    .actions button:hover { transform: translateY(-1px); }
+    .actions button:disabled, .download:disabled { opacity: .42; cursor: not-allowed; transform: none; }
+    .decision-log { min-height: 46px; margin-top: 12px; padding: 10px; border: 1px dashed #b7c2d0; color: var(--muted); font-family: var(--mono); font-size: .67rem; line-height: 1.5; }
+    .download { width: 100%; margin-top: 10px; border: 0; background: transparent; color: var(--cyan-dark); padding: 9px; cursor: pointer; font-family: var(--mono); font-size: .68rem; text-decoration: underline; text-underline-offset: 4px; }
+    .meta-line { margin: -10px 0 15px; color: var(--muted); font-family: var(--mono); font-size: .65rem; }
+    details { border-top: 1px solid var(--line); padding: 11px 0; }
+    details summary { cursor: pointer; color: var(--cyan-dark); font-family: var(--mono); font-size: .67rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+    .matrix-table { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: .68rem; }
+    .matrix-table th, .matrix-table td { border: 1px solid var(--line); padding: 6px; text-align: center; }
+    .matrix-table th:first-child, .matrix-table td:first-child { text-align: left; }
+    .source-list { margin: 9px 0 0; padding-left: 18px; color: var(--muted); font-size: .7rem; line-height: 1.45; }
+
+    .evidence-note { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: start; max-width: 920px; margin: 22px auto 0; padding: 16px 18px; border: 1px solid #e6c989; background: #fff7e6; color: #70511d; }
+    .evidence-note b { font-family: var(--mono); font-size: .7rem; letter-spacing: .07em; }
+    .evidence-note p { margin: 0; font-size: .83rem; line-height: 1.5; }
+
+    @keyframes route { to { stroke-dashoffset: -18; } }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
+    @media (max-width: 1150px) {
+      .workbench { grid-template-columns: 340px 1fr; }
+      .dossier { grid-column: 1 / -1; border-left: 0 !important; border-top: 1px solid var(--line); }
+      .dossier .actions { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 780px) {
+      .shell { width: min(100% - 18px, 1460px); padding-top: 16px; }
+      .topbar { align-items: flex-start; }
+      .hero { grid-template-columns: 1fr; gap: 20px; margin-top: 28px; }
+      .workbench { display: block; }
+      .panel + .panel { border-left: 0; border-top: 1px solid var(--line); }
+      .map { height: 600px; }
+      .origin { top: 20px; left: calc(50% - 62px); }
+      .gate { top: 145px; left: calc(50% - 64px); }
+      .trunk { display: none; }
+      .route-lines { display: none; }
+      .outputs { top: 300px; width: 100%; grid-template-columns: 1fr 1fr; grid-template-rows: repeat(3, 1fr); }
+      .output.active { transform: translateY(-3px); }
+      .result-strip { left: 0; bottom: -8px; width: 100%; }
+      .dossier .actions { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="mark" aria-hidden="true"></span> ALGEDI / ARCHITECT</div>
+      <div class="status"><i id="statusDot" aria-hidden="true"></i><span id="statusText">BACKEND PENDIENTE · DECISIÓN HUMANA REQUERIDA</span></div>
+    </header>
+
+    <section class="hero">
+      <div>
+        <div class="eyebrow">Laboratorio de decisión</div>
+        <h1>Decidir antes de construir.</h1>
+        <p>Describí una necesidad. Algedi recupera evidencia, un planificador compara seis intervenciones y un segundo agente intenta refutar la recomendación antes de pedir una decisión humana.</p>
+      </div>
+      <aside class="thesis">El primer error de un proyecto de IA ocurre antes de escribir código.<small>El flujograma muestra la ruta; el expediente es el producto.</small></aside>
+    </section>
+
+    <section class="workbench" aria-label="Demostración interactiva de Architect">
+      <aside class="panel controls">
+        <div class="panel-head"><h2>Describir el caso</h2><span class="panel-no">01 / INPUT</span></div>
+        <div class="preset-row">
+          <label for="preset">Caso de ejemplo</label>
+          <select id="preset">
+            <option value="report">Reporte mensual de planillas</option>
+            <option value="tickets">Derivar tickets repetitivos</option>
+            <option value="documents">Revisar documentos con criterio</option>
+            <option value="operations">Actuar entre varios sistemas</option>
+            <option value="unclear">Pedido sin proceso definido</option>
+            <option value="lowvalue">Idea sin beneficio comprobable</option>
+          </select>
+        </div>
+        <div class="field"><label for="problem">Problema *</label><textarea id="problem"></textarea></div>
+        <div class="field compact"><label for="objective">Objetivo</label><textarea id="objective"></textarea></div>
+        <div class="field compact"><label for="currentProcess">Proceso actual</label><textarea id="currentProcess"></textarea></div>
+        <div class="field compact"><label for="availableData">Datos disponibles</label><textarea id="availableData"></textarea></div>
+        <div class="field compact"><label for="constraints">Restricciones</label><textarea id="constraints"></textarea></div>
+        <div class="field compact"><label for="expectedValue">Valor que se espera comprobar</label><textarea id="expectedValue"></textarea></div>
+        <button class="analyze" id="analyze">Analizar con Architect</button>
+        <div class="runtime" id="runtime">La selección de un ejemplo sólo completa el formulario. La ruta la decide el backend.</div>
+      </aside>
+
+      <section class="panel map-panel">
+        <div class="panel-head"><h2>Recorrer la decisión</h2><span class="panel-no">02 / ROUTE</span></div>
+        <div class="map">
+          <div class="origin">NECESIDAD<br>DE NEGOCIO</div>
+          <div class="trunk"></div>
+          <div class="gate">ARCHITECT<br><span style="color:#59d7f4">clasifica</span></div>
+          <svg class="route-lines" viewBox="0 0 700 520" preserveAspectRatio="none" aria-hidden="true">
+            <path data-route="redesign" d="M360,260 C430,260 440,45 520,45" />
+            <path data-route="rules" d="M360,260 C440,260 450,130 520,130" />
+            <path data-route="data" d="M360,260 C455,260 465,215 520,215" />
+            <path data-route="assistive" d="M360,260 C455,260 465,305 520,305" />
+            <path data-route="agent" d="M360,260 C440,260 450,390 520,390" />
+            <path data-route="none" d="M360,260 C430,260 440,475 520,475" />
+          </svg>
+          <div class="outputs">
+            <button class="output" data-result="redesign"><strong>Rediseño</strong><small>ordenar el proceso</small></button>
+            <button class="output" data-result="rules"><strong>Reglas</strong><small>automatización determinística</small></button>
+            <button class="output" data-result="data"><strong>Datos / BI</strong><small>visibilidad y calidad</small></button>
+            <button class="output" data-result="assistive"><strong>IA asistiva</strong><small>criterio con control humano</small></button>
+            <button class="output" data-result="agent"><strong>Agente</strong><small>acción delegada</small></button>
+            <button class="output" data-result="none"><strong>No implementar</strong><small>la evidencia no alcanza</small></button>
+          </div>
+          <div class="result-strip"><span>Ruta recomendada</span><strong id="routeTitle">Pendiente de análisis</strong></div>
+        </div>
+      </section>
+
+      <aside class="panel dossier">
+        <div class="panel-head"><h2>Expediente</h2><span class="panel-no">03 / RECORD</span></div>
+        <div class="decision-class"><span class="decision-dot" id="decisionDot"></span><strong id="decisionTitle">Sin expediente</strong></div>
+        <div class="meta-line" id="evidenceMode">Evidencia: pendiente</div>
+        <ol class="trace" id="trace" aria-live="polite"></ol>
+        <div class="objection"><b>Objeción del verificador</b><p id="objection">Todavía no se ejecutó el verificador independiente.</p></div>
+        <details><summary>Matriz comparativa</summary><div id="matrix">Pendiente.</div></details>
+        <details><summary>Fuentes recuperadas</summary><div id="sources">Pendiente.</div></details>
+        <div class="actions" aria-label="Decisión humana">
+          <button class="primary" data-action="Aprobado" disabled>Aprobar ruta</button>
+          <button data-action="Cambio solicitado" disabled>Pedir cambio</button>
+          <button data-action="Descartado" disabled>Descartar</button>
+        </div>
+        <div class="decision-log" id="decisionLog" aria-live="polite">Sin decisión humana registrada.</div>
+        <button class="download" id="download" disabled>Descargar expediente JSON</button>
+      </aside>
+    </section>
+
+    <aside class="evidence-note">
+      <b>NOTA DE EVIDENCIA</b>
+      <p>La clasificación se genera con dos llamadas LLM y recuperación desde la biblioteca de Algedi; el navegador sólo representa el resultado. Los valores económicos del TP siguen siendo supuestos de escenario y deben reemplazarse por mediciones del piloto.</p>
+    </aside>
+  </main>
+
+  <script>
+    const presets = {
+      report: {
+        name:'Reporte mensual',
+        problem:'Cada cierre mensual, tres analistas consolidan manualmente planillas con formatos distintos. El reporte llega tarde y aparecen diferencias entre versiones.',
+        objective:'Reducir el tiempo de consolidación y tener una única versión trazable.',
+        current_process:'Recibir archivos por correo, copiar datos, controlar fórmulas, resolver inconsistencias y publicar un informe.',
+        available_data:'Planillas históricas, diccionario parcial de campos y reportes finales.',
+        constraints:'No cambiar los sistemas de origen durante el piloto. Toda cifra publicada debe ser revisable.',
+        expected_value:'Medir horas de preparación, reprocesos y discrepancias antes y después.'
+      },
+      tickets: {
+        name:'Derivación de tickets', problem:'Los tickets repetitivos se asignan manualmente y muchos vuelven por una categoría incorrecta.', objective:'Reducir reasignaciones sin perder control sobre excepciones.', current_process:'Un operador lee el texto, elige categoría y equipo, y deriva.', available_data:'Historial de tickets, categorías, destino final y reaperturas.', constraints:'No responder al cliente ni cerrar casos automáticamente.', expected_value:'Disminuir tiempo de derivación y tasa de reasignación.'
+      },
+      documents: {
+        name:'Revisión documental', problem:'La revisión de documentos exige comparar cláusulas, antecedentes y políticas que cambian con frecuencia.', objective:'Preparar una revisión fundada para que un especialista decida.', current_process:'Lectura manual, búsqueda de antecedentes, marcado de riesgos y aprobación experta.', available_data:'Documentos, políticas vigentes y revisiones anteriores con observaciones.', constraints:'La aprobación final es humana y cada afirmación debe citar su fuente.', expected_value:'Reducir tiempo de preparación sin aumentar omisiones críticas.'
+      },
+      operations: {
+        name:'Coordinación operativa', problem:'Una incidencia obliga a consultar varios sistemas, verificar condiciones y ejecutar una secuencia de acciones repetitivas.', objective:'Delegar la preparación y, sólo con permisos acotados, algunas acciones reversibles.', current_process:'Operador detecta, consulta tres sistemas, decide, ejecuta y registra.', available_data:'Logs, procedimientos, estados de sistemas y resultados históricos.', constraints:'Sin acciones irreversibles; aprobación humana para casos de riesgo alto.', expected_value:'Reducir tiempo de resolución manteniendo incidentes y reversas bajo umbral.'
+      },
+      unclear: {
+        name:'Pedido ambiguo', problem:'La dirección pidió “poner IA” en un proceso que no tiene dueño, entradas, excepciones ni salida acordada.', objective:'Definir primero qué problema concreto merece intervención.', current_process:'Cada área describe una versión diferente del trabajo.', available_data:'Presentaciones y entrevistas contradictorias.', constraints:'Dos semanas para decidir si continuar.', expected_value:'Todavía no existe una hipótesis medible.'
+      },
+      lowvalue: {
+        name:'Idea sin valor probado', problem:'Se propone un agente para redactar un resumen que hoy se prepara en pocos minutos y casi no se utiliza.', objective:'Determinar si existe un beneficio suficiente para justificar el proyecto.', current_process:'Una persona copia tres datos en una plantilla una vez al mes.', available_data:'La plantilla y algunos correos, sin métricas de uso.', constraints:'Presupuesto limitado y otras iniciativas prioritarias.', expected_value:'No hay ahorro, riesgo evitado ni mejora de decisión cuantificados.'
+      }
+    };
+
+    const catalog = {
+      redesign: { title:'Rediseño', color:'#f2a93b', objection:'Definir dueño, entradas, excepciones y salida antes de automatizar. Un agente sobre un proceso ambiguo sólo escala la ambigüedad.' },
+      rules: { title:'Reglas', color:'#2bc48a', objection:'Comprobar que las excepciones sean pocas. Si crecen, la automatización determinística puede volverse frágil y costosa de mantener.' },
+      data: { title:'Datos / BI', color:'#16b9df', objection:'Antes de sumar IA, confirmar si una capa de datos resuelve el pedido con menos costo y riesgo.' },
+      assistive: { title:'IA asistiva', color:'#7c6aef', objection:'Definir qué decisión conserva la persona y cómo se revisan citas, omisiones y respuestas plausibles pero incorrectas.' },
+      agent: { title:'Agente', color:'#e34b69', objection:'Limitar herramientas, permisos y reversibilidad. La autonomía sólo se justifica si el proceso y los datos ya son confiables.' },
+      none: { title:'No implementar', color:'#98a6ba', objection:'El beneficio todavía no es verificable. Formular primero una hipótesis medible y un umbral de continuidad.' }
+    };
+
+    const API_BASE = location.protocol === 'file:' ? 'http://localhost:8000' : '';
+    let current = null;
+    let humanDecision = null;
+
+    const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+
+    function applyPreset(name) {
+      const preset = presets[name];
+      document.getElementById('problem').value = preset.problem;
+      document.getElementById('objective').value = preset.objective;
+      document.getElementById('currentProcess').value = preset.current_process;
+      document.getElementById('availableData').value = preset.available_data;
+      document.getElementById('constraints').value = preset.constraints;
+      document.getElementById('expectedValue').value = preset.expected_value;
+      document.getElementById('runtime').textContent = 'Ejemplo cargado. Todavía no existe una recomendación: ejecutá Architect.';
+    }
+
+    function renderRoute(key) {
+      const meta = catalog[key] || catalog.none;
+      document.querySelectorAll('.output').forEach(el => el.classList.toggle('active', el.dataset.result === key));
+      document.querySelectorAll('.route-lines path').forEach(el => {
+        const active = el.dataset.route === key;
+        el.classList.toggle('active', active);
+        if (active) el.style.setProperty('--route-color', meta.color);
+      });
+      document.getElementById('routeTitle').textContent = meta.title;
+      document.getElementById('decisionTitle').textContent = meta.title;
+      document.getElementById('decisionDot').style.background = meta.color;
+      document.getElementById('decisionDot').style.boxShadow = `0 0 0 6px ${meta.color}22`;
+    }
+
+    function renderResult(result) {
+      current = result;
+      humanDecision = null;
+      renderRoute(result.classification);
+      const trace = Array.isArray(result.trace) ? result.trace : [];
+      document.getElementById('trace').innerHTML = trace.map(item => `<li>${escapeHtml(item)}</li>`).join('') || '<li>El planificador no devolvió trazas.</li>';
+      const review = result.critical_review || {};
+      document.getElementById('objection').textContent = review.objection || review.findings?.[0]?.finding || 'Sin objeción informada.';
+      document.getElementById('evidenceMode').textContent = `Evidencia: ${result.evidence_mode === 'chunks' ? 'biblioteca Algedi' : 'conocimiento general declarado'} · Veredicto: ${review.verdict || 'pendiente'}`;
+      const matrix = Array.isArray(result.matrix) ? result.matrix : [];
+      document.getElementById('matrix').innerHTML = matrix.length ? `<table class="matrix-table"><thead><tr><th>Ruta</th><th>Impacto</th><th>Datos</th><th>Simple</th><th>Seguro</th><th>Barato</th></tr></thead><tbody>${matrix.map(row => `<tr><td>${escapeHtml(catalog[row.route]?.title || row.route)}</td><td>${escapeHtml(row.impact)}</td><td>${escapeHtml(row.data_readiness)}</td><td>${escapeHtml(row.complexity)}</td><td>${escapeHtml(row.risk)}</td><td>${escapeHtml(row.cost)}</td></tr>`).join('')}</tbody></table>` : 'Sin matriz devuelta.';
+      const citations = Array.isArray(result.citations) ? result.citations : [];
+      document.getElementById('sources').innerHTML = citations.length ? `<ol class="source-list">${citations.map(c => `<li><b>[${escapeHtml(c.marker)}] ${escapeHtml(c.label)}</b>${c.page ? ` · p. ${escapeHtml(c.page)}` : ''}<br>${escapeHtml(c.excerpt)}</li>`).join('')}</ol>` : '<p class="source-list">No hubo pasajes con afinidad suficiente; el resultado declara conocimiento general y queda sujeto a validación.</p>';
+      document.querySelectorAll('[data-action]').forEach(button => { button.disabled = false; });
+      document.getElementById('download').disabled = false;
+      humanDecision = null;
+      document.getElementById('decisionLog').textContent = 'Sin decisión humana registrada.';
+    }
+
+    async function analyze() {
+      const button = document.getElementById('analyze');
+      const runtime = document.getElementById('runtime');
+      const preset = presets[document.getElementById('preset').value];
+      const payload = {
+        case_name: preset.name,
+        problem: document.getElementById('problem').value.trim(),
+        objective: document.getElementById('objective').value.trim(),
+        current_process: document.getElementById('currentProcess').value.trim(),
+        available_data: document.getElementById('availableData').value.trim(),
+        constraints: document.getElementById('constraints').value.trim(),
+        expected_value: document.getElementById('expectedValue').value.trim()
+      };
+      if (payload.problem.length < 12) {
+        runtime.className = 'runtime error'; runtime.textContent = 'Describí el problema con más detalle.'; return;
+      }
+      button.disabled = true; button.textContent = 'Recuperando · comparando · verificando…';
+      runtime.className = 'runtime'; runtime.textContent = 'Ejecutando recuperación en Algedi y dos agentes LLM independientes.';
+      document.getElementById('statusText').textContent = 'ARCHITECT EN EJECUCIÓN';
+      try {
+        const response = await fetch(`${API_BASE}/api/architect/analyze`, {
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || `Error HTTP ${response.status}`);
+        renderResult(data);
+        runtime.textContent = `Expediente ${data.version} generado. La recomendación todavía requiere decisión humana.`;
+        document.getElementById('statusText').textContent = 'DOS AGENTES EJECUTADOS · DECISIÓN HUMANA PENDIENTE';
+      } catch (error) {
+        current = null;
+        runtime.className = 'runtime error';
+        runtime.textContent = `No se simuló una respuesta: ${error.message}. Iniciá el backend y abrí http://localhost:8000/architect-demo.`;
+        document.getElementById('statusText').textContent = 'BACKEND NO DISPONIBLE · SIN CLASIFICACIÓN';
+      } finally {
+        button.disabled = false; button.textContent = 'Analizar con Architect';
+      }
+    }
+
+    document.getElementById('preset').addEventListener('change', e => applyPreset(e.target.value));
+    document.getElementById('analyze').addEventListener('click', analyze);
+    document.querySelectorAll('[data-action]').forEach(btn => btn.addEventListener('click', () => {
+      if (!current) return;
+      humanDecision = { status:btn.dataset.action, route:catalog[current.classification].title, at:new Date().toLocaleString('es-AR') };
+      document.getElementById('decisionLog').textContent = `${humanDecision.status} · ${humanDecision.route} · ${humanDecision.at}`;
+    }));
+    document.getElementById('download').addEventListener('click', () => {
+      if (!current) return;
+      const dossier = { ...current, human_review:humanDecision || current.human_review };
+      const blob = new Blob([JSON.stringify(dossier, null, 2)], { type:'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'algedi-architect-expediente.json'; a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    applyPreset('report');
+  </script>
+</body>
+</html>

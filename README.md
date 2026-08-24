@@ -3,7 +3,8 @@
 **Local AI-powered knowledge graph with 3D semantic visualization.**  
 Ingest PDFs, YouTube videos, web pages and Excel files → the system extracts concepts via LLM, builds a semantic graph, and lets you explore, query, and synthesize knowledge in 3D.
 
-> Built as a personal knowledge management tool and as a demonstration of Multi-RAG orchestration patterns. Thesis project — Maestría en Ciencia de Datos, Universidad Austral.
+> Algedi es un producto independiente. Su evolución de producto, arquitectura objetivo y MVP
+> están definidos en **[PLAN_PRODUCTO_ALGEDI.md](PLAN_PRODUCTO_ALGEDI.md)**.
 
 > 📖 **Leé la [Visión y Concepto Central →](VISION.md)** — el problema profundo que ataca (la deriva del significado / *semantic satiation*), en qué se diferencia de los demos virales y de Obsidian, y hacia dónde va.
 > 🏗️ **Y la [Arquitectura y Forma →](ARQUITECTURA.md)** — medallón (bronze/silver/gold), el framework de conectores para sumar fuentes, y cómo escala.
@@ -230,11 +231,9 @@ llm-wiki/
 
 ## Context
 
-This project is a working prototype of the architecture described in my master's thesis:  
-**"Multi-RAG Multimodal con orquestación reflexiva para gestión del conocimiento corporativo"**  
-Maestría en Ciencia de Datos — Universidad Austral, 2025.
-
-The thesis explores multi-silo RAG systems with epistemic veto mechanisms. Algedi is the personal knowledge management layer — separate from the corporate knowledge system, but designed to federate with it via MCP.
+Algedi es un proyecto independiente orientado a transformar problemas reales en soluciones
+fundamentadas. Puede reutilizar ideas generales de RAG, grafos y verificación, pero no comparte
+repositorio, datos ni ciclo de desarrollo con otros proyectos.
 
 ---
 
