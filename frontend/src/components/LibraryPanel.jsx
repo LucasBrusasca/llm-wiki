@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { clusterColor } from '../App.jsx';
 import IngestPanel from './IngestPanel.jsx';
+import { pedirClave, avisarClaveIncorrecta } from '../security.js';
 
 const FUENTE_ICON = {
   youtube: '▶', pdf: '⬛', tesis: '⬛', excel: '⊞', html: '⊡',
@@ -203,9 +204,15 @@ export default function LibraryPanel({ allNodes, allLinks, onClose, onNavigate, 
     setImporting(true);
     try {
       const texto = await file.text();
+      // Importar hace upsert sobre los nodos existentes: puede pisar contenido.
+      const clave = await pedirClave('importar un backup sobre el grafo actual');
+      if (!clave) return;
+      const backup = { ...JSON.parse(texto), ...clave };
       const r = await fetch('/api/import', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: texto,
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(backup),
       });
+      if (r.status === 403) { avisarClaveIncorrecta(); return; }
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { window.alert('No se pudo importar: ' + (d.detail || `error ${r.status}`)); }
       else { window.alert(`Importados ${d.nodos_importados} nodos. Recalculando relaciones…`); onRefresh?.(); }

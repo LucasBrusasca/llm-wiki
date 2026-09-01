@@ -13,6 +13,7 @@ import ProcessPanel from './components/ProcessPanel.jsx';
 import ArchitectPanel from './components/ArchitectPanel.jsx';
 import VaultBadge from './components/VaultBadge.jsx';
 import { computeDiscoveries } from './discoveries.js';
+import { pedirClave, avisarClaveIncorrecta } from './security.js';
 
 // ── Paleta: TONOS JOYA ───────────────────────────────────────────────────────
 // Ni neon ni apagado. Los dos extremos que probamos fallaban por el mismo eje:
@@ -232,11 +233,14 @@ export default function App() {
     setSeccionOpen(false);
     const nuevo = (window.prompt(`Nuevo nombre para «${nombre}»:`, nombre) || '').trim();
     if (!nuevo || nuevo === nombre) return;
+    const clave = await pedirClave(`renombrar «${nombre}»`);
+    if (!clave) return;
     try {
       const r = await fetch('/api/sections/rename', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: nombre, to: nuevo }),
+        body: JSON.stringify({ from: nombre, to: nuevo, ...clave }),
       });
+      if (r.status === 403) { avisarClaveIncorrecta(); return; }
       if (!r.ok) { window.alert('No se pudo renombrar.'); return; }
       setKnownSecciones(getKnownSecciones().map(x => x === nombre ? nuevo : x));
       if (seccion === nombre) cambiarSeccion(nuevo);
@@ -376,7 +380,13 @@ export default function App() {
   const handleHighlight = useCallback(ids => setHighlighted(new Set(ids)), []);
 
   const handleDeleteNode = useCallback(async (nodeId) => {
-    await fetch(`/api/node/${encodeURIComponent(nodeId)}`, { method: 'DELETE' });
+    const clave = await pedirClave('eliminar este documento');
+    if (!clave) return;
+    const r = await fetch(`/api/node/${encodeURIComponent(nodeId)}`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(clave),
+    });
+    if (r.status === 403) { avisarClaveIncorrecta(); return; }
     setFixedNode(null); setHoverNode(null); setAgentOpen(false);
     loadGraph();
   }, [loadGraph]);
@@ -617,8 +627,18 @@ export default function App() {
                 </button>
                 <button className="hdr-menu-item" disabled={relayouting}
                   onClick={async () => {
+                    // Reagrupar reescribe el tema de TODOS los documentos.
+                    const clave = await pedirClave('reagrupar el grafo con IA');
+                    if (!clave) { setToolsOpen(false); return; }
                     setRelayouting(true);
-                    try { await fetch('/api/taxonomy?apply=true', { method: 'POST' }); await loadGraph(); }
+                    try {
+                      const r = await fetch('/api/taxonomy?apply=true', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(clave),
+                      });
+                      if (r.status === 403) { avisarClaveIncorrecta(); return; }
+                      await loadGraph();
+                    }
                     finally { setRelayouting(false); setToolsOpen(false); }
                   }}>
                   <span className="hdr-menu-ico">✦</span> {relayouting ? 'Reagrupando con IA…' : 'Reagrupar con IA (temas)'}

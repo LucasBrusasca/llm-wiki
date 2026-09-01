@@ -23,7 +23,14 @@ from main import (
     review_solve,
     solve_issue,
 )
-from processor import _auto_relaciones, crear_chunks, crear_chunks_paginas
+from processor import (
+    _auto_relaciones,
+    _describir_relacion,
+    _resolver_tema,
+    crear_chunks,
+    crear_chunks_paginas,
+    relaciones_incrementales,
+)
 from security_utils import UnsafeUrlError, validate_public_http_url
 from vault_watcher import VaultWatcher
 
@@ -240,6 +247,15 @@ class ArchitectContractTests(unittest.TestCase):
                 self.added = []
                 self.commits = 0
 
+            async def execute(self, _statement):
+                # Architect persiste la corrida como expediente y primero pregunta si el
+                # caso ya existe. Devolver "no existe" ejercita el alta, que es el camino
+                # que este test verifica.
+                class SinResultado:
+                    def scalar_one_or_none(self):
+                        return None
+                return SinResultado()
+
             def add(self, value):
                 self.added.append(value)
 
@@ -281,6 +297,164 @@ class ArchitectContractTests(unittest.TestCase):
         self.assertEqual(result["critical_review"]["verdict"], "viable_with_changes")
         self.assertEqual(result["human_review"]["status"], "pending")
         self.assertEqual(session.commits, 1)
+
+
+class RelacionesIncrementalesTests(unittest.TestCase):
+    """El camino de la ingesta no debe inventar aristas distintas de las del recálculo
+    global: sólo mirar menos candidatos. Si divergieran, una misma arista significaría
+    cosas distintas según cómo entró al grafo."""
+
+    CONCEPTOS = [
+        ["recuperacion densa", "grafo semantico", "trazabilidad", "evidencia citable"],
+        ["recuperacion densa", "grafo semantico", "veto epistemico", "chunking"],
+        ["balance contable", "amortizacion", "ejercicio fiscal", "auditoria"],
+        ["balance contable", "amortizacion", "estados financieros", "auditoria"],
+        ["turbina eolica", "generacion distribuida", "red electrica", "despacho"],
+        ["turbina eolica", "generacion distribuida", "tarifa", "concesion"],
+    ]
+
+    def _corpus(self):
+        rng = np.random.default_rng(7)
+        nodos = []
+        for indice, conceptos in enumerate(self.CONCEPTOS):
+            # Tres pares tematicos: los vectores dentro de un par se parecen entre si.
+            base = rng.standard_normal(16) if indice % 2 == 0 else None
+            if base is None:
+                base = np.array(nodos[-1]["embedding"]) + rng.standard_normal(16) * 0.25
+            vector = base / np.linalg.norm(base)
+            nodos.append({
+                "id": f"n{indice}", "label": f"Documento {indice}",
+                "conceptos": conceptos, "embedding": vector.tolist(),
+                "dominio": "personal", "is_centroid": False,
+            })
+        return nodos
+
+    def test_incremental_no_inventa_aristas_fuera_del_calculo_global(self):
+        nodos = self._corpus()
+        stats = {}
+        globales = _auto_relaciones(nodos, stats)
+        pares_globales = {frozenset((r["source"], r["target"])) for r in globales}
+
+        for nodo in nodos:
+            vecinos = [
+                {**otro, "sim": None} for otro in nodos if otro["id"] != nodo["id"]
+            ]
+            for rel in relaciones_incrementales(nodo, vecinos, piso=stats["floor"]):
+                self.assertIn(
+                    frozenset((rel["source"], rel["target"])), pares_globales,
+                    f"la ingesta creo una arista que el recalculo global descarta: {rel}",
+                )
+
+    def test_incremental_conserva_score_y_conceptos_compartidos(self):
+        nodos = self._corpus()
+        stats = {}
+        globales = _auto_relaciones(nodos, stats)
+        por_par = {frozenset((r["source"], r["target"])): r for r in globales}
+
+        vecinos = [{**otro, "sim": None} for otro in nodos if otro["id"] != "n0"]
+        incrementales = relaciones_incrementales(nodos[0], vecinos, piso=stats["floor"])
+        self.assertTrue(incrementales, "n0 deberia conectarse con su par tematico n1")
+        for rel in incrementales:
+            equivalente = por_par[frozenset((rel["source"], rel["target"]))]
+            self.assertEqual(rel["score"], equivalente["score"])
+            self.assertEqual(rel["label"], equivalente["label"])
+            self.assertEqual(
+                sorted(rel["shared_concepts"]), sorted(equivalente["shared_concepts"])
+            )
+
+    def test_secciones_distintas_no_se_conectan_en_la_ingesta(self):
+        nodos = self._corpus()
+        nodo = nodos[0]
+        vecinos = [{**otro, "dominio": "investigacion", "sim": 0.99}
+                   for otro in nodos if otro["id"] != nodo["id"]]
+        self.assertEqual(relaciones_incrementales(nodo, vecinos, piso=0.0), [])
+
+    def test_sin_embedding_no_hay_aristas(self):
+        nodos = self._corpus()
+        huerfano = {**nodos[0], "embedding": None}
+        vecinos = [{**otro, "sim": 0.9} for otro in nodos[1:]]
+        self.assertEqual(relaciones_incrementales(huerfano, vecinos), [])
+
+    def test_el_piso_medido_filtra_vecinos_debiles(self):
+        nodos = self._corpus()
+        vecinos = [{**otro, "sim": 0.10} for otro in nodos[1:]
+                   if otro["conceptos"][0] != nodos[0]["conceptos"][0]]
+        sin_piso = relaciones_incrementales(nodos[0], vecinos, piso=0.0)
+        con_piso = relaciones_incrementales(nodos[0], vecinos, piso=0.5)
+        self.assertTrue(sin_piso)
+        self.assertEqual(con_piso, [])
+
+
+class ConfinamientoDeArchivosTests(unittest.TestCase):
+    """`/doc`, `/thumbnail` y `/excel-preview` reciben una ruta del cliente. Confinarla
+    a la raíz del repo no alcanzaba: ahí viven .env y el código."""
+
+    def test_no_se_puede_pedir_el_env_ni_el_codigo(self):
+        from fastapi import HTTPException
+        from main import _resolve
+        for ruta in (".env", "main.py", "processor.py", ".env.example",
+                     "database/connection.py"):
+            with self.assertRaises(HTTPException, msg=f"quedo servible: {ruta}") as caso:
+                _resolve(ruta)
+            self.assertEqual(caso.exception.status_code, 404)
+
+    def test_no_se_puede_escapar_con_rutas_relativas(self):
+        from fastapi import HTTPException
+        from main import _resolve
+        for ruta in ("../../../etc/passwd", "uploads/../.env", "uploads/../../secreto"):
+            with self.assertRaises(HTTPException):
+                _resolve(ruta)
+
+    def test_un_documento_ingerido_si_se_sirve(self):
+        from main import UPLOADS, _resolve
+        UPLOADS.mkdir(exist_ok=True)
+        archivo = UPLOADS / "_prueba_confinamiento.txt"
+        archivo.write_text("contenido", encoding="utf-8")
+        try:
+            self.assertEqual(_resolve("uploads/_prueba_confinamiento.txt"), archivo.resolve())
+            # También por nombre suelto: las rutas guardadas dentro de Docker vienen
+            # con el prefijo /app y tienen que seguir resolviendo fuera del contenedor.
+            self.assertEqual(_resolve("/app/uploads/_prueba_confinamiento.txt"),
+                             archivo.resolve())
+        finally:
+            archivo.unlink()
+
+
+class DescripcionDeRelacionTests(unittest.TestCase):
+    def test_la_etiqueta_describe_la_fuerza_del_vinculo(self):
+        fuerte = _describir_relacion("a", "b", 0.80, ["uno", "dos"])
+        self.assertEqual(fuerte["label"], "COMPLEMENTA_A")
+        media = _describir_relacion("a", "b", 0.60, ["uno", "dos"])
+        self.assertEqual(media["label"], "PROFUNDIZA_EN")
+        floja = _describir_relacion("a", "b", 0.10, [])
+        self.assertEqual(floja["label"], "SEMANTICAMENTE_SIMILAR_A")
+
+    def test_la_descripcion_menciona_los_conceptos_compartidos(self):
+        rel = _describir_relacion("a", "b", 0.50, ["chunking", "trazabilidad"])
+        self.assertIn("chunking", rel["description"])
+        self.assertIn("2 conceptos", rel["description"])
+
+
+class ResolucionDeTemaTests(unittest.TestCase):
+    """La clasificacion en lote nunca debe estrenar un tema: la taxonomia solo la crea
+    el reagrupado global."""
+
+    TEMAS = ["Agentes y Razonamiento IA", "Recuperacion y RAG"]
+
+    def test_respuesta_exacta_se_acepta(self):
+        self.assertEqual(_resolver_tema("Recuperacion y RAG", self.TEMAS),
+                         "Recuperacion y RAG")
+
+    def test_respuesta_con_comillas_o_mayusculas_se_normaliza(self):
+        self.assertEqual(_resolver_tema('"recuperacion y rag"', self.TEMAS),
+                         "Recuperacion y RAG")
+
+    def test_tema_inventado_cae_en_sin_clasificar(self):
+        self.assertEqual(_resolver_tema("Vision por Computadora", self.TEMAS),
+                         "Sin clasificar")
+
+    def test_abstencion_explicita_se_respeta(self):
+        self.assertEqual(_resolver_tema("Sin clasificar", self.TEMAS), "Sin clasificar")
 
 
 if __name__ == "__main__":

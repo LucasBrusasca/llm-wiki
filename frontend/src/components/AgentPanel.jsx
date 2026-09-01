@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { marked } from 'marked';
+import { renderMarkdown } from '../markdown.js';
 
-marked.setOptions({ breaks: true, gfm: true });
 
 export default function AgentPanel({ node, allNodes, onClose, onHighlight, onNavigate }) {
   const color    = '#00d4ff';
@@ -159,7 +158,7 @@ Respondé en base a esta información. Usá los datos que tenés. Respondé en e
       <div className="agent-messages">
         {msgs.map((m, i) => (
           <div key={i} className={`agent-msg ${m.role}${m.veto ? ' agent-msg--veto' : ''}`}>
-            <div dangerouslySetInnerHTML={{ __html: marked.parse(m.text) }} />
+            <div dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text) }} />
             {m.role === 'assistant' && m.fundamentos?.length > 0 && (
               <div className="agent-fund">
                 <div className="agent-fund-head" onClick={() => onHighlight?.(m.fundamentos.map(f => f.id))}

@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { marked } from 'marked';
+import { renderMarkdown } from '../markdown.js';
 import { clusterColor } from '../App.jsx';
 
-marked.setOptions({ breaks: true, gfm: true });
 
 export default function ReportPanel({ node, onClose }) {
   const color = clusterColor(node.cluster);
@@ -42,7 +41,7 @@ export default function ReportPanel({ node, onClose }) {
           : <div
               className="agent-msg assistant"
               style={{ maxWidth: '100%', alignSelf: 'stretch' }}
-              dangerouslySetInnerHTML={{ __html: marked.parse(content) }}
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
             />
         }
       </div>

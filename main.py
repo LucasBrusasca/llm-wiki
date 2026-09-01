@@ -23,7 +23,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.connection import get_async_session, get_sync_session
-from database.models import AuditLog, Chunk, Document, Edge, Node, Source
+from database.models import AuditLog, Chunk, Document, Edge, GraphStat, Node, Source
 
 load_dotenv()
 
@@ -133,15 +133,38 @@ _issue_state = {"state": "idle", "message": "", "progress": 0, "result": None}
 _issue_lock = threading.Lock()
 
 
+# Únicas carpetas de las que se sirve contenido. Confinar a BASE no alcanzaba: BASE es
+# la raíz del repo, así que /doc?p=.env devolvía las claves de API, y lo mismo con
+# cualquier archivo del código. Los documentos ingeridos sólo viven en estas dos.
+CARPETAS_SERVIBLES = (UPLOADS, VAULT)
+
+
+def _dentro_de_carpetas_servibles(target: Path) -> bool:
+    for carpeta in CARPETAS_SERVIBLES:
+        try:
+            target.relative_to(carpeta.resolve())
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _resolve(rel: str) -> Path:
-    target = (BASE / unquote(rel)).resolve()
-    try:
-        target.relative_to(BASE)
-    except ValueError:
-        raise HTTPException(status_code=403, detail="Forbidden")
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="Not found")
-    return target
+    """Resuelve una ruta pedida por el cliente, confinada a las carpetas de contenido."""
+    raw = unquote(rel or "").replace("\\", "/")
+    candidato = Path(raw)
+    intentos = [candidato] if candidato.is_absolute() else [BASE / raw]
+    # Fallback por nombre: rutas guardadas con el prefijo del contenedor (/app/uploads/…)
+    # tienen que seguir resolviendo cuando el backend corre fuera de Docker.
+    intentos += [carpeta / Path(raw).name for carpeta in CARPETAS_SERVIBLES]
+    for intento in intentos:
+        try:
+            target = intento.resolve()
+        except Exception:
+            continue
+        if _dentro_de_carpetas_servibles(target) and target.is_file():
+            return target
+    raise HTTPException(status_code=404, detail="Not found")
 
 
 # ── Conversion helpers ────────────────────────────────────────────────
@@ -313,13 +336,119 @@ async def _chunks_relevantes_scored(pregunta: str, max_n: int = 8,
         return []
 
 
+# Vecinos que trae la consulta kNN antes de filtrar. Más que RELACIONES_K a propósito:
+# el criterio de conceptos compartidos puede rescatar un vecino que no está entre los
+# primeros por coseno. Sigue siendo O(log n) por el índice HNSW.
+VECINOS_CANDIDATOS = 40
+
+
+def _leer_piso_similitud(session) -> float | None:
+    """Último piso de similitud medido por el recálculo global (None si nunca corrió)."""
+    from database.models import GraphStat as GraphStatModel
+    try:
+        fila = session.query(GraphStatModel).filter(
+            GraphStatModel.key == "relaciones"
+        ).one_or_none()
+        if fila and isinstance(fila.value, dict):
+            piso = fila.value.get("floor")
+            return float(piso) if piso is not None else None
+    except Exception as exc:
+        print(f"Warning: no se pudo leer el piso de similitud: {exc}")
+    return None
+
+
+def _guardar_piso_similitud(session, stats: dict):
+    """Persiste lo que midió el recálculo global para que la ingesta lo reutilice."""
+    from database.models import GraphStat as GraphStatModel
+    if not stats:
+        return
+    valores = {
+        "floor": stats.get("floor"),
+        "n_docs": stats.get("n_docs"),
+        "n_pares": stats.get("n_pares"),
+        "medido_en": datetime.now(timezone.utc).isoformat(),
+    }
+    session.execute(
+        pg_insert(GraphStatModel).values(key="relaciones", value=valores)
+        .on_conflict_do_update(index_elements=["key"], set_={"value": valores})
+    )
+
+
+def _vecinos_candidatos(session, node_id: str, embedding, dominio: str,
+                        conceptos: list | None = None) -> list:
+    """Vecinos plausibles de un nodo, sin recorrer el corpus.
+
+    Dos fuentes complementarias, ambas indexadas:
+      1. kNN por coseno vía pgvector (índice HNSW sobre `nodes.embedding`);
+      2. documentos que comparten al menos un concepto textual exacto.
+
+    La segunda existe porque el criterio de conceptos compartidos puede vincular
+    documentos que el coseno no pone cerca. Si esa consulta falla (JSON con forma
+    inesperada), se sigue con los vecinos por coseno: perder un candidato degrada la
+    arista, romper la ingesta pierde el documento.
+    """
+    if not embedding:
+        return []
+    vec = str(list(embedding))
+    filtro = """
+          AND id != :nid
+          AND NOT COALESCE(is_centroid, false)
+          AND NOT COALESCE(is_issue, false)
+          AND COALESCE(dominio, 'personal') = :dominio
+          AND embedding IS NOT NULL
+    """
+    encontrados = {}
+
+    filas = session.execute(text(f"""
+        SELECT id, label, conceptos, dominio,
+               1 - (embedding <=> CAST(:vec AS vector)) AS sim
+        FROM nodes
+        WHERE true {filtro}
+        ORDER BY embedding <=> CAST(:vec AS vector)
+        LIMIT :lim
+    """), {"vec": vec, "nid": node_id, "dominio": dominio,
+           "lim": VECINOS_CANDIDATOS}).all()
+    for fila in filas:
+        encontrados[fila.id] = {"id": fila.id, "label": fila.label,
+                                "conceptos": fila.conceptos or [],
+                                "dominio": fila.dominio, "sim": float(fila.sim)}
+
+    if conceptos:
+        try:
+            filas = session.execute(text(f"""
+                SELECT id, label, conceptos, dominio,
+                       1 - (embedding <=> CAST(:vec AS vector)) AS sim
+                FROM nodes
+                WHERE jsonb_exists_any(conceptos::jsonb, CAST(:conceptos AS text[]))
+                      {filtro}
+                LIMIT :lim
+            """), {"vec": vec, "nid": node_id, "dominio": dominio,
+                   "conceptos": list(conceptos)[:20],
+                   "lim": VECINOS_CANDIDATOS}).all()
+            for fila in filas:
+                encontrados.setdefault(fila.id, {
+                    "id": fila.id, "label": fila.label,
+                    "conceptos": fila.conceptos or [],
+                    "dominio": fila.dominio, "sim": float(fila.sim)})
+        except Exception as exc:
+            print(f"Warning: candidatos por concepto no disponibles ({exc}); "
+                  f"se usan sólo los vecinos por similitud")
+
+    return list(encontrados.values())
+
+
 def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
-    """Guarda o actualiza un nodo en PostgreSQL y recalcula relaciones. Síncrona — segura para threads."""
+    """Guarda o actualiza un nodo en PostgreSQL y recalcula SUS relaciones.
+
+    Síncrona — segura para threads. Antes recalculaba el grafo entero en cada guardado
+    (O(n²) en Python): medido en esta máquina, 92 s por documento con 800 nodos, y
+    creciendo al cuadrado. Ahora sólo se tocan las aristas del nodo guardado.
+    """
     import hashlib
     from database.models import (Chunk as ChunkModel, Document as DocumentModel,
                                  Edge as EdgeModel, Node as NodeModel, Source as SourceModel)
     from sqlalchemy import delete as sync_delete
-    from processor import _auto_relaciones
+    from processor import relaciones_incrementales
 
     campos_validos = {c.key for c in NodeModel.__table__.columns}
     datos = {k: v for k, v in nodo_data.items() if k in campos_validos}
@@ -422,37 +551,40 @@ def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
         # Los issues/procesos NO participan de las relaciones del grafo de conocimiento:
         # son entidades de otro plano (módulo Issue/Procesos) cuyo fundamento se calcula
         # on-the-fly contra el grafo. Mezclarlos ensuciaba el espacio de documentos.
-        all_nodes = session.query(NodeModel).filter(
-            NodeModel.is_centroid == False,
-            NodeModel.is_issue == False,
-        ).all()
+        # Antes igual se disparaba el recálculo completo al guardarlos: puro costo, cero
+        # efecto sobre las aristas.
+        if nodo_data.get("is_issue") or nodo_data.get("is_centroid"):
+            session.commit()
+            return
 
-        nodes_dicts = []
-        for n in all_nodes:
-            emb = n.embedding
-            if hasattr(emb, "tolist"):
-                emb = emb.tolist()
-            nodes_dicts.append({
-                "id": n.id,
-                "label": n.label,
-                "conceptos": n.conceptos or [],
-                "embedding": emb,
-                "dominio": n.dominio or "personal",
-                "is_centroid": False,
-            })
+        embedding = nodo_data.get("embedding")
+        dominio = nodo_data.get("dominio") or "personal"
+        vecinos = _vecinos_candidatos(
+            session, nodo_data["id"], embedding, dominio,
+            nodo_data.get("conceptos"),
+        )
+        nuevas = relaciones_incrementales(
+            {**nodo_data, "dominio": dominio},
+            vecinos,
+            piso=_leer_piso_similitud(session),
+        )
 
-        new_rels = _auto_relaciones(nodes_dicts)
-
-        session.execute(sync_delete(EdgeModel))
-        for r in new_rels:
-            session.add(EdgeModel(
-                source=r["source"],
-                target=r["target"],
-                score=r.get("score"),
-                shared_concepts=r.get("shared_concepts", []),
-                label=r.get("label"),
-                description=r.get("description"),
-            ))
+        # Sólo se reemplazan las aristas de ESTE nodo. Las del resto del grafo quedan
+        # intactas: son válidas y volver a calcularlas era el costo cuadrático.
+        session.execute(sync_delete(EdgeModel).where(
+            (EdgeModel.source == nodo_data["id"]) | (EdgeModel.target == nodo_data["id"])
+        ))
+        for r in nuevas:
+            session.execute(
+                pg_insert(EdgeModel).values(
+                    source=r["source"],
+                    target=r["target"],
+                    score=r.get("score"),
+                    shared_concepts=r.get("shared_concepts", []),
+                    label=r.get("label"),
+                    description=r.get("description"),
+                ).on_conflict_do_nothing(index_elements=["source", "target"])
+            )
         session.commit()
 
 
@@ -476,10 +608,13 @@ def _recompute_edges_background():
                 "embedding": emb, "dominio": n.dominio or "personal",
                 "is_centroid": False,
             })
-        new_rels = _auto_relaciones(nodes_dicts)
+        stats = {}
+        new_rels = _auto_relaciones(nodes_dicts, stats)
         session.execute(sync_delete(EdgeModel))
         for r in new_rels:
             session.add(EdgeModel(**r))
+        # El piso medido acá es el que después usa la ingesta incremental.
+        _guardar_piso_similitud(session, stats)
         session.commit()
 
 
@@ -688,26 +823,12 @@ def excel_preview(p: str):
 
 def _resolve_file(p: str) -> Path:
     """Resuelve la ruta de un archivo ingerido, tolerando rutas absolutas del
-    contenedor, relativas o solo el nombre dentro de UPLOADS. Siempre confinado a BASE."""
-    raw = unquote(p or "").replace("\\", "/")
-    candidates = []
-    pp = Path(raw)
-    candidates.append(pp)
-    if not pp.is_absolute():
-        candidates.append(BASE / raw)
-    candidates.append(UPLOADS / Path(raw).name)  # fallback: por nombre
-    for c in candidates:
-        try:
-            r = c.resolve()
-        except Exception:
-            continue
-        try:
-            r.relative_to(BASE)
-        except ValueError:
-            continue
-        if r.exists() and r.is_file():
-            return r
-    raise HTTPException(status_code=404, detail="Archivo no encontrado")
+    contenedor, relativas o sólo el nombre. Confinado a las carpetas de contenido:
+    un `fuente_path` corrupto no puede convertirse en lectura del código o del .env."""
+    try:
+        return _resolve(p)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Archivo no encontrado")
 
 
 @app.get("/files/{node_id}")
@@ -942,6 +1063,9 @@ async def import_graph(request: Request, db: AsyncSession = Depends(get_async_se
     nodos = body.get("nodos") or []
     if not nodos:
         raise HTTPException(400, "El backup no contiene nodos.")
+    # Un import hace upsert masivo: puede pisar el contenido de nodos existentes.
+    if not _check_password(body.get("password")):
+        raise HTTPException(403, "Clave de seguridad incorrecta.")
     node_cols = {c.key for c in Node.__table__.columns}
     skip = {"created_at", "updated_at"}
     n_ok = 0
@@ -996,6 +1120,10 @@ async def rename_section(request: Request, db: AsyncSession = Depends(get_async_
     destino = (body.get("to") or "").strip()
     if not origen or not destino:
         raise HTTPException(400, "Faltan nombres (from/to).")
+    # Renombrar reasigna todos los documentos de la sección: no es destructivo, pero
+    # sí reorganiza el grafo entero, así que va detrás de la misma clave.
+    if not _check_password(body.get("password")):
+        raise HTTPException(403, "Clave de seguridad incorrecta.")
     await db.execute(sql_update(Node).where(Node.dominio == origen).values(dominio=destino))
     await db.commit()
     return {"ok": True}
@@ -1059,7 +1187,8 @@ async def recompute_relations(db: AsyncSession = Depends(get_async_session)):
             "is_centroid": False,
         })
 
-    new_rels = _auto_relaciones(nodes_dicts)
+    stats = {}
+    new_rels = _auto_relaciones(nodes_dicts, stats)
 
     await db.execute(sql_delete(Edge))
     for r in new_rels:
@@ -1070,8 +1199,21 @@ async def recompute_relations(db: AsyncSession = Depends(get_async_session)):
             label=r.get("label"),
             description=r.get("description"),
         ))
+    # Este recálculo es el único que ve el corpus entero: deja medido el piso de
+    # similitud para que las próximas ingestas incrementales usen el mismo criterio.
+    if stats:
+        valores = {
+            "floor": stats.get("floor"),
+            "n_docs": stats.get("n_docs"),
+            "n_pares": stats.get("n_pares"),
+            "medido_en": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.execute(
+            pg_insert(GraphStat).values(key="relaciones", value=valores)
+            .on_conflict_do_update(index_elements=["key"], set_={"value": valores})
+        )
     await db.commit()
-    return {"ok": True, "relaciones": len(new_rels)}
+    return {"ok": True, "relaciones": len(new_rels), "piso": stats.get("floor")}
 
 
 @app.post("/api/recompute-layout")
@@ -1086,11 +1228,17 @@ async def recompute_layout():
 
 
 @app.post("/api/taxonomy")
-async def taxonomy(apply: bool = False, db: AsyncSession = Depends(get_async_session)):
+async def taxonomy(request: Request, apply: bool = False,
+                   db: AsyncSession = Depends(get_async_session)):
     """Propone (dry-run) o aplica una taxonomía de TEMAS legible, asignada por LLM.
     Agrupa el grafo como lo haría una persona (por tema), no por densidad de embeddings.
     Sin apply → solo propone, no escribe. apply=true → persiste node.tema.
     Los embeddings/UMAP siguen rigiendo la POSICIÓN 3D; esto rige el GRUPO (color/etiqueta)."""
+    # El dry-run es inofensivo; aplicar reescribe el tema de TODOS los documentos.
+    if apply:
+        body = await _read_body(request)
+        if not _check_password(body.get("password")):
+            raise HTTPException(403, "Clave de seguridad incorrecta.")
     rows = (await db.execute(
         select(Node).where(Node.is_centroid == False, Node.is_issue == False)
     )).scalars().all()
@@ -1185,9 +1333,14 @@ async def semantic_search(
 @app.delete("/api/node/{node_id}")
 async def delete_node(
     node_id: str,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_async_session),
 ):
+    # Borrar un documento es irreversible: pide la misma clave que borrar una sección.
+    body = await _read_body(request)
+    if not _check_password(body.get("password")):
+        raise HTTPException(403, "Clave de seguridad incorrecta.")
     result = await db.execute(
         sql_delete(Node).where(Node.id == node_id)
     )
@@ -1600,7 +1753,7 @@ def _architect_score(value) -> int:
 @app.get("/architect-demo", include_in_schema=False)
 async def architect_demo():
     """Sirve la demo desde el backend para que las llamadas sean same-origin."""
-    return FileResponse(BASE / "algedi_architect_interactive.html")
+    return FileResponse(BASE / "entregables" / "algedi_architect_interactive.html")
 
 
 ARCHITECT_CAMPOS = ("problem", "objective", "current_process",
@@ -2361,6 +2514,136 @@ def _ingest_playlist(url: str, skip_umap: bool = False, seccion: str = "personal
     return ok > 0
 
 
+# Documentos que se extraen en paralelo dentro de un lote. La parte cara de esta etapa
+# es ESPERA DE RED (la llamada al LLM), no CPU, así que la concurrencia paga aunque la
+# máquina no tenga GPU. El techo lo pone el rate-limit del proveedor, no el hardware:
+# subilo si tenés cuota holgada, bajalo a 1 si el proveedor devuelve 429 seguido.
+INGEST_WORKERS = max(1, int(os.getenv("ALGEDI_INGEST_WORKERS", "4")))
+
+
+def _extraer_documento(entrada: str) -> dict:
+    """Conector → {nodos, relaciones, chunks}. Es la etapa cara (LLM + embeddings) y no
+    toca la base, así que puede correr en paralelo con otras."""
+    from processor import (procesar_excel, procesar_html, procesar_pdf,
+                           procesar_youtube)
+
+    ext = Path(entrada).suffix.lower() if not entrada.startswith("http") else ""
+    if entrada.startswith("http"):
+        if any(d in entrada for d in ("youtube.com", "youtu.be")):
+            return procesar_youtube(entrada)
+        from processor import procesar_url_web
+        return procesar_url_web(entrada)
+    if ext in (".xlsx", ".xls"):
+        return procesar_excel(entrada)
+    if ext in (".html", ".htm"):
+        return procesar_html(entrada)
+    if ext in (".txt", ".md"):
+        from processor import procesar_txt
+        return procesar_txt(entrada)
+    if ext == ".docx":
+        from processor import procesar_word
+        return procesar_word(entrada)
+    if ext in (".pptx", ".pptm"):
+        from processor import procesar_pptx
+        return procesar_pptx(entrada)
+    return procesar_pdf(entrada)
+
+
+def _persistir_resultado(resultado: dict, seccion: str):
+    """Guarda los nodos de un documento ya extraído. Serial a propósito: las escrituras
+    y el cálculo de aristas comparten estado en la base."""
+    for nodo in resultado.get("nodos", []):
+        nodo["dominio"] = seccion or "personal"
+        node_chunks = [c for c in resultado.get("chunks", [])
+                       if c.get("node_id") == nodo["id"]]
+        _save_node_sync(nodo, node_chunks if "chunks" in resultado else None)
+
+
+def _cerrar_lote(skip_umap: bool):
+    """Trabajo que se hace UNA vez por lote, no por documento: clasificar los temas
+    pendientes (en lote, una llamada cada TEMAS_LOTE docs) y recalcular la proyección 3D."""
+    from processor import asignar_temas_pendientes
+    _set_progress(88, "Clasificando temas…")
+    asignar_temas_pendientes()
+    if not skip_umap:
+        _set_progress(94, "Calculando posición 3D (UMAP)…")
+        try:
+            import embeddings_engine
+            embeddings_engine.main()
+        except Exception as e:
+            print(f"Error al calcular posiciones 3D (UMAP/HDBSCAN): {e}")
+
+
+def _run_ingest_batch(entradas: list, seccion: str = "personal"):
+    """Ingiere varios documentos: extracción EN PARALELO, guardado en serie, y cierre
+    (temas + UMAP) una sola vez.
+
+    Antes cada documento del lote hacía todo el recorrido solo y en serie: su llamada al
+    LLM, su recálculo completo de aristas y su corrida de UMAP. Un lote de 10 archivos
+    pagaba 10 veces un trabajo que corresponde una sola vez.
+    """
+    global _ingest
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    _INGEST_GATE.acquire()
+    try:
+        total = len(entradas)
+        with _ingest_lock:
+            _ingest.update({"state": "processing", "progress": 5,
+                            "label": f"{total} documentos",
+                            "message": f"Analizando {total} documentos…"})
+
+        listos, fallidos = [], []
+        completados = 0
+        workers = min(INGEST_WORKERS, total)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futuros = {pool.submit(_extraer_documento, e): e for e in entradas}
+            for futuro in as_completed(futuros):
+                entrada = futuros[futuro]
+                nombre = entrada[:60] if entrada.startswith("http") else Path(entrada).name
+                completados += 1
+                try:
+                    listos.append(futuro.result())
+                except Exception as exc:
+                    # Un documento que falla no debe tumbar el lote entero.
+                    fallidos.append((nombre, str(exc)))
+                    print(f"Error extrayendo '{nombre}': {exc}")
+                _set_progress(5 + int(70 * completados / total),
+                              f"Analizados {completados}/{total} documentos…")
+
+        _set_progress(78, "Guardando en el grafo…")
+        guardados = 0
+        for resultado in listos:
+            try:
+                _persistir_resultado(resultado, seccion)
+                guardados += 1
+            except Exception as exc:
+                etiqueta = (resultado.get("nodos") or [{}])[0].get("label", "?")
+                fallidos.append((etiqueta, str(exc)))
+                print(f"Error guardando '{etiqueta}': {exc}")
+
+        _cerrar_lote(skip_umap=False)
+
+        # Se informa lo que quedó EN EL GRAFO, no lo que se logró leer: un documento
+        # extraído que después no se pudo guardar no está incorporado.
+        mensaje = f"{guardados} de {total} documentos incorporados al grafo."
+        if fallidos:
+            # El nombre del primero alcanza para saber por dónde empezar a mirar; el
+            # detalle completo de cada falla ya quedó en el log del servidor.
+            mensaje += f" {len(fallidos)} con error (p. ej. {fallidos[0][0]})."
+        with _ingest_lock:
+            _ingest = {"state": "done" if guardados else "error", "message": mensaje,
+                       "label": f"{guardados} documentos", "progress": 100}
+        return bool(guardados)
+
+    except Exception as exc:
+        with _ingest_lock:
+            _ingest = {"state": "error", "message": str(exc), "label": "", "progress": 0}
+        return False
+    finally:
+        _INGEST_GATE.release()
+
+
 def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"):
     global _ingest
     _INGEST_GATE.acquire()   # una ingesta a la vez (manual o del vault)
@@ -2373,12 +2656,6 @@ def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"
         # Playlist de YouTube → un nodo por video (camino propio, sale temprano).
         if entrada.startswith("http") and _es_playlist_youtube(entrada):
             return _ingest_playlist(entrada, skip_umap, seccion)
-        from processor import (
-            procesar_excel,
-            procesar_html,
-            procesar_pdf,
-            procesar_youtube,
-        )
 
         _set_progress(10, "Extrayendo contenido…")
 
@@ -2404,65 +2681,19 @@ def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"
         _t = _threading.Thread(target=_ticker, daemon=True)
         _t.start()
 
-        ext = Path(entrada).suffix.lower() if not entrada.startswith("http") else ""
-        if entrada.startswith("http"):
-            yt_domains = ("youtube.com", "youtu.be")
-            if any(d in entrada for d in yt_domains):
-                resultado = procesar_youtube(entrada)
-            else:
-                from processor import procesar_url_web
-                resultado = procesar_url_web(entrada)
-        elif ext in (".xlsx", ".xls"):
-            resultado = procesar_excel(entrada)
-        elif ext in (".html", ".htm"):
-            resultado = procesar_html(entrada)
-        elif ext in (".txt", ".md"):
-            from processor import procesar_txt
-            resultado = procesar_txt(entrada)
-        elif ext == ".docx":
-            from processor import procesar_word
-            resultado = procesar_word(entrada)
-        elif ext in (".pptx", ".pptm"):
-            from processor import procesar_pptx
-            resultado = procesar_pptx(entrada)
-        else:
-            resultado = procesar_pdf(entrada)
+        resultado = _extraer_documento(entrada)
 
         _stop_ticker.set()
-        _set_progress(60, "Generando embeddings…")
+        _set_progress(70, "Generando embeddings…")
 
-        # El resultado todavía no se guarda: así evitamos recalcular todas las aristas
-        # dos veces. Se persiste una sola vez después de agregar el rich_html.
-        acumulado = resultado
-
-        _set_progress(75, "Generando apunte IA…")
-        try:
-            from processor import generar_rich_html
-            for new_n in resultado["nodos"]:
-                rich_html = generar_rich_html(new_n, acumulado["nodos"], acumulado["relaciones"])
-                new_n["rich_html"] = rich_html
-                for n in acumulado["nodos"]:
-                    if n["id"] == new_n["id"]:
-                        n["rich_html"] = rich_html
-        except Exception as e:
-            print(f"Error generando rich_html en ingesta: {e}")
+        # El apunte IA (rich_html) NO se genera acá: era una llamada al LLM entera —
+        # la más cara del pipeline, ~2000 tokens de HTML— por cada documento ingerido,
+        # para un panel que casi nunca se abre. Ahora lo genera on-demand
+        # GET /api/node/{id}/rich-preview la primera vez que alguien lo pide.
 
         # Guardar cada nodo en PostgreSQL, etiquetado con la sección activa.
-        for nodo in resultado.get("nodos", []):
-            nodo["dominio"] = seccion or "personal"
-            node_chunks = [c for c in resultado.get("chunks", [])
-                           if c.get("node_id") == nodo["id"]]
-            _save_node_sync(nodo, node_chunks if "chunks" in resultado else None)
-        from processor import asignar_temas_pendientes
-        asignar_temas_pendientes()
-
-        if not skip_umap:
-            _set_progress(85, "Calculando posición 3D (UMAP)…")
-            try:
-                import embeddings_engine
-                embeddings_engine.main()
-            except Exception as e:
-                print(f"Error al calcular posiciones 3D (UMAP/HDBSCAN): {e}")
+        _persistir_resultado(resultado, seccion)
+        _cerrar_lote(skip_umap)
 
         label = resultado["nodos"][0]["label"] if resultado["nodos"] else "Nodo"
         msg = f'"{label}" guardado.' if skip_umap else f'"{label}" incorporado al grafo.'
@@ -2512,9 +2743,12 @@ async def ingest(
             _ingest.update({"state": "idle", "message": "", "label": ""})
         raise HTTPException(400, "Enviá un archivo o al menos una URL válida (http/https)")
 
-    for idx, entrada in enumerate(entradas):
-        is_last = idx == len(entradas) - 1
-        background_tasks.add_task(_run_ingest, entrada, skip_umap if is_last else True, seccion)
+    if len(entradas) == 1:
+        background_tasks.add_task(_run_ingest, entradas[0], skip_umap, seccion)
+    else:
+        # Varias URLs: extracción en paralelo y un solo cierre (temas + UMAP) al final,
+        # en vez de una tarea completa por documento.
+        background_tasks.add_task(_run_ingest_batch, entradas, seccion)
 
     return {"ok": True, "count": len(entradas)}
 

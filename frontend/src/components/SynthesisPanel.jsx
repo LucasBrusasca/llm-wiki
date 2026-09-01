@@ -1,8 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { marked } from 'marked';
+import { renderMarkdown } from '../markdown.js';
 import { clusterColor } from '../App.jsx';
 
-marked.setOptions({ breaks: true, gfm: true });
 
 export default function SynthesisPanel({ allNodes, selectedIds, onClose, onClearSelection }) {
   const [result, setResult]   = useState('');
@@ -116,7 +115,7 @@ ${nodesCtx}`;
           <div
             className="agent-msg assistant"
             style={{ maxWidth: '100%', alignSelf: 'stretch' }}
-            dangerouslySetInnerHTML={{ __html: marked.parse(result) }}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(result) }}
           />
           <div ref={bottomRef} />
         </div>

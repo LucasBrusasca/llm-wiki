@@ -786,27 +786,6 @@ def calcular_similitud_coseno(a_emb, b_emb):
     return float(np.dot(vec_a, vec_b) / (norm_a * norm_b))
 
 
-def _conceptos_overlap(ca_list, cb_list):
-    """True si los nodos comparten ≥ 2 conceptos, con matching por substring además de exacto."""
-    sa = [c.lower() for c in ca_list]
-    sb = [c.lower() for c in cb_list]
-    exact = len(set(sa) & set(sb))
-    if exact >= 2:
-        return True
-    # Substring match: any term of ≥4 chars that appears inside another term counts
-    matches = exact
-    for a_term in sa:
-        for b_term in sb:
-            if a_term in set(sa) & set(sb):
-                continue  # already counted as exact
-            if len(a_term) >= 4 and len(b_term) >= 4:
-                if a_term in b_term or b_term in a_term:
-                    matches += 1
-                    if matches >= 2:
-                        return True
-    return False
-
-
 import unicodedata
 
 # Palabras vacías del español que no aportan a comparar conceptos.
@@ -840,15 +819,115 @@ def _palabra_comun(ta: set, tb: set) -> bool:
     return False
 
 
-def _auto_relaciones(nodos):
+# Vínculos que conserva cada nodo (kNN). Hace de parámetro tipo "clustering": con K
+# chico el grafo queda legible; subirlo rearma la telaraña.
+RELACIONES_K = 5
+# Piso de similitud cuando todavía no se corrió un recálculo global que lo mida.
+# Sólo se usa en el camino incremental y como red de seguridad.
+PISO_SIMILITUD_DEFAULT = 0.35
+
+
+def _conceptos_compartidos(nombres_a, toks_a, toks_b) -> list:
+    """Conceptos de A que comparten palabra completa con algún concepto de B.
+    Devuelve los nombres originales de A, deduplicados y en orden."""
+    shared = []
+    for indice, ta in enumerate(toks_a):
+        if not ta:
+            continue
+        if any(tb and _palabra_comun(ta, tb) for tb in toks_b):
+            shared.append(nombres_a[indice])
+    return list(dict.fromkeys(shared))
+
+
+def _describir_relacion(source: str, target: str, sim: float, shared: list) -> dict:
+    """Arma la arista final con su etiqueta y su explicación.
+
+    ÚNICA fuente de esta lógica: la usan el recálculo global y el incremental. Si cada
+    camino etiquetara por su cuenta, una misma arista significaría cosas distintas según
+    cómo fue creada, y el RelationPanel mentiría."""
+    comparten = len(shared) >= 2
+    if sim >= 0.75:
+        label = "COMPLEMENTA_A"
+    elif sim >= 0.55 and comparten:
+        label = "PROFUNDIZA_EN"
+    elif sim >= 0.38 and comparten:
+        label = "RELACIONADO_CON"
+    elif comparten:
+        label = "COMPARTE_CONCEPTOS_CON"
+    else:
+        label = "SEMANTICAMENTE_SIMILAR_A"
+    if shared:
+        description = (f"Comparten {len(shared)} conceptos ({', '.join(shared[:5])}) "
+                       f"con similitud semántica del {int(sim * 100)}%.")
+    else:
+        description = f"Similitud semántica del {int(sim * 100)}%."
+    return {"source": source, "target": target, "score": sim,
+            "shared_concepts": shared, "label": label, "description": description}
+
+
+def relaciones_incrementales(nodo: dict, vecinos: list, piso: float | None = None) -> list:
+    """Aristas de UN nodo contra un conjunto de vecinos ya preseleccionado.
+
+    Es el camino de la ingesta. `vecinos` viene de una consulta kNN por pgvector (índice
+    HNSW), así que el costo es O(log n) en vez de comparar contra el corpus entero: a 800
+    documentos el recálculo global tardaba 92 s POR DOCUMENTO INGERIDO — medido.
+
+    Diferencia honesta con el recálculo global: acá sólo se conserva el top-K del nodo
+    NUEVO. En el global una arista también sobrevive si está en el top-K del otro extremo.
+    Agregar un documento casi nunca reordena el top-K de los que ya estaban; cuando sí
+    pasa, lo corrige el recálculo global explícito (✦ / POST /api/recompute-relations).
+    """
+    if not nodo.get("embedding") or not vecinos:
+        return []
+    piso = PISO_SIMILITUD_DEFAULT if piso is None else piso
+    dominio = nodo.get("dominio") or "personal"
+
+    nombres_a = nodo.get("conceptos") or []
+    toks_a = [_tokens_concepto(c) for c in nombres_a]
+
+    candidatos = []
+    for vecino in vecinos:
+        # Secciones = grafos independientes (mismo criterio que el global).
+        if (vecino.get("dominio") or "personal") != dominio:
+            continue
+        if vecino.get("id") == nodo.get("id"):
+            continue
+        toks_b = [_tokens_concepto(c) for c in (vecino.get("conceptos") or [])]
+        shared = _conceptos_compartidos(nombres_a, toks_a, toks_b)
+        sim = vecino.get("sim")
+        if sim is None:
+            sim = calcular_similitud_coseno(nodo.get("embedding"), vecino.get("embedding"))
+        sim = round(float(sim), 2) if sim else 0.0
+        candidatos.append({
+            "id": vecino["id"], "sim": sim, "shared": shared,
+            "comparten": len(shared) >= 2,
+            "strength": sim + 0.06 * min(len(shared), 4),
+        })
+
+    candidatos.sort(key=lambda c: c["strength"], reverse=True)
+    rels = []
+    for c in candidatos[:RELACIONES_K]:
+        if c["sim"] >= piso or c["comparten"]:
+            rels.append(_describir_relacion(nodo["id"], c["id"], c["sim"], c["shared"]))
+    return rels
+
+
+def _auto_relaciones(nodos, stats: dict | None = None):
     """
     Genera relaciones con metadata semántica completa. Sin LLM — determinístico.
+
+    Es el recálculo GLOBAL: O(n²) a propósito, porque mide la distribución real de
+    similitudes del corpus. No corre en la ingesta (ahí va `relaciones_incrementales`),
+    sino cuando se pide explícitamente reagrupar el grafo.
 
     Dos mejoras sobre el enfoque anterior:
     - Conceptos compartidos por PALABRA COMPLETA (no substring) → menos falsos positivos.
     - Umbral DATA-DRIVEN: kNN por nodo (cada nodo se queda con sus K vínculos más
       fuertes) + piso por percentil de la distribución real de similitudes. Sin el 0.38
       mágico → se adapta solo al modelo de embeddings y al corpus.
+
+    Si se pasa `stats`, se deja ahí el piso medido para que la ingesta incremental use el
+    mismo criterio en vez de inventar uno.
     """
     docs = [n for n in nodos if not n.get("is_centroid")]
     if len(docs) < 2:
@@ -866,13 +945,7 @@ def _auto_relaciones(nodos):
             if (a.get("dominio") or "personal") != (b.get("dominio") or "personal"):
                 continue
             tb_list = toks[b["id"]]
-            shared = []
-            for ci, ta in enumerate(ta_list):
-                if not ta:
-                    continue
-                if any(tb and _palabra_comun(ta, tb) for tb in tb_list):
-                    shared.append(names[a["id"]][ci])
-            shared = list(dict.fromkeys(shared))  # dedup preservando orden
+            shared = _conceptos_compartidos(names[a["id"]], ta_list, tb_list)
 
             sim = calcular_similitud_coseno(a.get("embedding"), b.get("embedding"))
             sim = round(sim, 2) if sim else 0.0
@@ -888,12 +961,16 @@ def _auto_relaciones(nodos):
     #    de embeddings mejor, la distribución baja y el piso baja SOLO (sin re-tunear).
     sims = sorted(c["sim"] for c in cand)
     floor = sims[int(len(sims) * 0.40)]
+    if stats is not None:
+        stats["floor"] = floor
+        stats["n_docs"] = len(docs)
+        stats["n_pares"] = len(cand)
 
     # 3. kNN por nodo: cada nodo conserva sus K vínculos más fuertes (por encima del piso).
     #    Una arista sobrevive si está en el top-K de ALGUNO de sus extremos, o si
     #    comparten ≥2 conceptos (señal explícita fuerte, siempre vale). Así el K hace de
     #    parámetro tipo "clustering" y ningún outlier se llena de líneas débiles.
-    K = 5
+    K = RELACIONES_K
     por_nodo = {}
     for c in cand:
         por_nodo.setdefault(c["a"], []).append(c)
@@ -913,88 +990,136 @@ def _auto_relaciones(nodos):
     for c in cand:
         if (c["a"], c["b"]) not in keep:
             continue
-        sim, shared, comparten = c["sim"], c["shared"], c["comparten"]
-        if sim >= 0.75:
-            label = "COMPLEMENTA_A"
-        elif sim >= 0.55 and comparten:
-            label = "PROFUNDIZA_EN"
-        elif sim >= 0.38 and comparten:
-            label = "RELACIONADO_CON"
-        elif comparten:
-            label = "COMPARTE_CONCEPTOS_CON"
-        else:
-            label = "SEMANTICAMENTE_SIMILAR_A"
-        if shared:
-            description = (f"Comparten {len(shared)} conceptos ({', '.join(shared[:5])}) "
-                          f"con similitud semántica del {int(sim * 100)}%.")
-        else:
-            description = f"Similitud semántica del {int(sim * 100)}%."
-        rels.append({"source": c["a"], "target": c["b"], "score": sim,
-                     "shared_concepts": shared, "label": label, "description": description})
+        rels.append(_describir_relacion(c["a"], c["b"], c["sim"], c["shared"]))
     return rels
 
 
-def asignar_tema(nodo: dict):
-    """Clasifica un documento NUEVO dentro de la taxonomía de temas EXISTENTE (una
-    llamada corta al LLM). Mantiene la taxonomía estable: no re-baraja los demás nodos
-    ni cambia los nombres. Sin esto, los docs nuevos quedaban sin tema y el grafo les
-    inventaba un grupo estructural aparte (etiquetas duplicadas tipo "Agentic RAG" al
-    lado de "Agentes y Razonamiento IA"). Si aún no hay taxonomía, no hace nada —
-    el reagrupado global (✦) la crea."""
+# Documentos por llamada al clasificar temas. Antes era 1 doc = 1 llamada: subir 30
+# archivos costaba 30 llamadas cortas, casi todas esperando red. En lote la taxonomía
+# viaja una sola vez y el modelo ve los documentos juntos.
+TEMAS_LOTE = 25
+
+
+def _resolver_tema(respuesta: str, temas: list) -> str:
+    """Lleva la respuesta del LLM a un tema EXISTENTE o a 'Sin clasificar'.
+    Nunca inventa un tema nuevo: la taxonomía sólo la crea el reagrupado global (✦)."""
+    limpio = (respuesta or "").strip().strip('"').strip()
+    if limpio in temas:
+        return limpio
+    if "sin clasificar" in limpio.lower():
+        return "Sin clasificar"
+    # Puntuación o mayúsculas distintas: matcheo laxo, honesto si no hay coincidencia.
+    low = limpio.lower()
+    return next((t for t in temas if t.lower() in low or low in t.lower()), "Sin clasificar")
+
+
+def _temas_existentes(session) -> list:
+    from database.models import Node as NodeModel
+    return [t[0] for t in session.query(NodeModel.tema).filter(
+        NodeModel.tema.isnot(None),
+        NodeModel.tema != "Sin clasificar",
+        NodeModel.is_issue == False,
+    ).distinct().all()]
+
+
+def _clasificar_lote(nodos: list, temas: list) -> dict:
+    """Una llamada al LLM para hasta TEMAS_LOTE documentos. Devuelve {id: tema}.
+    Si la respuesta no se puede parsear, devuelve {} y el caller lo reintenta más tarde:
+    un documento sin tema es recuperable, uno mal clasificado ensucia la taxonomía."""
+    listado = "\n".join(
+        f'{i + 1}. "{(n.get("label") or "")[:120]}" — conceptos: '
+        f'{", ".join((n.get("conceptos") or [])[:8]) or "(sin conceptos)"}'
+        for i, n in enumerate(nodos)
+    )
+    prompt = (
+        "Temas disponibles:\n" + "\n".join(f"- {t}" for t in temas) +
+        f"\n\nDocumentos:\n{listado}\n\n"
+        "Asigná CADA documento a UNO de los temas de la lista. Si alguno no encaja "
+        'claramente en ninguno, usá exactamente "Sin clasificar". No inventes temas '
+        "nuevos ni cambies los nombres.\n"
+        'Respondé SOLO un JSON: {"1": "Tema", "2": "Sin clasificar", ...} '
+        "con una clave por número de documento."
+    )
+    crudo = query_llm([{"role": "user", "content": prompt}])
     try:
-        from database.connection import get_sync_session
-        from database.models import Node as NodeModel
-        with get_sync_session() as s:
-            temas = [t[0] for t in s.query(NodeModel.tema).filter(
-                NodeModel.tema.isnot(None),
-                NodeModel.tema != "Sin clasificar",
-                NodeModel.is_issue == False,
-            ).distinct().all()]
-        if not temas:
-            return
-        prompt = (
-            f'Documento: "{nodo.get("label", "")}"\n'
-            f"Conceptos: {', '.join((nodo.get('conceptos') or [])[:8])}\n\n"
-            "Temas disponibles:\n" + "\n".join(f"- {t}" for t in temas) +
-            "\n\nAsigná el documento a UNO de esos temas. Si no encaja claramente en "
-            "ninguno, respondé exactamente: Sin clasificar\n"
-            "Respondé SOLO con el nombre del tema, sin comillas ni explicación."
-        )
-        resp = query_llm([{"role": "user", "content": prompt}]).strip().strip('"').strip()
-        if resp in temas:
-            tema = resp
-        elif "sin clasificar" in resp.lower():
-            tema = "Sin clasificar"
-        else:
-            # Respuesta con puntuación/mayúsculas distintas: matcheo laxo, honesto si no hay.
-            low = resp.lower()
-            tema = next((t for t in temas if t.lower() in low or low in t.lower()), "Sin clasificar")
-        with get_sync_session() as s:
-            s.query(NodeModel).filter(NodeModel.id == nodo["id"]).update({"tema": tema})
-            s.commit()
-        print(f"✓ Tema asignado a '{str(nodo.get('label', ''))[:40]}': {tema}")
-    except Exception as e:
-        print(f"Warning asignar_tema: {e}")
+        data = parsear_json(crudo.strip())
+    except Exception as exc:
+        print(f"Warning: no se pudo parsear la clasificación de temas: {exc}")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    asignados = {}
+    for indice, nodo in enumerate(nodos, 1):
+        respuesta = data.get(str(indice), data.get(indice))
+        if respuesta is None:
+            continue
+        asignados[nodo["id"]] = _resolver_tema(str(respuesta), temas)
+    return asignados
 
 
 def asignar_temas_pendientes():
-    """Clasifica TODOS los docs sin tema en la taxonomía existente. Se llama tras cada
-    ingesta: cubre el doc recién subido y también los que quedaron pendientes por
-    errores anteriores (p.ej. cuota de la API agotada) — el sistema se auto-repara."""
+    """Clasifica TODOS los docs sin tema dentro de la taxonomía EXISTENTE, en lotes.
+
+    Se llama tras cada ingesta: cubre los documentos recién subidos y también los que
+    quedaron pendientes por errores anteriores (p.ej. cuota de la API agotada) — el
+    sistema se auto-repara. Mantiene la taxonomía estable: no re-baraja los demás nodos
+    ni cambia los nombres. Si aún no hay taxonomía, no hace nada: la crea el
+    reagrupado global (✦)."""
     try:
         from database.connection import get_sync_session
         from database.models import Node as NodeModel
         with get_sync_session() as s:
+            temas = _temas_existentes(s)
+            if not temas:
+                return
             faltan = s.query(NodeModel).filter(
                 NodeModel.tema.is_(None),
                 NodeModel.is_issue == False,
                 NodeModel.is_centroid == False,
             ).all()
-            nodos = [{"id": n.id, "label": n.label, "conceptos": n.conceptos or []} for n in faltan]
-        for nodo in nodos:
-            asignar_tema(nodo)
+            nodos = [{"id": n.id, "label": n.label, "conceptos": n.conceptos or []}
+                     for n in faltan]
+        if not nodos:
+            return
+        for inicio in range(0, len(nodos), TEMAS_LOTE):
+            lote = nodos[inicio:inicio + TEMAS_LOTE]
+            try:
+                asignados = _clasificar_lote(lote, temas)
+            except Exception as exc:
+                print(f"Warning: lote de temas falló, queda pendiente: {exc}")
+                continue
+            if not asignados:
+                continue
+            with get_sync_session() as s:
+                for node_id, tema in asignados.items():
+                    s.query(NodeModel).filter(NodeModel.id == node_id).update({"tema": tema})
+                s.commit()
+            print(f"✓ Temas asignados a {len(asignados)}/{len(lote)} documentos del lote")
     except Exception as e:
         print(f"Warning asignar_temas_pendientes: {e}")
+
+
+def asignar_tema(nodo: dict):
+    """Clasifica UN documento en la taxonomía existente. Envoltorio del camino en lote,
+    para que exista una sola definición de cómo se resuelve un tema."""
+    try:
+        from database.connection import get_sync_session
+        from database.models import Node as NodeModel
+        with get_sync_session() as s:
+            temas = _temas_existentes(s)
+        if not temas:
+            return
+        asignados = _clasificar_lote([nodo], temas)
+        if not asignados:
+            return
+        with get_sync_session() as s:
+            for node_id, tema in asignados.items():
+                s.query(NodeModel).filter(NodeModel.id == node_id).update({"tema": tema})
+            s.commit()
+        print(f"✓ Tema asignado a '{str(nodo.get('label', ''))[:40]}': "
+              f"{asignados.get(nodo['id'])}")
+    except Exception as e:
+        print(f"Warning asignar_tema: {e}")
 
 
 def acumular_resultado(nuevo: dict) -> dict:

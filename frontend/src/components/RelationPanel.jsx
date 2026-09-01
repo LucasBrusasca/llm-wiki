@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { marked } from 'marked';
+import { renderMarkdown } from '../markdown.js';
 import { clusterColor, ytId } from '../App.jsx';
 
-marked.setOptions({ breaks: true, gfm: true });
 
 const DEFAULT_W = 580;
 const MIN_W = 340, MIN_H = 200;
@@ -321,7 +320,7 @@ Similitud: ${simPct ?? '?'}%. Temas comunes: ${overlap.join(', ') || 'similitud 
             {busy && !synth && <p style={{ fontSize: 11, color: '#565a6a', paddingTop: 4 }}><span className="thinking-dots">Analizando</span></p>}
             {synth && (
               <div className="agent-msg assistant" style={{ marginTop: 4 }}>
-                <div dangerouslySetInnerHTML={{ __html: marked.parse(synth) }} />
+                <div dangerouslySetInnerHTML={{ __html: renderMarkdown(synth) }} />
               </div>
             )}
           </section>

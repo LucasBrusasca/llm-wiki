@@ -1,0 +1,28 @@
+name: Tests
+
+# La suite existía desde julio pero ningún workflow la corría: el único que había
+# desplegaba la demo a Pages. Así entró en main un test roto (el FakeSession de
+# Architect, que dejó de cubrir la persistencia del expediente) sin que nadie lo viera.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Instalar dependencias de test
+        run: python -m pip install -r requirements-dev.txt
+      - name: Verificar sintaxis
+        run: python -m compileall -q main.py processor.py embeddings_engine.py database tests
+      - name: Correr la suite
+        # Sin base de datos ni modelos: los tests aíslan ambos con dobles.
+        run: python -m unittest discover -s tests -v

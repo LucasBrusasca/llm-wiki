@@ -4,10 +4,10 @@
 Ingest PDFs, YouTube videos, web pages and Excel files → the system extracts concepts via LLM, builds a semantic graph, and lets you explore, query, and synthesize knowledge in 3D.
 
 > Algedi es un producto independiente. Su evolución de producto, arquitectura objetivo y MVP
-> están definidos en **[PLAN_PRODUCTO_ALGEDI.md](PLAN_PRODUCTO_ALGEDI.md)**.
+> están definidos en **[PLAN_PRODUCTO_ALGEDI.md](docs/PLAN_PRODUCTO_ALGEDI.md)**.
 
-> 📖 **Leé la [Visión y Concepto Central →](VISION.md)** — el problema profundo que ataca (la deriva del significado / *semantic satiation*), en qué se diferencia de los demos virales y de Obsidian, y hacia dónde va.
-> 🏗️ **Y la [Arquitectura y Forma →](ARQUITECTURA.md)** — medallón (bronze/silver/gold), el framework de conectores para sumar fuentes, y cómo escala.
+> 📖 **Leé la [Visión y Concepto Central →](docs/VISION.md)** — el problema profundo que ataca (la deriva del significado / *semantic satiation*), en qué se diferencia de los demos virales y de Obsidian, y hacia dónde va.
+> 🏗️ **Y la [Arquitectura y Forma →](docs/ARQUITECTURA.md)** — medallón (bronze/silver/gold), el framework de conectores para sumar fuentes, y cómo escala.
 
 ---
 
@@ -32,7 +32,7 @@ From there you can:
 |---|---|
 | Backend | FastAPI + Python |
 | LLM | Anthropic API / Gemini API / Ollama (local) |
-| Embeddings | `sentence-transformers` — `all-MiniLM-L6-v2` |
+| Embeddings | `sentence-transformers` — `paraphrase-multilingual-MiniLM-L12-v2` (384d) |
 | Dimensionality reduction | UMAP → 3D coordinates |
 | Clustering | HDBSCAN |
 | Frontend | React 18 + Vite |
@@ -127,8 +127,9 @@ Open `http://localhost:5173`, click **Biblioteca**, and drop in a PDF or paste a
 │  ─ /api/agent                                       │
 └──────────────────────┬──────────────────────────────┘
                        │
-              nodes_generated.json
-              (graph state + embeddings)
+         PostgreSQL + pgvector
+    nodes · edges · chunks · sources · documents
+              (índices HNSW)
 ```
 
 ---
@@ -142,13 +143,14 @@ Text extraction (PyMuPDF / oEmbed / httpx+BeautifulSoup)
   ↓
 LLM → structured JSON node {label, desc, fragmento, conceptos}
   ↓
-sentence-transformers → 768d embedding vector
+sentence-transformers → 384d embedding vector (multilingüe)
   ↓
 UMAP → (x3d, y3d, z3d) coordinates
   ↓
 HDBSCAN → cluster assignment
   ↓
-Relation engine → edges by cosine similarity ≥ 0.38 OR ≥2 shared concepts
+Relation engine → kNN por nodo (top-5) + piso data-driven (percentil del corpus)
+                  o ≥2 conceptos compartidos por palabra completa
   ↓
 React 3D graph
 ```
@@ -200,9 +202,12 @@ llm-wiki/
 ├── main.py                 # FastAPI server + API routes
 ├── processor.py            # LLM calls, text extraction, cosine similarity
 ├── embeddings_engine.py    # UMAP + HDBSCAN pipeline
-├── server.py               # Lightweight alternative server (no FastAPI)
-├── nodes_generated.json    # Graph state (nodes + relations + embeddings)
+├── database/               # Modelos SQLAlchemy, esquema e inicialización
+├── tests/                  # Suite unittest (corre sin Docker ni modelos)
+├── docs/                   # Visión, arquitectura y plan de producto
+├── entregables/            # Material del TP (canvas, notas, deck)
 ├── requirements-fastapi.txt
+├── requirements-dev.txt    # Sólo lo necesario para correr los tests
 ├── .env.example
 └── frontend/
     └── src/

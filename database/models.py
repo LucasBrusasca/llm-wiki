@@ -59,6 +59,20 @@ class Edge(Base):
     is_manual       = Column(Boolean, default=False)
     created_at      = Column(DateTime, server_default=func.now())
 
+class GraphStat(Base):
+    """Estadísticas derivadas del grafo, medidas por el recálculo global.
+
+    Existe por una razón concreta: el piso de similitud de las aristas es data-driven
+    (percentil de la distribución real del corpus) y sólo se puede medir recorriendo
+    todos los pares. La ingesta incremental no puede hacer eso, así que lee acá el
+    último piso medido en vez de inventar un umbral mágico.
+    """
+    __tablename__ = "graph_stats"
+    key        = Column(String, primary_key=True)
+    value      = Column(JSON, default=dict)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id                 = Column(Integer, primary_key=True, autoincrement=True)

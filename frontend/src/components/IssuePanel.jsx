@@ -1,9 +1,9 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import ReactFlow, { Background, Controls, MarkerType } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { marked } from 'marked';
+import { renderMarkdown } from '../markdown.js';
+import { pedirClave, avisarClaveIncorrecta } from '../security.js';
 
-marked.setOptions({ breaks: true, gfm: true });
 
 // ── Reporte de los 4 agentes ────────────────────────────────────────────────
 // Colapsable y renderizado como markdown. Compartido entre el resultado
@@ -52,7 +52,7 @@ function SynthesisView({ syn }) {
                   padding: '10px 14px 14px', fontSize: 13, color: '#c4c8d6', lineHeight: 1.7,
                   borderTop: `1px solid ${dark ? 'rgba(255,51,102,0.15)' : 'rgba(255,255,255,0.06)'}`,
                 }}
-                dangerouslySetInnerHTML={{ __html: marked.parse(content || '') }}
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(content || '') }}
               />
             )}
           </div>
@@ -751,8 +751,14 @@ export default function IssuePanel({ allNodes, onClose, onRefresh, onNavigate, o
   const deleteIssue = useCallback(async () => {
     if (!selectedIssue) return;
     if (!window.confirm(`¿Eliminar "${selectedIssue.label}" del grafo? Esta acción no se puede deshacer.`)) return;
+    const clave = await pedirClave(`eliminar «${selectedIssue.label}»`);
+    if (!clave) return;
     try {
-      await fetch(`/api/node/${encodeURIComponent(selectedIssue.id)}`, { method: 'DELETE' });
+      const r = await fetch(`/api/node/${encodeURIComponent(selectedIssue.id)}`, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(clave),
+      });
+      if (r.status === 403) { avisarClaveIncorrecta(); return; }
       setChatHistories(prev => { const next = { ...prev }; delete next[selectedIssue.id]; return next; });
       setSelectedIssueId('new');
       onRefresh();
@@ -1085,7 +1091,7 @@ Descripción general: ${selectedIssue.desc || 'Sin descripción'}
                     {currentChat.map((msg, idx) => (
                       <div key={idx} className={`agent-msg ${msg.role}`} style={{ maxWidth: '85%', fontSize: 14, lineHeight: 1.6 }}>
                         {msg.role === 'assistant' ? (
-                          <div dangerouslySetInnerHTML={{ __html: marked.parse(msg.text || '') }} />
+                          <div dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.text || '') }} />
                         ) : (
                           <p>{msg.text}</p>
                         )}
