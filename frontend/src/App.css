@@ -2414,9 +2414,25 @@ body::before {
   flex-shrink: 0;
 }
 
+/* Selector de sección en el riel: necesita separación visual clara */
+.header > .hdr-menu-wrap {
+  margin-top: 0;
+  padding-top: 0;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.header > .hdr-menu-wrap .seccion-btn {
+  width: 100%;
+  height: 38px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+
 .search-input {
-  width: 100%; height: 34px; font-size: 12.5px;
-  margin-bottom: 4px; flex-shrink: 0;
+  width: 100%; height: 38px; font-size: 13px;
+  margin-bottom: 12px; flex-shrink: 0;
+  padding: 0 14px;
 }
 
 .header-actions {
@@ -2455,8 +2471,9 @@ body::before {
 /* Los separadores horizontales del header no aportan en vertical. */
 .header-actions .hdr-sep { display: none; }
 
-/* Herramientas (⋯) y contador quedan al pie del riel. */
-.hdr-menu-wrap { margin-top: auto; padding-top: 12px; }
+/* Herramientas (⋯) y contador quedan al pie del riel.
+   Solo aplica al menú dentro de header-actions, no al selector de sección. */
+.header-actions .hdr-menu-wrap { margin-top: auto; padding-top: 12px; }
 .header-actions .btn-reload { width: 100%; }
 .hdr-menu { left: 0; right: auto; top: auto; bottom: calc(100% + 8px); }
 
