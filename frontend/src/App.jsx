@@ -12,6 +12,7 @@ import DiscoveriesPanel from './components/DiscoveriesPanel.jsx';
 import ProcessPanel from './components/ProcessPanel.jsx';
 import ArchitectPanel from './components/ArchitectPanel.jsx';
 import VaultBadge from './components/VaultBadge.jsx';
+import HomeView from './components/HomeView.jsx';
 import { computeDiscoveries } from './discoveries.js';
 import { pedirClave, avisarClaveIncorrecta } from './security.js';
 
@@ -160,6 +161,8 @@ export default function App() {
   const [verFragmentos, setVerFragmentos] = useState(false);
   const [focusTrigger, setFocusTrigger] = useState(0);  // botón "enfocar" del panel
   const [fitTrigger, setFitTrigger]     = useState(0);  // botón "ver todo" (desenfocar)
+  // Home Architect-first: por defecto muestra el home con CTA a Architect
+  const [showHome, setShowHome]         = useState(true);
 
   const hoverTimer = useRef(null);
   const searchTimer = useRef(null);
@@ -523,8 +526,48 @@ export default function App() {
     };
   }, [graphData]);
 
+  // Callbacks para el HomeView
+  const handleStartArchitect = useCallback(() => {
+    setShowHome(false);
+    setArchitectOpen(true);
+  }, []);
+
+  const handleOpenGraphFromHome = useCallback(() => {
+    setShowHome(false);
+  }, []);
+
+  const handleOpenLibraryFromHome = useCallback(() => {
+    setShowHome(false);
+    setLibraryOpen(true);
+  }, []);
+
+  const handleOpenAgentFromHome = useCallback(() => {
+    setShowHome(false);
+    setGlobalAgent(true);
+  }, []);
+
+  const handleOpenIssueFromHome = useCallback((exp) => {
+    setShowHome(false);
+    setIssueOpen(true);
+    if (exp) {
+      const n = graphData.nodes.find(x => x.id === exp.id);
+      if (n) { setFixedNode(n); setHoverNode(null); }
+    }
+  }, [graphData.nodes]);
+
   return (
     <div className="app">
+      {/* Home Architect-first: CTA principal a decidir con evidencia */}
+      {showHome && (
+        <HomeView
+          seccion={seccion}
+          onStartArchitect={handleStartArchitect}
+          onOpenGraph={handleOpenGraphFromHome}
+          onOpenLibrary={handleOpenLibraryFromHome}
+          onOpenAgent={handleOpenAgentFromHome}
+          onOpenIssue={handleOpenIssueFromHome}
+        />
+      )}
       <VaultBadge onGraphChanged={loadGraph} />
       <header className="header">
         <div className="header-brand">
@@ -571,11 +614,43 @@ export default function App() {
           onChange={handleSearchChange}
         />
         <div className="header-actions">
-          {/* ── Etapa 1 · Contexto: lo que el sistema sabe ── */}
+          {/* ── Botón de Inicio (volver al Home Architect-first) ── */}
+          <button
+            className={`btn-synth${showHome ? ' active' : ''}`}
+            onClick={() => setShowHome(true)}
+            title="Inicio — volver al home de Algedi"
+          >
+            ◇ Inicio
+          </button>
+
+          <span className="hdr-sep" />
+
+          {/* ── Etapa Principal · Decidir con Architect ──
+                 Architect es el camino principal: decidir qué construir antes de
+                 elegir la tecnología. CTA prominente. */}
+          <span className="hdr-stage">Decidir</span>
+          <button
+            className={`btn-synth btn-architect${architectOpen ? ' active' : ''}`}
+            onClick={() => { setShowHome(false); setArchitectOpen(o => !o); }}
+            title="Architect — decidí qué construir, fundado en tu corpus"
+          >
+            ⬢ Architect
+          </button>
+          <button
+            className={`btn-synth btn-issue${issueOpen || processOpen ? ' active' : ''}`}
+            onClick={() => { setShowHome(false); setArchitectOpen(false); setIssueOpen(o => !o); }}
+            title="Issue — desarrollá un expediente, fundado en tu grafo"
+          >
+            ⚠ Expedientes
+          </button>
+
+          <span className="hdr-sep" />
+
+          {/* ── Etapa Secundaria · Contexto: lo que el sistema sabe ── */}
           <span className="hdr-stage">Contexto</span>
           <button
             className={`btn-synth${libraryOpen ? ' active' : ''}`}
-            onClick={() => setLibraryOpen(o => !o)}
+            onClick={() => { setShowHome(false); setLibraryOpen(o => !o); }}
             title="Biblioteca — cargá y gestioná tus documentos"
           >
             ⊞ Biblioteca
@@ -583,55 +658,29 @@ export default function App() {
 
           <span className="hdr-sep" />
 
-          {/* ── Etapa 2 · Explorar: qué hay en el corpus y cómo se relaciona ── */}
+          {/* ── Etapa Secundaria · Explorar: qué hay en el corpus y cómo se relaciona ── */}
           <span className="hdr-stage">Explorar</span>
           <button
             className={`btn-synth${globalAgent ? ' active' : ''}`}
-            onClick={toggleGlobalAgent}
+            onClick={() => { setShowHome(false); toggleGlobalAgent(); }}
             title="Agente — preguntá sobre tu conocimiento (fundado en el grafo, con citas)"
           >
             ⬡ Agente
           </button>
           <button
             className={`btn-synth${discoveriesOpen ? ' active' : ''}`}
-            onClick={() => setDiscoveriesOpen(o => !o)}
+            onClick={() => { setShowHome(false); setDiscoveriesOpen(o => !o); }}
             title="Descubrir — puentes, silos y nodos aislados (sin IA, sobre tus datos)"
           >
             ◎ Descubrir
           </button>
           <button
             className={`btn-synth${synthMode ? ' active' : ''}`}
-            onClick={toggleSynth}
+            onClick={() => { setShowHome(false); toggleSynth(); }}
             title="Síntesis — combiná varios nodos en un documento"
           >
             ◈ Síntesis
           </button>
-
-          <span className="hdr-sep" />
-
-          {/* ── Etapa 3 · Decidir ──
-                 Una sola entrada. Architect es el paso 1 del recorrido, no un
-                 módulo hermano: clasifica QUÉ intervención corresponde y, si la
-                 ruta amerita desarrollo, entrega el caso a Issue. Tener dos
-                 botones obligaba al usuario a saber de antemano cuál necesitaba,
-                 que es justamente lo que el sistema tiene que resolverle. */}
-          {/* ISSUE es la pantalla principal de esta etapa: ahí se trabaja el
-              problema, el flujograma, el reporte y el chat por etapa.
-              ARCHITECT es un complemento que se acopla: clasifica qué clase de
-              intervención corresponde ANTES de desarrollarla. Entra por Issue,
-              no al revés. */}
-          <span className="hdr-stage">Decidir</span>
-          <button
-            className={`btn-synth btn-issue${issueOpen || processOpen ? ' active' : ''}`}
-            onClick={() => { setArchitectOpen(false); setIssueOpen(o => !o); }}
-            title="Issue — diagnosticá un problema o diseñá un proceso, fundado en tu grafo"
-          >
-            ⚠ Issue
-          </button>
-          {/* Architect ya no tiene botón propio: vive como la pestaña «Clasificación»
-              dentro del detalle de un Issue. Era un paso del expediente disfrazado de
-              módulo hermano. El panel suelto sigue en el árbol por si hace falta
-              volver a exponerlo, pero no ocupa lugar en la navegación. */}
 
           <span className="hdr-sep" />
 
