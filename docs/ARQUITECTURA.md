@@ -78,6 +78,80 @@ Un conector recibe una **entrada** (ruta de archivo o URL) y devuelve:
 
 ---
 
+## 2.bis El contrato de una arista
+
+Una arista no es un hecho: es el resultado de un cálculo concreto. Por eso, además de
+`source`, `target`, `score`, `shared_concepts`, `label` y `description`, cada arista
+guarda **su procedencia**:
+
+| Campo | Qué responde |
+|---|---|
+| `metodo` | Con qué camino se calculó: `knn_incremental` (ingesta, top-K del nodo nuevo, piso heredado), `recalculo_global` (todos los pares, piso medido sobre el corpus) o `manual`. |
+| `base_relacion` | Qué la sostiene: `explicita` (≥2 conceptos compartidos por palabra completa), `semantica` (coseno sobre un piso **medido**), `inferida` (coseno sobre un piso **no medido**, el default de la ingesta) o `manual`. |
+| `evidencia` | Los números crudos: coseno, piso aplicado, si ese piso fue medido, si lo supera, conceptos compartidos, K y modelo de embeddings. |
+| `revision` | La decisión de una persona: `confirmada` / `rechazada`, con comentario y fecha. `NULL` = nunca revisada. |
+
+Dos reglas que sostienen esto:
+
+1. **`label` y `description` son interpretación, no medición.** `COMPLEMENTA_A` no
+   significa que un documento complemente al otro: significa que el coseno pasó 0.75.
+   La UI los muestra separados de `evidencia` y rotulados como derivados.
+2. **El recálculo no borra decisiones humanas.** Recalcular relaciones borra y rehace
+   las aristas calculadas, pero rescata y repone `revision` y las aristas manuales.
+   El cálculo se puede rehacer; el juicio de una persona no.
+
+Las aristas anteriores a esta trazabilidad quedan con estos campos en `NULL` a
+propósito, y la UI las muestra como *origen no registrado*. Inventarles un método
+sería exactamente el error que estos campos existen para evitar.
+
+## 2.ter Vigencia de una fuente
+
+`created_at` dice **cuándo se incorporó** una fuente, no si su contenido sigue valiendo.
+Confundir las dos cosas es el error más fácil de cometer acá, así que la regla es dura y
+está aislada en `vigencia.py`:
+
+> **La antigüedad no es señal de desactualización.** Un documento de 2019 puede seguir
+> siendo la referencia vigente y uno de ayer puede haber quedado obsoleto.
+
+Una fuente sólo cambia de estado por una **observación concreta** o por una **persona**:
+
+| Estado | Cuándo lo pone el sistema |
+|---|---|
+| `vigente` | El archivo en disco es byte a byte el que se incorporó — o no hay nada que indique lo contrario (y el motivo lo aclara). |
+| `posiblemente_desactualizado` | El archivo cambió después de la ingesta, o desapareció. El nodo del grafo describe una versión que ya no existe. |
+| `reemplazado` | Sólo por decisión humana: el sistema no puede saber que salió una norma nueva. |
+
+### Observación y decisión, separadas
+
+`Source.estado_vigencia` + `Source.vigencia` guardan **lo que observó el sistema**.
+`Source.revision_vigencia` guarda **lo que decidió una persona**. El estado efectivo sale
+de combinarlos (`resolver_estado`), y ambos quedan visibles en el panel del nodo.
+
+Están separados a propósito: si la decisión humana escribiera sobre la observación,
+quitarla después dejaría el estado humano pegado y "lo que observó el sistema" pasaría a
+ser mentira.
+
+### Qué significa cada motivo
+
+Cada estado viaja con su motivo, porque `vigente` a secas es ambiguo. No es lo mismo
+"comparé el archivo y no cambió" que "nunca tuve con qué comparar":
+
+- `contenido_sin_cambios` — verificado contra la huella guardada.
+- `linea_base_establecida_ahora` — no había huella; se fijó con el archivo actual.
+  Habilita detectar cambios futuros, **no dice nada del pasado**.
+- `sin_archivo_local_verificable` — URL o video: no se puede comprobar offline. No
+  verificable **no** es lo mismo que desactualizado.
+- `archivo_modificado_despues_de_la_ingesta` / `archivo_ausente` — las dos únicas
+  observaciones que degradan el estado.
+- `decision_humana` — lo fijó una persona.
+
+### Versión y duplicados
+
+Reingerir el mismo locator con contenido distinto sube `version` y empuja la huella
+anterior al `historial`: es la única prueba de que la fuente cambió. Y dos fuentes con la
+misma huella se marcan con `duplicado_de` — **sin** degradar el estado: dos copias del
+mismo archivo no vuelven vieja a ninguna.
+
 ## 3. Organización de nodos a escala
 
 Cuando el corpus crezca a cientos de documentos, el cuello de botella **no** es el

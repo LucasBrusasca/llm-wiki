@@ -2622,3 +2622,27 @@ body::before {
   color: var(--data); font-size: 11.5px; line-height: 1.45;
 }
 .arch-saved b { color: var(--text); }
+
+/* Resultado de la verificación de vigencia. Reporta POR MOTIVO, no un total: un
+   "105 vigentes" escondería que la mayoría nunca se comparó contra nada. */
+.vigencia-toast {
+  position: fixed; right: 18px; bottom: 18px; z-index: 60;
+  max-width: 420px; padding: 12px 14px;
+  background: rgba(8, 12, 24, 0.96);
+  border: 1px solid rgba(90, 110, 160, 0.35);
+  border-radius: 5px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+.vigencia-toast .panel-close { position: absolute; top: 6px; right: 8px; }
+.vigencia-toast__title {
+  font-size: 11px; font-weight: 700; letter-spacing: 1px;
+  color: #00d4ff; font-family: monospace; margin-bottom: 8px; padding-right: 18px;
+}
+.vigencia-toast__list { margin: 0; padding-left: 16px; }
+.vigencia-toast__list li {
+  font-size: 10px; color: #9a9db0; line-height: 1.6; margin-bottom: 4px;
+}
+.vigencia-toast__list b { color: #c8cbd8; }
+.vigencia-toast__note {
+  font-size: 9px; color: #c98b5a; line-height: 1.5; margin: 8px 0 0;
+}

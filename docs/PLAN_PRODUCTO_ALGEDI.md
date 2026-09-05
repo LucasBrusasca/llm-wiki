@@ -145,6 +145,22 @@ Problema
   `approved` o `revision_requested`) con historial.
 - Generación de procesos y flujogramas.
 - Descubrimientos heurísticos de puentes, silos, huecos y nodos aislados.
+- Procedencia de relaciones: cada arista registra con qué método se calculó
+  (`knn_incremental` / `recalculo_global` / `manual`), qué la sostiene
+  (`explicita` / `semantica` / `inferida` / `manual`), la evidencia numérica que la
+  respalda (coseno, piso aplicado, si ese piso fue medido sobre el corpus, conceptos
+  compartidos, K y modelo de embeddings) y la revisión humana (`confirmada` /
+  `rechazada`). El panel muestra qué significa cada puntaje y qué **no** significa,
+  y separa la etiqueta derivada (`COMPLEMENTA_A`, `PROFUNDIZA_EN`…) de la medición.
+  Las decisiones humanas sobreviven a los recálculos de relaciones.
+- Vigencia de fuentes (`vigencia.py`): estado `vigente` / `posiblemente_desactualizado` /
+  `reemplazado` con su motivo, huella SHA-256 del archivo, versión e historial de hashes
+  al reingerir, y detección de fuentes con contenido byte a byte idéntico. La
+  verificación (`POST /api/vigencia/verificar`) es offline y determinística: compara el
+  archivo en disco contra la huella guardada. **La fecha de incorporación no se usa como
+  señal**: ninguna fuente se degrada por antigüedad. La decisión humana
+  (`POST /api/vigencia/review`) se guarda aparte de la observación del sistema, y las dos
+  quedan visibles por separado en el panel del nodo.
 
 ### Experimental
 
@@ -155,6 +171,8 @@ Problema
 - Descubrimientos: son heurísticas estructurales, no verificación de contradicciones.
 - Ingesta continua por carpeta `vault/`, todavía sin integrar formalmente al historial Git.
 - Taxonomía generada por LLM.
+- Clase `inferida` de relaciones: existe y es alcanzable (ingesta previa al primer
+  recálculo global), pero el umbral por defecto `0.35` no está calibrado empíricamente.
 - HTML enriquecido generado por LLM.
 
 ### Sólo visión o pendiente
@@ -463,6 +481,69 @@ cambios requeridos. Aún falta auditoría determinista de cada claim y la iterac
 
 Estado: aprobación o solicitud de corrección persistidas localmente con historial. Faltan rechazo,
 bloqueo, identidad del revisor, versionado de artefactos y exportación final.
+
+## Desarrollo posterior sobre la capa de procedencia
+
+Registrado como dirección, **no implementado**. Nada de esto es una capacidad actual
+del producto y no debe presentarse como tal en una demo ni en la documentación de
+entrega.
+
+### Vigencia de fuentes — lo que queda pendiente
+
+La capa base está implementada (ver *Estado actual verificado*). Lo que **no** está:
+
+- **Verificación de fuentes remotas.** Una URL o un video no se pueden comprobar sin
+  red: hoy quedan como `sin_archivo_local_verificable`. Falta un re-fetch controlado que
+  compare el contenido actual contra el incorporado, respetando el modo local-first.
+- **Propagación de la desactualización.** Cuando un archivo cambia se marca la fuente,
+  pero el resumen, los conceptos, los chunks y las aristas derivadas siguen siendo los de
+  la versión vieja. Falta reprocesar —o al menos marcar— los artefactos derivados.
+- **Deduplicación real.** Se detectan 24 grupos de fuentes con contenido idéntico en el
+  corpus actual, pero no hay acción: falta poder fusionarlas conservando la trazabilidad
+  de ambas.
+- **Vigencia por dominio.** "Desactualizado" no significa lo mismo para un paper que para
+  una norma o un informe trimestral. Hoy la regla es única.
+
+### Contradicciones (P3, siguiente prioridad)
+
+Hoy sólo hay prompts que le piden a un LLM mencionar contradicciones en prosa
+(síntesis multi-nodo, verificador de Architect). No hay registro persistente. Falta:
+
+- candidatos a contradicción como entidad persistida, con ambas fuentes y sus pasajes;
+- ninguna resolución automática de cuál es verdadera;
+- cola de revisión humana con el mismo modelo de decisión que la revisión de relaciones.
+
+### Análisis de impacto
+
+Responder “¿qué se ve afectado si incorporo, modifico o elimino esta fuente?”:
+qué aristas nacerían o morirían, qué claims quedarían sin respaldo, qué revisiones
+humanas se invalidarían. La procedencia de relaciones es el prerrequisito: sin saber
+por qué existe una arista no se puede saber qué la rompe.
+
+### RAG multimodal
+
+Recuperación sobre PDFs con tablas e imágenes, audio y video, conservando la
+localización del pasaje (página, celda, timestamp) como unidad mínima de evidencia.
+
+### Consultas SQL controladas y de sólo lectura
+
+Evidencia estructurada junto a la documental, con la misma exigencia de procedencia:
+qué consulta se ejecutó, contra qué esquema, en qué fecha, y qué devolvió.
+
+### Trazabilidad conjunta
+
+Un mismo claim respaldado por un pasaje documental y por una fila de una tabla, con
+el origen de cada mitad distinguible.
+
+### Sugerencias de preguntas relacionadas
+
+Formular preguntas que el usuario todavía no hizo a partir de huecos, puentes y
+contradicciones detectadas — como sugerencia inspeccionable, no como afirmación.
+
+### Validación humana antes de consolidar conocimiento
+
+Generalizar el modelo de revisión de relaciones a nodos, conceptos, claims y temas:
+que el grafo distinga siempre lo que propuso la máquina de lo que confirmó una persona.
 
 ## Fuera de alcance del MVP
 

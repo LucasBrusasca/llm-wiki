@@ -839,13 +839,53 @@ def _conceptos_compartidos(nombres_a, toks_a, toks_b) -> list:
     return list(dict.fromkeys(shared))
 
 
-def _describir_relacion(source: str, target: str, sim: float, shared: list) -> dict:
-    """Arma la arista final con su etiqueta y su explicación.
+# Conceptos compartidos necesarios para considerar el vínculo EXPLÍCITO: dos o más
+# conceptos que aparecen escritos en ambos documentos. Uno solo es demasiado frágil
+# (un término genérico basta para producirlo).
+CONCEPTOS_PARA_EXPLICITA = 2
+
+# Métodos con los que puede nacer una arista. Se guardan en la arista porque no son
+# equivalentes: el incremental sólo mira el top-K del nodo nuevo y usa el último piso
+# medido; el global recorre todos los pares y mide el piso sobre este corpus.
+METODO_INCREMENTAL = "knn_incremental"
+METODO_GLOBAL = "recalculo_global"
+METODO_MANUAL = "manual"
+
+
+def _clasificar_base(sim: float, shared: list, piso: float | None,
+                     piso_medido: bool) -> str:
+    """Qué sostiene la arista. Es la respuesta a "¿por qué están relacionados?".
+
+    - `explicita`: los documentos comparten conceptos escritos. La evidencia es
+      inspeccionable: son palabras que están en ambos.
+    - `semantica`: no comparten conceptos suficientes; sólo sus vectores quedaron por
+      encima de un piso MEDIDO sobre este corpus.
+    - `inferida`: superó un piso que nadie midió sobre este corpus (el default de la
+      ingesta, cuando todavía no corrió un recálculo global). Cumplió un supuesto,
+      no un umbral observado. Es la clase automática más débil y se marca como tal.
+    """
+    if len(shared) >= CONCEPTOS_PARA_EXPLICITA:
+        return "explicita"
+    if piso is not None and sim >= piso and piso_medido:
+        return "semantica"
+    return "inferida"
+
+
+def _describir_relacion(source: str, target: str, sim: float, shared: list,
+                        *, metodo: str = METODO_GLOBAL, piso: float | None = None,
+                        piso_medido: bool = False) -> dict:
+    """Arma la arista final con su etiqueta, su explicación y su procedencia.
 
     ÚNICA fuente de esta lógica: la usan el recálculo global y el incremental. Si cada
     camino etiquetara por su cuenta, una misma arista significaría cosas distintas según
-    cómo fue creada, y el RelationPanel mentiría."""
-    comparten = len(shared) >= 2
+    cómo fue creada, y el RelationPanel mentiría.
+
+    `label` y `description` son INTERPRETACIÓN derivada de los números, no medición:
+    "COMPLEMENTA_A" no significa que un documento complemente al otro, significa que el
+    coseno pasó 0.75. Por eso viajan junto a `evidencia`, que sí son los números crudos,
+    y el panel los presenta separados.
+    """
+    comparten = len(shared) >= CONCEPTOS_PARA_EXPLICITA
     if sim >= 0.75:
         label = "COMPLEMENTA_A"
     elif sim >= 0.55 and comparten:
@@ -861,8 +901,23 @@ def _describir_relacion(source: str, target: str, sim: float, shared: list) -> d
                        f"con similitud semántica del {int(sim * 100)}%.")
     else:
         description = f"Similitud semántica del {int(sim * 100)}%."
-    return {"source": source, "target": target, "score": sim,
-            "shared_concepts": shared, "label": label, "description": description}
+    return {
+        "source": source, "target": target, "score": sim,
+        "shared_concepts": shared, "label": label, "description": description,
+        "metodo": metodo,
+        "base_relacion": _clasificar_base(sim, shared, piso, piso_medido),
+        "evidencia": {
+            "similitud_coseno": sim,
+            "piso_usado": piso,
+            "piso_medido": bool(piso_medido),
+            "supera_piso": (piso is not None and sim >= piso),
+            "conceptos_compartidos": list(shared),
+            "n_conceptos_compartidos": len(shared),
+            "comparte_conceptos_suficientes": comparten,
+            "k_vecinos": RELACIONES_K,
+            "modelo_embeddings": EMBED_MODEL_NAME,
+        },
+    }
 
 
 def relaciones_incrementales(nodo: dict, vecinos: list, piso: float | None = None) -> list:
@@ -879,6 +934,9 @@ def relaciones_incrementales(nodo: dict, vecinos: list, piso: float | None = Non
     """
     if not nodo.get("embedding") or not vecinos:
         return []
+    # Si nunca corrió un recálculo global no hay piso medido: se cae al default y las
+    # aristas que sobrevivan sólo por coseno quedan clasificadas como `inferida`.
+    piso_medido = piso is not None
     piso = PISO_SIMILITUD_DEFAULT if piso is None else piso
     dominio = nodo.get("dominio") or "personal"
 
@@ -908,7 +966,10 @@ def relaciones_incrementales(nodo: dict, vecinos: list, piso: float | None = Non
     rels = []
     for c in candidatos[:RELACIONES_K]:
         if c["sim"] >= piso or c["comparten"]:
-            rels.append(_describir_relacion(nodo["id"], c["id"], c["sim"], c["shared"]))
+            rels.append(_describir_relacion(
+                nodo["id"], c["id"], c["sim"], c["shared"],
+                metodo=METODO_INCREMENTAL, piso=piso, piso_medido=piso_medido,
+            ))
     return rels
 
 
@@ -990,7 +1051,11 @@ def _auto_relaciones(nodos, stats: dict | None = None):
     for c in cand:
         if (c["a"], c["b"]) not in keep:
             continue
-        rels.append(_describir_relacion(c["a"], c["b"], c["sim"], c["shared"]))
+        rels.append(_describir_relacion(
+            c["a"], c["b"], c["sim"], c["shared"],
+            # El global es el único que MIDE el piso sobre este corpus.
+            metodo=METODO_GLOBAL, piso=floor, piso_medido=True,
+        ))
     return rels
 
 

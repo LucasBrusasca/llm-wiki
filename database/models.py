@@ -57,6 +57,15 @@ class Edge(Base):
     label           = Column(String)
     description     = Column(Text)
     is_manual       = Column(Boolean, default=False)
+    # ── Procedencia de la relación ────────────────────────────────────────────
+    # Una arista no es un hecho: es el resultado de un cálculo concreto, con un
+    # método, un umbral y una evidencia. Sin esto el grafo muestra QUE dos cosas
+    # están unidas pero no POR QUÉ, y el usuario no puede auditar la diferencia
+    # entre "comparten conceptos escritos" y "sus vectores quedaron cerca".
+    metodo          = Column(String)   # knn_incremental | recalculo_global | manual
+    base_relacion   = Column(String)   # explicita | semantica | inferida | manual
+    evidencia       = Column(JSON)     # números que sostienen la arista (ver _describir_relacion)
+    revision        = Column(JSON)     # decisión humana sobre la arista (None = nunca revisada)
     created_at      = Column(DateTime, server_default=func.now())
 
 class GraphStat(Base):
@@ -100,6 +109,14 @@ class Source(Base):
     original_name   = Column(String)
     content_hash    = Column(String, index=True)
     source_metadata = Column(JSON, default=dict)
+    # ── Vigencia de la fuente ─────────────────────────────────────────────────
+    # `created_at` dice cuándo se incorporó, no si el contenido sigue valiendo. Estas
+    # columnas separan una cosa de la otra: el estado sólo cambia por una observación
+    # concreta (el archivo cambió, desapareció, fue reingerido) o por una persona.
+    # La antigüedad NUNCA lo cambia. Ver vigencia.py.
+    estado_vigencia   = Column(String, default="vigente")  # vigente | posiblemente_desactualizado | reemplazado
+    vigencia          = Column(JSON)   # versión, hash, historial, motivo y duplicados
+    revision_vigencia = Column(JSON)   # decisión humana (None = nunca revisada)
     created_at      = Column(DateTime, server_default=func.now())
     updated_at      = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

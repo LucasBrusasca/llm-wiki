@@ -111,6 +111,11 @@ function buildGraphData(data) {
     label: l.label,
     shared_concepts: l.shared_concepts,
     description: l.description,
+    metodo: l.metodo,
+    base_relacion: l.base_relacion,
+    evidencia: l.evidencia,
+    revision: l.revision,
+    is_manual: l.is_manual,
   }));
   return { nodes, links: pruneLinks(links) };
 }
@@ -142,6 +147,8 @@ export default function App() {
   const [processOpen, setProcessOpen]   = useState(false);
   const [architectOpen, setArchitectOpen] = useState(false);
   const [relayouting, setRelayouting]   = useState(false);
+  const [verificando, setVerificando]   = useState(false);
+  const [vigenciaResumen, setVigenciaResumen] = useState(null);
   const [toolsOpen, setToolsOpen]       = useState(false);
   // Secciones = grafos de conocimiento independientes (por `dominio`).
   const [seccion, setSeccionState]      = useState(() => localStorage.getItem('algedi_seccion') || 'personal');
@@ -322,6 +329,13 @@ export default function App() {
         label: link.label,
         shared_concepts: link.shared_concepts,
         description: link.description,
+        // Procedencia: el panel muestra lo que el backend calculó, no una
+        // reconstrucción propia. `undefined` = arista sin procedencia registrada.
+        metodo: link.metodo,
+        base_relacion: link.base_relacion,
+        evidencia: link.evidencia,
+        revision: link.revision,
+        is_manual: link.is_manual,
       },
     });
     setFixedNode(null);
@@ -330,6 +344,22 @@ export default function App() {
     setReportOpen(false);
     setGlobalAgent(false);
   }, [synthMode, graphData.nodes]);
+
+  // La revisión vuelve del backend ya persistida; acá sólo se refleja en el grafo en
+  // memoria para que reabrir la arista no muestre el estado viejo.
+  const handleRelationReviewed = useCallback((source, target, revision) => {
+    setGraphData(prev => ({
+      ...prev,
+      links: prev.links.map(l => {
+        const s = l.source?.id ?? l.source, t = l.target?.id ?? l.target;
+        const mismo = (s === source && t === target) || (s === target && t === source);
+        return mismo ? { ...l, revision } : l;
+      }),
+    }));
+    setSelectedLink(prev => prev && ({
+      ...prev, linkMeta: { ...prev.linkMeta, revision },
+    }));
+  }, []);
 
   const handleNodeClick = useCallback((node, event) => {
     setSelectedLink(null);
@@ -643,6 +673,22 @@ export default function App() {
                   }}>
                   <span className="hdr-menu-ico">✦</span> {relayouting ? 'Reagrupando con IA…' : 'Reagrupar con IA (temas)'}
                 </button>
+                <div className="hdr-menu-sep" />
+                <div className="hdr-menu-label">Fuentes</div>
+                <button className="hdr-menu-item" disabled={verificando}
+                  title="Compara cada archivo local contra la huella que se guardó al incorporarlo. Offline, sin IA. No usa la fecha de carga."
+                  onClick={async () => {
+                    setVerificando(true);
+                    try {
+                      const r = await fetch('/api/vigencia/verificar', { method: 'POST' });
+                      const data = await r.json();
+                      setVigenciaResumen(data);
+                      await loadGraph();
+                    } catch { setVigenciaResumen({ error: true }); }
+                    finally { setVerificando(false); setToolsOpen(false); }
+                  }}>
+                  <span className="hdr-menu-ico">⎔</span> {verificando ? 'Verificando fuentes…' : 'Verificar vigencia de fuentes'}
+                </button>
               </div>
             </>)}
           </div>
@@ -653,6 +699,30 @@ export default function App() {
           }
         </div>
       </header>
+
+      {vigenciaResumen && (
+        <div className="vigencia-toast">
+          <button className="panel-close" onClick={() => setVigenciaResumen(null)}>✕</button>
+          {vigenciaResumen.error ? (
+            <div className="vigencia-toast__title">No se pudo verificar</div>
+          ) : (<>
+            <div className="vigencia-toast__title">
+              Vigencia · {vigenciaResumen.revisadas} fuentes revisadas
+            </div>
+            <ul className="vigencia-toast__list">
+              {Object.entries(vigenciaResumen.por_motivo || {}).map(([motivo, n]) => (
+                <li key={motivo}>
+                  <b>{n}</b> {(vigenciaResumen.lectura || {})[motivo] || motivo.replace(/_/g, ' ')}
+                </li>
+              ))}
+              {vigenciaResumen.grupos_duplicados > 0 && (
+                <li><b>{vigenciaResumen.grupos_duplicados}</b> grupos de fuentes con contenido idéntico</li>
+              )}
+            </ul>
+            <p className="vigencia-toast__note">{vigenciaResumen.advertencia}</p>
+          </>)}
+        </div>
+      )}
 
       {loading && (
         <div className="loading-overlay">
@@ -805,6 +875,7 @@ export default function App() {
           nodeA={selectedLink.nodeA}
           nodeB={selectedLink.nodeB}
           linkMeta={selectedLink.linkMeta}
+          onReviewed={handleRelationReviewed}
           onClose={() => { setSelectedLink(null); setHighlighted(new Set()); }}
           initialPos={tooltipPos}
           onOpenSynthesis={handleOpenSynthesisFromRelation}

@@ -83,6 +83,30 @@ async def init_db():
         await conn.execute(text(
             "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS solve JSON"
         ))
+        # Procedencia de relaciones. Las aristas anteriores quedan con estas columnas
+        # en NULL a propósito: el sistema no sabe con qué método ni con qué piso se
+        # calcularon, y esa ignorancia se muestra como tal en el panel. Inventarles un
+        # método sería exactamente el error que estas columnas existen para evitar.
+        for _columna in (
+            "metodo VARCHAR",
+            "base_relacion VARCHAR",
+            "evidencia JSON",
+            "revision JSON",
+        ):
+            await conn.execute(text(
+                f"ALTER TABLE edges ADD COLUMN IF NOT EXISTS {_columna}"
+            ))
+        # Vigencia de fuentes. Las fuentes previas quedan en `vigente` con motivo
+        # `nunca_verificado`: no se comprobó que sigan vigentes, sólo que nada indica
+        # lo contrario. La diferencia importa y por eso el motivo viaja con el estado.
+        for _columna in (
+            "estado_vigencia VARCHAR DEFAULT 'vigente'",
+            "vigencia JSON",
+            "revision_vigencia JSON",
+        ):
+            await conn.execute(text(
+                f"ALTER TABLE sources ADD COLUMN IF NOT EXISTS {_columna}"
+            ))
         await conn.execute(text("""
             CREATE INDEX IF NOT EXISTS nodes_embedding_hnsw
             ON nodes USING hnsw (embedding vector_cosine_ops)

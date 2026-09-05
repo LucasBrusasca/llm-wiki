@@ -10,6 +10,35 @@ function fileExt(node) {
   return m ? m[1] : '';
 }
 // Fecha de carga: absoluta + relativa ("12 jun 2026 · hace 13 días") para trazabilidad.
+// ── Vigencia de la fuente ────────────────────────────────────────────────────
+// Regla dura, heredada de vigencia.py: LA ANTIGÜEDAD NO ES SEÑAL DE NADA. El estado
+// sólo cambia por una observación concreta sobre el archivo o por una persona.
+const VIGENCIA_ESTADOS = {
+  vigente: {
+    titulo: 'VIGENTE', color: '#6fcf97',
+    que_no: 'No significa que se haya verificado el contenido: significa que nada indica lo contrario.',
+  },
+  posiblemente_desactualizado: {
+    titulo: 'POSIBLEMENTE DESACTUALIZADO', color: '#f5a623',
+    que_no: 'No significa que el contenido sea falso ni que haya que descartarlo. Significa que lo que ves acá puede describir otra versión.',
+  },
+  reemplazado: {
+    titulo: 'REEMPLAZADO', color: '#ff6b6b',
+    que_no: 'No borra la fuente ni su evidencia: queda para poder reconstruir qué se sabía antes.',
+  },
+};
+
+const VIGENCIA_MOTIVOS = {
+  contenido_sin_cambios: 'El archivo es byte a byte el mismo que se incorporó.',
+  linea_base_establecida_ahora: 'No había huella de referencia; se fijó con el archivo actual. Habilita detectar cambios de acá en adelante — no dice nada sobre el pasado.',
+  sin_archivo_local_verificable: 'Es una URL o un video: no se puede comprobar sin conexión. No verificable no es lo mismo que desactualizado.',
+  archivo_modificado_despues_de_la_ingesta: 'El archivo cambió después de incorporarlo. El resumen, los conceptos y las aristas describen la versión anterior.',
+  archivo_ausente: 'El archivo original ya no está donde estaba: la evidencia dejó de ser comprobable.',
+  reingerida_con_contenido_nuevo: 'Se volvió a incorporar la misma fuente con contenido distinto. La versión anterior quedó en el historial.',
+  nunca_verificado: 'Todavía no se corrió una verificación sobre esta fuente.',
+  decision_humana: 'El estado lo fijó una persona, no una observación del sistema.',
+};
+
 function fmtFecha(iso) {
   if (!iso) return null;
   const d = new Date(iso);
@@ -408,9 +437,68 @@ export default function NodePanel({
               📅 {node.fuente === 'youtube' ? 'Publicado' : 'Creado'}: {fmtFecha(node.fecha_doc)}
             </p>
           )}
-          {fmtFecha(node.created_at) && (
-            <p className="panel-fecha">⏱ Cargado: {fmtFecha(node.created_at)}</p>
+          {!node.fecha_doc && (
+            <p className="panel-fecha" style={{ color: '#6a6d7a' }}>
+              📅 Fecha del contenido: no registrada por la fuente
+            </p>
           )}
+          {fmtFecha(node.created_at) && (
+            <p className="panel-fecha">⏱ Incorporado: {fmtFecha(node.created_at)}</p>
+          )}
+          {node.vigencia && (() => {
+            const v = node.vigencia;
+            const info = VIGENCIA_ESTADOS[v.estado] || VIGENCIA_ESTADOS.vigente;
+            const porPersona = !!v.revision;
+            const difiere = porPersona && v.estado !== v.estado_observado;
+            return (
+              <div style={{
+                marginTop: 8, padding: '9px 11px', borderRadius: 4,
+                background: 'rgba(255,255,255,0.03)',
+                border: `1px solid ${info.color}33`,
+              }}>
+                <div className="panel-section-label" style={{ marginBottom: 6 }}>VIGENCIA DE LA FUENTE</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{
+                    background: `${info.color}1f`, border: `1px solid ${info.color}`,
+                    color: info.color, padding: '2px 9px', borderRadius: 4,
+                    fontSize: 9, fontWeight: 700, letterSpacing: 1.1, fontFamily: 'monospace',
+                  }}>{info.titulo}</span>
+                  <span style={{ fontSize: 9, fontFamily: 'monospace', color: porPersona ? '#c4b5fd' : '#6a6d7a' }}>
+                    {porPersona ? 'FIJADO POR UNA PERSONA' : 'OBSERVADO POR EL SISTEMA'}
+                  </span>
+                </div>
+
+                <p style={{ fontSize: 10, color: '#9a9db0', lineHeight: 1.6, margin: '7px 0 0' }}>
+                  {porPersona
+                    ? (v.revision.comentario || 'Sin comentario.')
+                    : (VIGENCIA_MOTIVOS[v.motivo] || 'Sin verificación registrada todavía.')}
+                </p>
+
+                {difiere && (
+                  <p style={{ fontSize: 9, color: '#8a9ab0', lineHeight: 1.5, margin: '5px 0 0' }}>
+                    El sistema observa <strong>{v.estado_observado}</strong>
+                    {VIGENCIA_MOTIVOS[v.motivo] ? ` (${VIGENCIA_MOTIVOS[v.motivo].toLowerCase()})` : ''}
+                  </p>
+                )}
+
+                <p style={{ fontSize: 9, color: '#c98b5a', lineHeight: 1.5, margin: '6px 0 0' }}>
+                  <strong style={{ color: '#e0a06a' }}>Qué NO significa:</strong> {info.que_no}
+                </p>
+
+                <div style={{ marginTop: 7, fontSize: 9, fontFamily: 'monospace', color: '#6a6d7a', lineHeight: 1.7 }}>
+                  {v.version > 1 && <div>Versión {v.version} · {v.historial?.length || 0} anterior(es) en el historial</div>}
+                  {v.duplicado_de && <div style={{ color: '#8a9ab0' }}>Contenido idéntico a otra fuente ya incorporada</div>}
+                  {v.reemplazada_por && <div style={{ color: '#8a9ab0' }}>Reemplazada por: {v.reemplazada_por}</div>}
+                  <div>{v.verificado_en ? `Verificado: ${fmtFecha(v.verificado_en) || v.verificado_en}` : 'Nunca verificado'}</div>
+                </div>
+
+                <p style={{ fontSize: 9, color: '#565a6a', lineHeight: 1.5, margin: '6px 0 0' }}>
+                  La fecha de incorporación no determina la vigencia: una fuente antigua puede
+                  seguir siendo válida y una reciente puede no serlo.
+                </p>
+              </div>
+            );
+          })()}
           {node.desc && <p className="panel-desc">{node.desc}</p>}
 
           {node.fragmento && (

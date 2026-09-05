@@ -220,6 +220,14 @@ def edge_to_dict(e) -> dict:
         "shared_concepts": e.shared_concepts or [],
         "label": e.label,
         "description": e.description,
+        # Procedencia: sin esto el frontend sólo puede adivinar por qué existe la
+        # arista, y adivinaba (recalculaba coseno y solapamiento por su cuenta, con
+        # otro criterio que el backend). `None` significa "no registrado", no "manual".
+        "metodo": e.metodo,
+        "base_relacion": e.base_relacion,
+        "evidencia": e.evidencia,
+        "revision": e.revision,
+        "is_manual": bool(e.is_manual),
     }
 
 
@@ -342,6 +350,45 @@ async def _chunks_relevantes_scored(pregunta: str, max_n: int = 8,
 VECINOS_CANDIDATOS = 40
 
 
+def _rescatar_decisiones_humanas(session, EdgeModel, filtro=None):
+    """Lo que un recálculo NO puede regenerar: revisiones y aristas creadas a mano.
+
+    El cálculo de relaciones es determinístico y reproducible; el juicio de una persona
+    no. Borrar aristas para recalcularlas es correcto, pero perder en el camino un
+    "esta relación no corresponde" o un vínculo que alguien trazó a mano convierte al
+    grafo en algo que olvida a sus revisores. Devuelve
+    `({(source, target): revision}, [arista_manual, ...])`.
+    """
+    consulta = session.query(EdgeModel)
+    if filtro is not None:
+        consulta = consulta.filter(filtro)
+    revisiones, manuales = {}, []
+    for arista in consulta.all():
+        par = (arista.source, arista.target)
+        if arista.revision:
+            revisiones[par] = arista.revision
+        if arista.is_manual:
+            manuales.append({
+                "source": arista.source, "target": arista.target,
+                "score": arista.score,
+                "shared_concepts": arista.shared_concepts or [],
+                "label": arista.label, "description": arista.description,
+                "metodo": arista.metodo, "base_relacion": arista.base_relacion,
+                "evidencia": arista.evidencia, "revision": arista.revision,
+                "is_manual": True,
+            })
+    return revisiones, manuales
+
+
+def _restaurar_aristas_manuales(session, EdgeModel, manuales):
+    """Reinserta las aristas trazadas por una persona después de un borrado de recálculo."""
+    for arista in manuales:
+        session.execute(
+            pg_insert(EdgeModel).values(**arista)
+            .on_conflict_do_nothing(index_elements=["source", "target"])
+        )
+
+
 def _leer_piso_similitud(session) -> float | None:
     """Último piso de similitud medido por el recálculo global (None si nunca corrió)."""
     from database.models import GraphStat as GraphStatModel
@@ -449,6 +496,7 @@ def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
                                  Edge as EdgeModel, Node as NodeModel, Source as SourceModel)
     from sqlalchemy import delete as sync_delete
     from processor import relaciones_incrementales
+    from vigencia import registrar_ingesta
 
     campos_validos = {c.key for c in NodeModel.__table__.columns}
     datos = {k: v for k, v in nodo_data.items() if k in campos_validos}
@@ -479,6 +527,31 @@ def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
         # sin cambiar silenciosamente el ID de la fuente.
         source_fingerprint = hashlib.sha256(locator.encode("utf-8")).hexdigest()
         source_id = f"src_{source_fingerprint[:24]}"
+        # ── Vigencia ──────────────────────────────────────────────────────────
+        # Antes de sobrescribir la fuente hay que mirar la que estaba: si el contenido
+        # cambió, esa versión anterior es información, no basura. Sin esto reingerir un
+        # archivo modificado pisaba el hash viejo y el sistema perdía la única prueba
+        # de que la fuente había cambiado.
+        previa = session.get(SourceModel, source_id)
+        hash_previo = previa.content_hash if previa else None
+        vigencia_previa = previa.vigencia if previa else None
+
+        # ¿Ya hay otra fuente con este mismo contenido byte a byte? En el corpus real
+        # abundan: el mismo paper subido como "X - copia.pdf" y como "X.pdf".
+        duplicado_de = None
+        if content_hash:
+            gemela = session.query(SourceModel).filter(
+                SourceModel.content_hash == content_hash,
+                SourceModel.id != source_id,
+            ).order_by(SourceModel.created_at.asc()).first()
+            if gemela is not None:
+                duplicado_de = gemela.id
+
+        estado_vigencia, vigencia_nueva = registrar_ingesta(
+            vigencia_previa, hash_previo, content_hash,
+            datetime.now(timezone.utc).isoformat(), duplicado_de,
+        )
+
         source_values = {
             "id": source_id,
             "kind": nodo_data.get("fuente") or "unknown",
@@ -490,6 +563,8 @@ def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
                 "fecha_doc": nodo_data.get("fecha_doc"),
                 "dominio": nodo_data.get("dominio") or "personal",
             },
+            "estado_vigencia": estado_vigencia,
+            "vigencia": vigencia_nueva,
         }
         session.execute(
             pg_insert(SourceModel).values(**source_values)
@@ -571,9 +646,18 @@ def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
 
         # Sólo se reemplazan las aristas de ESTE nodo. Las del resto del grafo quedan
         # intactas: son válidas y volver a calcularlas era el costo cuadrático.
+        #
+        # Antes de borrar hay que rescatar lo que el cálculo NO puede regenerar: las
+        # aristas creadas a mano y las revisiones humanas. Una decisión de una persona
+        # no puede evaporarse porque se reingirió un documento.
+        revisiones_previas, manuales_previas = _rescatar_decisiones_humanas(
+            session, EdgeModel,
+            (EdgeModel.source == nodo_data["id"]) | (EdgeModel.target == nodo_data["id"]),
+        )
         session.execute(sync_delete(EdgeModel).where(
             (EdgeModel.source == nodo_data["id"]) | (EdgeModel.target == nodo_data["id"])
         ))
+        _restaurar_aristas_manuales(session, EdgeModel, manuales_previas)
         for r in nuevas:
             session.execute(
                 pg_insert(EdgeModel).values(
@@ -583,6 +667,10 @@ def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
                     shared_concepts=r.get("shared_concepts", []),
                     label=r.get("label"),
                     description=r.get("description"),
+                    metodo=r.get("metodo"),
+                    base_relacion=r.get("base_relacion"),
+                    evidencia=r.get("evidencia"),
+                    revision=revisiones_previas.get((r["source"], r["target"])),
                 ).on_conflict_do_nothing(index_elements=["source", "target"])
             )
         session.commit()
@@ -610,9 +698,15 @@ def _recompute_edges_background():
             })
         stats = {}
         new_rels = _auto_relaciones(nodes_dicts, stats)
+        # El recálculo global borra TODO el grafo de aristas y lo rehace. Las decisiones
+        # humanas no se pueden rehacer, así que se rescatan antes y se reponen después.
+        revisiones, manuales = _rescatar_decisiones_humanas(session, EdgeModel)
         session.execute(sync_delete(EdgeModel))
         for r in new_rels:
-            session.add(EdgeModel(**r))
+            session.add(EdgeModel(
+                **r, revision=revisiones.get((r["source"], r["target"]))
+            ))
+        _restaurar_aristas_manuales(session, EdgeModel, manuales)
         # El piso medido acá es el que después usa la ingesta incremental.
         _guardar_piso_similitud(session, stats)
         session.commit()
@@ -731,6 +825,46 @@ async def get_graph_chunks(seccion: str = None, db: AsyncSession = Depends(get_a
     return {"nodos": nodos, "relaciones": relaciones}
 
 
+async def _vigencia_por_nodo(db: AsyncSession, node_ids: set[str]) -> dict:
+    """Estado de vigencia de la fuente de cada nodo, en una sola consulta.
+
+    Un nodo no "tiene" vigencia: la tiene la fuente de la que salió. Se resuelve por
+    `Document.node_id → Source`. El estado efectivo aplica la decisión humana por
+    encima de la observación automática.
+    """
+    from vigencia import resolver_estado, fecha_contenido_conocida
+    if not node_ids:
+        return {}
+    filas = (await db.execute(
+        select(Document.node_id, Source.id, Source.estado_vigencia, Source.vigencia,
+               Source.revision_vigencia, Source.content_hash, Source.source_metadata,
+               Source.created_at)
+        .join(Source, Source.id == Document.source_id)
+        .where(Document.node_id.in_(node_ids))
+    )).all()
+    salida = {}
+    for node_id, src_id, estado, vig, revision, chash, meta, creada in filas:
+        vig = vig or {}
+        fecha_doc = (meta or {}).get("fecha_doc")
+        salida[node_id] = {
+            "source_id": src_id,
+            "estado": resolver_estado(estado, revision),
+            "estado_observado": estado or "vigente",
+            "motivo": vig.get("motivo"),
+            "version": vig.get("version"),
+            "duplicado_de": vig.get("duplicado_de"),
+            "reemplazada_por": (revision or {}).get("reemplazada_por"),
+            "verificado_en": vig.get("verificado_en"),
+            "historial": vig.get("historial") or [],
+            "revision": revision,
+            "content_hash": chash,
+            "fecha_contenido": fecha_doc,
+            "fecha_contenido_conocida": fecha_contenido_conocida(fecha_doc),
+            "incorporada_en": creada.isoformat() if creada else None,
+        }
+    return salida
+
+
 @app.get("/api/graph")
 async def get_graph(seccion: str = None, db: AsyncSession = Depends(get_async_session)):
     # Filtro por sección: cada sección es un grafo independiente. Los issues NO se filtran
@@ -752,6 +886,11 @@ async def get_graph(seccion: str = None, db: AsyncSession = Depends(get_async_se
             nd["z3d"] = rng.uniform(-1, 1)
         nodes_list.append(nd)
         node_ids.add(n.id)
+
+    # Vigencia por nodo: una sola consulta con join, no una por nodo.
+    vigencias = await _vigencia_por_nodo(db, node_ids)
+    for nd in nodes_list:
+        nd["vigencia"] = vigencias.get(nd["id"])
 
     # Solo aristas cuyos DOS extremos están en la sección visible.
     relaciones = [edge_to_dict(e) for e in edges_rows
@@ -1190,6 +1329,18 @@ async def recompute_relations(db: AsyncSession = Depends(get_async_session)):
     stats = {}
     new_rels = _auto_relaciones(nodes_dicts, stats)
 
+    # Mismo criterio que el recálculo en background: lo que decidió una persona
+    # sobrevive al recálculo; lo que calculó la máquina se rehace.
+    previas = (await db.execute(select(Edge))).scalars().all()
+    revisiones = {(e.source, e.target): e.revision for e in previas if e.revision}
+    manuales = [{
+        "source": e.source, "target": e.target, "score": e.score,
+        "shared_concepts": e.shared_concepts or [], "label": e.label,
+        "description": e.description, "metodo": e.metodo,
+        "base_relacion": e.base_relacion, "evidencia": e.evidencia,
+        "revision": e.revision, "is_manual": True,
+    } for e in previas if e.is_manual]
+
     await db.execute(sql_delete(Edge))
     for r in new_rels:
         db.add(Edge(
@@ -1198,7 +1349,16 @@ async def recompute_relations(db: AsyncSession = Depends(get_async_session)):
             shared_concepts=r.get("shared_concepts", []),
             label=r.get("label"),
             description=r.get("description"),
+            metodo=r.get("metodo"),
+            base_relacion=r.get("base_relacion"),
+            evidencia=r.get("evidencia"),
+            revision=revisiones.get((r["source"], r["target"])),
         ))
+    for arista in manuales:
+        await db.execute(
+            pg_insert(Edge).values(**arista)
+            .on_conflict_do_nothing(index_elements=["source", "target"])
+        )
     # Este recálculo es el único que ve el corpus entero: deja medido el piso de
     # similitud para que las próximas ingestas incrementales usen el mismo criterio.
     if stats:
@@ -1214,6 +1374,231 @@ async def recompute_relations(db: AsyncSession = Depends(get_async_session)):
         )
     await db.commit()
     return {"ok": True, "relaciones": len(new_rels), "piso": stats.get("floor")}
+
+
+# Estados posibles de la revisión humana de una relación. Deliberadamente no incluye
+# "verdadera"/"falsa": una persona confirma que la relación le sirve o la descarta,
+# no dictamina una verdad sobre el mundo.
+ESTADOS_REVISION = {"confirmada", "rechazada", "sin_revisar"}
+
+
+class RelationReview(BaseModel):
+    source: str
+    target: str
+    estado: str
+    comentario: str | None = None
+
+
+@app.post("/api/relation/review")
+async def review_relation(payload: RelationReview,
+                          db: AsyncSession = Depends(get_async_session)):
+    """Registra la decisión de una persona sobre una relación calculada.
+
+    Es lo que separa "el sistema propuso" de "alguien lo miró". La arista NO se borra
+    cuando se rechaza: se marca. Borrarla haría desaparecer la evidencia de que el
+    cálculo se equivocó, que es justamente lo que conviene conservar.
+    """
+    if payload.estado not in ESTADOS_REVISION:
+        raise HTTPException(400, f"Estado inválido. Válidos: {sorted(ESTADOS_REVISION)}")
+
+    # La arista puede estar guardada en cualquiera de los dos sentidos.
+    arista = (await db.execute(select(Edge).where(
+        ((Edge.source == payload.source) & (Edge.target == payload.target)) |
+        ((Edge.source == payload.target) & (Edge.target == payload.source))
+    ))).scalars().first()
+    if arista is None:
+        raise HTTPException(404, "No existe esa relación en el grafo")
+
+    if payload.estado == "sin_revisar":
+        arista.revision = None
+    else:
+        arista.revision = {
+            "estado": payload.estado,
+            "comentario": (payload.comentario or "").strip() or None,
+            "fecha": datetime.now(timezone.utc).isoformat(),
+        }
+    await db.commit()
+    return {"ok": True, "source": arista.source, "target": arista.target,
+            "revision": arista.revision}
+
+
+# ── Vigencia de fuentes ───────────────────────────────────────────────────────
+# La antigüedad NO degrada una fuente. Sólo la degrada una observación concreta.
+# Las reglas viven en vigencia.py; acá está el I/O.
+
+def _hash_archivo(path) -> str | None:
+    import hashlib
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as archivo:
+            for bloque in iter(lambda: archivo.read(1024 * 1024), b""):
+                digest.update(bloque)
+        return digest.hexdigest()
+    except Exception:
+        return None
+
+
+class VigenciaReview(BaseModel):
+    source_id: str
+    estado: str
+    comentario: str | None = None
+    reemplazada_por: str | None = None
+
+
+@app.post("/api/vigencia/verificar")
+async def verificar_vigencia(db: AsyncSession = Depends(get_async_session)):
+    """Recalcula el estado de vigencia comparando cada fuente contra el archivo en disco.
+
+    Offline y determinístico: sólo SHA-256 sobre archivos locales. No consulta la red,
+    no llama a ningún modelo y no mira la fecha de carga. Una fuente pasa a
+    `posiblemente_desactualizado` únicamente si su archivo cambió o desapareció.
+    """
+    from vigencia import verificar_contra_disco, resolver_estado
+
+    from collections import Counter
+
+    ahora = datetime.now(timezone.utc).isoformat()
+    fuentes = (await db.execute(select(Source))).scalars().all()
+    # El resumen se reporta POR MOTIVO, no sólo por estado. Un agregado de
+    # "105 vigentes" escondería que la mayoría nunca se comparó contra nada.
+    motivos = Counter()
+    resumen = {"revisadas": 0, "vigentes": 0, "posiblemente_desactualizadas": 0,
+               "cambiadas": [], "ausentes": []}
+
+    for fuente in fuentes:
+        locator = fuente.locator or ""
+        # Sólo son verificables las fuentes con archivo local. Una URL o un video no
+        # se pueden comprobar sin red, y no verificable ≠ desactualizado.
+        tiene_archivo_local = bool(locator) and not locator.startswith(
+            ("http://", "https://", "node:")
+        )
+        archivo_existe, hash_en_disco = False, None
+        if tiene_archivo_local:
+            try:
+                ruta = _resolve_file(locator)
+                archivo_existe = True
+                hash_en_disco = _hash_archivo(ruta)
+            except Exception:
+                archivo_existe = False
+
+        estado, vigencia = verificar_contra_disco(
+            fuente.vigencia, fuente.content_hash, hash_en_disco,
+            archivo_existe, tiene_archivo_local, ahora,
+        )
+        fuente.estado_vigencia = estado
+        fuente.vigencia = vigencia
+        # Si esta corrida fijó la línea base, hay que persistir el hash: sin eso la
+        # próxima verificación volvería a no tener contra qué comparar.
+        if vigencia.get("motivo") == "linea_base_establecida_ahora":
+            fuente.content_hash = vigencia.get("hash_contenido")
+        resumen["revisadas"] += 1
+        motivos[vigencia.get("motivo") or "sin_motivo"] += 1
+
+        efectivo = resolver_estado(estado, fuente.revision_vigencia)
+        if efectivo == "vigente":
+            resumen["vigentes"] += 1
+        else:
+            resumen["posiblemente_desactualizadas"] += 1
+            destino = (resumen["ausentes"] if vigencia.get("motivo") == "archivo_ausente"
+                       else resumen["cambiadas"])
+            destino.append({"source_id": fuente.id,
+                            "nombre": fuente.original_name or fuente.locator})
+
+    # ── Duplicados por contenido ──────────────────────────────────────────────
+    # Se marcan acá y no sólo en la ingesta porque el corpus ya existente está lleno
+    # de ellos: el mismo paper subido como "X - copia.pdf" y como "X.pdf". La fuente
+    # más antigua queda como original; las demás apuntan a ella. NO cambia el estado:
+    # dos copias del mismo archivo no vuelven vieja a ninguna.
+    por_hash = {}
+    for fuente in fuentes:
+        if fuente.content_hash:
+            por_hash.setdefault(fuente.content_hash, []).append(fuente)
+    duplicados = 0
+    for grupo in por_hash.values():
+        if len(grupo) < 2:
+            continue
+        grupo.sort(key=lambda f: (f.created_at is None, f.created_at))
+        original = grupo[0]
+        for copia in grupo[1:]:
+            vig = dict(copia.vigencia or {})
+            vig["duplicado_de"] = original.id
+            copia.vigencia = vig
+            duplicados += 1
+    resumen["duplicados_marcados"] = duplicados
+    resumen["grupos_duplicados"] = sum(1 for g in por_hash.values() if len(g) > 1)
+
+    await db.commit()
+    resumen["por_motivo"] = dict(motivos)
+    # Qué significa cada número, dicho en el propio payload: "vigente" acá quiere decir
+    # "nada indica lo contrario", no "se comprobó que sigue vigente".
+    resumen["lectura"] = {
+        "contenido_sin_cambios": "el archivo es byte a byte el mismo que se ingirió",
+        "linea_base_establecida_ahora": "no había hash de referencia; se fijó con el archivo actual. Habilita detectar cambios futuros, no dice nada del pasado",
+        "sin_archivo_local_verificable": "URL o video: no se puede comprobar offline. No verificable no es lo mismo que desactualizado",
+        "archivo_modificado_despues_de_la_ingesta": "el archivo cambió; el nodo del grafo describe una versión anterior",
+        "archivo_ausente": "el original ya no está: la evidencia dejó de ser comprobable",
+        "decision_humana": "el estado lo fijó una persona, no una observación del sistema",
+        "duplicado_de": "otra fuente ya incorporada tiene contenido byte a byte idéntico. Es un dato para deduplicar, no una señal de obsolescencia",
+    }
+    resumen["advertencia"] = ("La antigüedad no se usa como señal. Ninguna fuente pasa a "
+                              "desactualizada por la fecha en que se cargó.")
+    resumen["verificado_en"] = ahora
+    return resumen
+
+
+@app.post("/api/vigencia/review")
+async def review_vigencia(payload: VigenciaReview,
+                          db: AsyncSession = Depends(get_async_session)):
+    """Una persona fija el estado de vigencia de una fuente.
+
+    Existe porque la verificación automática sólo ve el disco: no sabe que salió una
+    norma nueva ni que un informe quedó sin efecto. Esa vigencia la sabe una persona y
+    queda registrada como decisión humana, distinguible de lo que observó el sistema.
+    """
+    from vigencia import aplicar_decision_humana, ESTADOS
+
+    if payload.estado not in ESTADOS:
+        raise HTTPException(400, f"Estado inválido. Válidos: {sorted(ESTADOS)}")
+
+    fuente = (await db.execute(
+        select(Source).where(Source.id == payload.source_id)
+    )).scalars().first()
+    if fuente is None:
+        raise HTTPException(404, "No existe esa fuente")
+
+    if payload.reemplazada_por:
+        existe = (await db.execute(
+            select(Source.id).where(Source.id == payload.reemplazada_por)
+        )).scalars().first()
+        if existe is None:
+            raise HTTPException(404, "La fuente que la reemplaza no existe")
+
+    # Sólo se escribe la revisión. `estado_vigencia` y `vigencia` siguen guardando lo
+    # que observó el sistema, para que se pueda ver en qué difiere la persona.
+    revision = aplicar_decision_humana(
+        payload.estado, payload.comentario,
+        datetime.now(timezone.utc).isoformat(), payload.reemplazada_por,
+    )
+    fuente.revision_vigencia = revision
+    await db.commit()
+    return {"ok": True, "source_id": fuente.id,
+            "estado": payload.estado,
+            "estado_observado": fuente.estado_vigencia,
+            "revision": revision}
+
+
+@app.delete("/api/vigencia/review/{source_id}")
+async def borrar_review_vigencia(source_id: str,
+                                 db: AsyncSession = Depends(get_async_session)):
+    """Quita la decisión humana y devuelve la fuente al estado que observa el sistema."""
+    fuente = (await db.execute(
+        select(Source).where(Source.id == source_id)
+    )).scalars().first()
+    if fuente is None:
+        raise HTTPException(404, "No existe esa fuente")
+    fuente.revision_vigencia = None
+    await db.commit()
+    return {"ok": True, "source_id": source_id, "estado": fuente.estado_vigencia}
 
 
 @app.post("/api/recompute-layout")

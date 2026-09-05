@@ -22,7 +22,15 @@ From there you can:
 - **Ask the agent** — RAG-powered chat over your entire knowledge base, or scoped to a single node
 - **Create an Issue** — describe a problem, the system finds the most relevant nodes and synthesizes an analysis
 - **Synthesize** — select multiple nodes and generate an integrated summary across all of them
-- **Inspect relations** — click any edge to see exactly why two nodes are connected (cosine similarity score + shared concepts)
+- **Inspect relations** — click any edge to see its *provenance*: which method computed it
+  (incremental ingest vs. global recompute), what sustains it (explicit shared concepts /
+  vector proximity / an unmeasured threshold), the numbers behind it (cosine, the floor it
+  was compared against and whether that floor was measured on this corpus), what the score
+  does **not** mean, and a human review state (confirm / reject) that survives recomputation
+- **Check source freshness** — an offline pass re-hashes every local file against the
+  fingerprint stored at ingest time and flags sources whose file changed or vanished.
+  Age is never used as a signal: nothing is marked stale for being old. Human decisions
+  are stored separately from what the system observed, and both stay visible
 
 ---
 
@@ -151,6 +159,8 @@ HDBSCAN → cluster assignment
   ↓
 Relation engine → kNN por nodo (top-5) + piso data-driven (percentil del corpus)
                   o ≥2 conceptos compartidos por palabra completa
+                  cada arista guarda método, base (explícita/semántica/inferida/manual),
+                  evidencia numérica y revisión humana
   ↓
 React 3D graph
 ```
@@ -201,6 +211,7 @@ ollama serve
 llm-wiki/
 ├── main.py                 # FastAPI server + API routes
 ├── processor.py            # LLM calls, text extraction, cosine similarity
+├── vigencia.py             # Reglas puras de vigencia de fuentes (sin LLM, offline)
 ├── embeddings_engine.py    # UMAP + HDBSCAN pipeline
 ├── database/               # Modelos SQLAlchemy, esquema e inicialización
 ├── tests/                  # Suite unittest (corre sin Docker ni modelos)
