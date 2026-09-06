@@ -5,6 +5,16 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { clusterColor, CLUSTER_PALETTE } from '../App.jsx';
 
+/* ── PERF: throttle genérico para reducir recálculos en eventos de alta frecuencia ── */
+function throttle(fn, ms) {
+  let last = 0, pending = null;
+  return (...args) => {
+    const now = performance.now();
+    if (now - last >= ms) { last = now; fn(...args); }
+    else if (!pending) { pending = setTimeout(() => { pending = null; last = performance.now(); fn(...args); }, ms - (now - last)); }
+  };
+}
+
 /* ── Mapa plano de documentos (constelación de miniaturas) ── */
 const NODE = {
   bg:      '#000000', // negro con sesgo azul: el fondo de un instrumento, no violeta
@@ -18,6 +28,9 @@ const NODE = {
 
 // "#7C8CFF" → "124,140,255". Se cachea porque linkColor corre por arista y por frame.
 const _rgbCache = new Map();
+// PERF: cache de colores de aristas para evitar recálculos por frame
+const _linkColorCache = new Map();
+let _linkColorCacheKey = '';
 /* El NODO se pinta mas claro que su propia arista. Con la paleta oscura, nodo y
    arista compartiendo color exacto hacia que las aristas —que son muchisimas mas—
    dominaran la pantalla y los nodos desaparecieran. Aclarar solo el nodo mantiene
@@ -296,6 +309,8 @@ const RING_TEX = makeRingTexture();
    Lejos: cada nodo es un punto de color por cluster (constelación limpia).
    Cerca: vuelve a ser la tarjeta con miniatura. LOD_FAR es estado global del zoom. */
 let LOD_FAR = true; // arranca en "puntos" (vista general); las tarjetas aparecen al acercarse
+let SHOW_CLUSTER_LABELS = false; // las etiquetas de cluster solo se ven en zoom intermedio
+let LINK_ALPHA_MULT = 0.4; // PERF: multiplicador de opacidad de aristas según zoom (más bajo = menos draw calls efectivos)
 
 function setNodeLOD(ud, far) {
   if (!ud) return;
@@ -885,6 +900,8 @@ export default function Graph3D({
         const cyLbl = members.reduce((a, n) => a + (n.fy ?? n.y ?? 0), 0) / members.length;
         sprite.position.set(cx, cyLbl + 4, cz);
         sprite.userData.cid = key;
+        // PERF: inicializar ocultas, se muestran solo en zoom intermedio
+        sprite.visible = SHOW_CLUSTER_LABELS;
         scene.add(sprite);
         clusterLabelSprites.current.push(sprite);
       });
@@ -1148,6 +1165,22 @@ export default function Graph3D({
       if (d > FAR_IN) far = true; else if (d < FAR_OUT) far = false;
       const changed = far !== LOD_FAR;
       if (changed) LOD_FAR = far;
+
+      // PERF: las etiquetas de cluster solo se ven en zoom intermedio (no muy cerca, no muy lejos)
+      const LABEL_SHOW = R * 2.8, LABEL_HIDE = R * 1.2;
+      const showLabels = d > LABEL_HIDE && d < LABEL_SHOW;
+      if (showLabels !== SHOW_CLUSTER_LABELS) {
+        SHOW_CLUSTER_LABELS = showLabels;
+        clusterLabelSprites.current.forEach(s => { s.visible = showLabels; });
+      }
+
+      // PERF: aristas más tenues de lejos (menos overdraw visual, más legible)
+      const newAlphaMult = d > R * 2.5 ? 0.25 : (d > R * 1.5 ? 0.5 : 1.0);
+      if (Math.abs(newAlphaMult - LINK_ALPHA_MULT) > 0.05) {
+        LINK_ALPHA_MULT = newAlphaMult;
+        _linkColorCache.clear(); // forzar recálculo de colores
+      }
+
       if (true) {
         // En modo lejos, escalar los puntos ∝ distancia → tamaño ~constante en pantalla
         // (un sprite normal se achica con la distancia y desaparecería). El coeficiente
@@ -1181,7 +1214,9 @@ export default function Graph3D({
         // re-dispara 'change' → recursión infinita.
       }
     };
-    if (controls) controls.addEventListener('change', updateLOD);
+    // PERF: throttle updateLOD para no recalcular en cada frame de arrastre
+    const throttledLOD = throttle(updateLOD, 50);
+    if (controls) controls.addEventListener('change', throttledLOD);
     // Estado inicial (fuera del evento 'change' → acá sí es seguro despertar).
     setTimeout(() => { updateLOD(); wakeRef.current(); }, 400);
   }, []);
@@ -1203,6 +1238,18 @@ export default function Graph3D({
   const [hoverLink, setHoverLink] = useState(null);
 
   const linkColor = useCallback(link => {
+    // PERF: cache de colores por arista - invalidar cuando cambian selección/hover
+    const cacheKey = `${selectedNode?.id || ''}_${highlighted.size}_${hoverLink?.__id || ''}`;
+    if (cacheKey !== _linkColorCacheKey) {
+      _linkColorCache.clear();
+      _linkColorCacheKey = cacheKey;
+    }
+    const linkId = `${link.source?.id ?? link.source}_${link.target?.id ?? link.target}`;
+    const isHover = hoverLink && link === hoverLink;
+    const fullKey = `${linkId}_${isHover ? 'h' : ''}`;
+    const cached = _linkColorCache.get(fullKey);
+    if (cached) return cached;
+
     const nodoOrigen = typeof link.source === 'object' ? link.source : null;
     const nodoDestino = typeof link.target === 'object' ? link.target : null;
     const s = link.source?.id ?? link.source;
@@ -1212,38 +1259,31 @@ export default function Graph3D({
 
     const issue = nodoOrigen?.is_issue || nodoDestino?.is_issue;
 
-    // Regla de las referencias: la arista DENTRO de un grupo toma su color y lo
-    // hace legible como estrella; la arista ENTRE grupos es gris y discreta, y es
-    // justamente eso lo que hace que los grupos se distingan como islas.
     const gkO = nodoOrigen ? groupKey(nodoOrigen) : null;
     const gkD = nodoDestino ? groupKey(nodoDestino) : null;
     const mismoGrupo = gkO != null && gkO === gkD;
 
     let rgb, alphaBase;
     if (link.spoke) {
-      // Radio de la estrella: hereda el color del tema, muy tenue. Son miles;
-      // con alfa alto la pantalla se vuelve una masa solida.
       const gk = nodoDestino ? groupKey(nodoDestino) : (nodoOrigen ? groupKey(nodoOrigen) : null);
       rgb = hexToRgb(oscurecer(groupColor(gk), 0.45)); alphaBase = 0.16;
     }
     else if (issue) { rgb = hexToRgb(NODE.issue); alphaBase = 0.5; }
     else if (mismoGrupo) { rgb = hexToRgb(oscurecer(groupColor(gkO), 0.45)); alphaBase = 0.34; }
-    else { rgb = '150,160,180'; alphaBase = 0.075; }  // puente entre grupos: gris muy tenue
-    // Son mayoria y, al ser grises, competian con los nodos por atencion.
+    else { rgb = '150,160,180'; alphaBase = 0.075; }
 
-    // La relacion senalada se enciende con su color VIVO y a opacidad plena: es
-    // la senal de "a esto le vas a pegar si hacés clic".
-    if (hoverLink && link === hoverLink) {
-      // Dentro del grupo: su propio color, sin oscurecer y a opacidad plena.
-      // Entre grupos: el mismo gris de siempre, sólo encendido. El blanco puro
-      // que habia antes cortaba la escena como un tajo.
-      return mismoGrupo
+    let result;
+    if (isHover) {
+      result = mismoGrupo
         ? `rgba(${hexToRgb(groupColor(gkO))},0.95)`
         : 'rgba(198,212,226,0.85)';
+    } else {
+      // PERF: aplicar multiplicador de opacidad según zoom (aristas más tenues de lejos)
+      const alpha = (!hayFoco ? alphaBase : (enFoco ? 0.95 : 0.02)) * LINK_ALPHA_MULT;
+      result = `rgba(${rgb},${Math.max(0.01, alpha)})`;
     }
-
-    const alpha = !hayFoco ? alphaBase : (enFoco ? 0.95 : 0.02);
-    return `rgba(${rgb},${alpha})`;
+    _linkColorCache.set(fullKey, result);
+    return result;
   }, [selectedNode, highlighted, hoverLink]);
 
   /* SIEMPRE 0. Con cualquier valor > 0, react-force-graph deja de dibujar una
@@ -1283,7 +1323,8 @@ export default function Graph3D({
     if (ud.dot) ud.dot.scale.setScalar(on ? ud.dotBase * 1.2 : ud.dotBase);
   }, [selectedNode]);
 
-  const handleHover = useCallback(node => {
+  // PERF: throttle del hover para reducir recálculos en mousemove
+  const handleHoverRaw = useCallback(node => {
     document.body.style.cursor = node ? (synthMode ? 'crosshair' : 'pointer') : 'default';
     const prev = hoverIdRef.current;
     const next = node?.id ?? null;
@@ -1295,16 +1336,25 @@ export default function Graph3D({
     }
     if (onNodeHover) onNodeHover(node || null);
   }, [onNodeHover, synthMode, paintHover]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleHover = useMemo(() => throttle(handleHoverRaw, 32), [handleHoverRaw]);
 
-  const handleLinkHover = useCallback(link => {
+  // PERF: throttle del hover de links para reducir recálculos
+  const handleLinkHoverRaw = useCallback(link => {
     document.body.style.cursor = link ? 'pointer' : 'default';
     setHoverLink(link || null);
     wakeRef.current?.();
   }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleLinkHover = useMemo(() => throttle(handleLinkHoverRaw, 48), [handleLinkHoverRaw]);
 
+  // PERF: skipea el recálculo de posiciones de etiquetas si no son visibles
   const handleEngineTick = useCallback(() => {
     wakeRef.current();  // mantiene el render vivo mientras la física corre
-    if (!clusterLabelSprites.current.length) return;
+    // Skip cluster updates if no labels/hulls or labels are hidden
+    if (!clusterLabelSprites.current.length && !clusterHulls.current.length) return;
+    if (!SHOW_CLUSTER_LABELS && !clusterHulls.current.some(h => h.visible)) return;
+
     const clusterGroups = {};
     graphData.nodes.forEach(n => {
       const k = groupKey(n);
@@ -1312,6 +1362,7 @@ export default function Graph3D({
       (clusterGroups[k] ??= []).push(n);
     });
     clusterHulls.current.forEach(hull => {
+      if (!hull.visible) return;
       const members = clusterGroups[hull.userData.cid];
       if (!members || !members.length) return;
       const cx = members.reduce((a, n) => a + (n.x || 0), 0) / members.length;
@@ -1319,7 +1370,9 @@ export default function Graph3D({
       const cz = members.reduce((a, n) => a + (n.z || 0), 0) / members.length;
       hull.position.set(cx, cy, cz);
     });
+    if (!SHOW_CLUSTER_LABELS) return;
     clusterLabelSprites.current.forEach(sprite => {
+      if (!sprite.visible) return;
       const cid = sprite.userData.cid;
       const members = clusterGroups[cid];
       if (!members || !members.length) return;
