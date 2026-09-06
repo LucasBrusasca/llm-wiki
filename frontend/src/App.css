@@ -1821,6 +1821,17 @@ body::before {
   transition: width 0.4s ease;
 }
 .ingest-toast-step { color: #8fa1bd; font-size: 11.5px; line-height: 1.4; }
+.ingest-toast-queue {
+  font-size: 10px;
+  color: #6a7a8c;
+  padding: 6px 10px;
+  background: rgba(0,0,0,0.25);
+  border-radius: 4px;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ── Separadores del header (agrupan módulos / vista / recalcular / reset) ── */
 .hdr-sep {
@@ -3018,5 +3029,500 @@ body::before {
   
   .home-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ARCHITECT CANVAS · Flujograma de decisión con React Flow
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.arch-canvas-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.arch-canvas-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: rgba(0,0,0,0.2);
+}
+
+.arch-canvas-toolbar-left,
+.arch-canvas-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.arch-canvas-btn {
+  padding: 8px 14px;
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-mid);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.arch-canvas-btn:hover {
+  border-color: var(--border-hi);
+  color: var(--text);
+  background: rgba(255,255,255,0.04);
+}
+
+.arch-canvas-btn--analyze {
+  border-color: var(--data-dim);
+  color: var(--data);
+}
+
+.arch-canvas-btn--analyze:hover {
+  background: rgba(47,224,200,0.1);
+  border-color: var(--data);
+}
+
+.arch-canvas-picker {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 100;
+  background: rgba(10,14,24,0.98);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 140px;
+  box-shadow: var(--shadow-panel);
+}
+
+.arch-canvas-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-mid);
+  font-family: var(--font);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.arch-canvas-picker-item:hover {
+  background: rgba(255,255,255,0.06);
+  color: var(--text);
+}
+
+.arch-canvas-picker-icon {
+  font-size: 16px;
+  color: var(--node-color, var(--accent));
+}
+
+.arch-canvas-main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.arch-canvas-flow {
+  position: relative;
+  background: #0a0e14;
+  overflow: hidden;
+}
+
+.arch-canvas-flow .react-flow {
+  width: 100%;
+  height: 100%;
+}
+
+.arch-canvas-flow .react-flow__controls {
+  bottom: 16px;
+  left: 16px;
+}
+
+.arch-canvas-flow .react-flow__controls-button {
+  background: var(--glass);
+  border: 1px solid var(--border);
+  color: var(--text-mid);
+}
+
+.arch-canvas-flow .react-flow__controls-button:hover {
+  background: var(--glass-hi);
+  color: var(--text);
+}
+
+.arch-canvas-flow .react-flow__minimap {
+  background: rgba(0,0,0,0.5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.arch-canvas-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.8;
+  pointer-events: none;
+  padding: 40px;
+}
+
+.arch-canvas-empty strong {
+  color: var(--accent);
+}
+
+.arch-canvas-sidebar {
+  border-left: 1px solid var(--border);
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: rgba(0,0,0,0.15);
+}
+
+.arch-canvas-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.arch-canvas-sidebar-header h4 {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+}
+
+.arch-canvas-btn--small {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.arch-canvas-btn--small:hover {
+  color: var(--text);
+  border-color: var(--border-mid);
+}
+
+.arch-canvas-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+  display: block;
+}
+
+.arch-canvas-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(0,0,0,0.3);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.arch-canvas-input:focus {
+  border-color: var(--border-hi);
+}
+
+.arch-canvas-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.arch-canvas-evidencias {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.arch-canvas-evid-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--data-dim);
+  border-radius: var(--radius-sm);
+  background: rgba(47,224,200,0.05);
+  font-size: 12px;
+  color: var(--data);
+}
+
+.arch-canvas-evid-item button {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px;
+}
+
+.arch-canvas-evid-item button:hover {
+  color: var(--danger);
+}
+
+.arch-canvas-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.arch-canvas-search-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  transition: all var(--transition);
+  text-align: left;
+}
+
+.arch-canvas-search-item:hover {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.arch-canvas-search-icon {
+  color: var(--accent);
+  font-size: 14px;
+}
+
+.arch-canvas-search-label {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arch-canvas-actions {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.arch-canvas-btn--danger {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid rgba(255,90,120,0.3);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--danger);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.arch-canvas-btn--danger:hover {
+  background: rgba(255,90,120,0.1);
+  border-color: var(--danger);
+}
+
+.arch-canvas-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.arch-canvas-stats strong {
+  color: var(--accent);
+}
+
+.arch-canvas-huecos {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(0,0,0,0.2);
+}
+
+.arch-canvas-huecos h4 {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0 0 10px;
+}
+
+.arch-canvas-hueco {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+
+.arch-canvas-hueco:last-child {
+  margin-bottom: 0;
+}
+
+.arch-canvas-hueco--warning {
+  background: rgba(255,180,77,0.1);
+  border: 1px solid rgba(255,180,77,0.3);
+  color: var(--warn);
+}
+
+.arch-canvas-hueco--info {
+  background: rgba(90,200,250,0.1);
+  border: 1px solid rgba(90,200,250,0.3);
+  color: var(--accent);
+}
+
+.arch-canvas-hueco--ok {
+  background: rgba(47,224,200,0.1);
+  border: 1px solid var(--data-dim);
+  color: var(--data);
+}
+
+/* ── Nodos del flujograma ── */
+.arch-flow-node {
+  padding: 12px 16px;
+  border-radius: 8px;
+  min-width: 160px;
+  max-width: 240px;
+  background: var(--glass);
+  border: 2px solid var(--border);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  transition: all 0.15s ease;
+}
+
+.arch-flow-node.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow), 0 4px 20px rgba(0,0,0,0.4);
+}
+
+.arch-flow-node-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.arch-flow-node-icon {
+  font-size: 14px;
+}
+
+.arch-flow-node-type {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.arch-flow-node-content {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.arch-flow-node-evidencias {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.arch-flow-evid-chip {
+  font-size: 10px;
+  padding: 3px 8px;
+  background: rgba(47,224,200,0.15);
+  border: 1px solid var(--data-dim);
+  border-radius: 999px;
+  color: var(--data);
+}
+
+.arch-flow-node-source {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.arch-flow-node--paso {
+  border-color: rgba(90,200,250,0.4);
+}
+
+.arch-flow-node--paso .arch-flow-node-icon {
+  color: #5AC8FA;
+}
+
+.arch-flow-node--decision {
+  border-color: rgba(255,180,77,0.4);
+}
+
+.arch-flow-node--decision .arch-flow-node-icon {
+  color: #FFB44D;
+}
+
+.arch-flow-node--evidencia {
+  border-color: var(--data-dim);
+}
+
+.arch-flow-node--evidencia .arch-flow-node-icon {
+  color: var(--data);
+}
+
+.arch-flow-node--resultado {
+  border-color: rgba(155,89,182,0.4);
+}
+
+.arch-flow-node--resultado .arch-flow-node-icon {
+  color: #9B59B6;
+}
+
+@media (max-width: 900px) {
+  .arch-canvas-main {
+    grid-template-columns: 1fr;
+  }
+  
+  .arch-canvas-sidebar {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    max-height: 40vh;
   }
 }

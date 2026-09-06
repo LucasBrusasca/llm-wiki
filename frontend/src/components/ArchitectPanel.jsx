@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useMemo, useRef } from 'react';
+import ArchitectCanvas from './ArchitectCanvas.jsx';
 
 /* ── Architect · el gate de decisión de Algedi ─────────────────────────────
    Ante una necesidad y el corpus de la sección activa, Architect clasifica qué
@@ -7,6 +8,9 @@ import React, { useState, useCallback, useMemo, useRef } from 'react';
 
    El panel NO clasifica: sólo representa el expediente que devuelve el backend
    (POST /api/architect/analyze). Toda la inteligencia corre en Algedi.
+
+   CANVAS: modo flujograma visual donde el usuario modela su proceso y vincula
+   evidencia antes de solicitar análisis.
    ────────────────────────────────────────────────────────────────────────── */
 
 const RUTAS = [
@@ -71,7 +75,7 @@ function Escala({ valor }) {
   );
 }
 
-export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarrollar, onAbrirExpediente }) {
+export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarrollar, onAbrirExpediente, allNodes = [] }) {
   const [chat, setChat]       = useState([SALUDO]);  // diálogo de admisión
   const [entrada, setEntrada] = useState('');
   const [pensando, setPensando] = useState(false);   // admisión en curso
@@ -88,10 +92,9 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
   const tickRef = useRef(null);
   const finChatRef = useRef(null);
 
-  /* Pantalla unica: el recorrido nuevo y los expedientes ya abiertos viven en la
-     MISMA superficie. Antes eran dos botones distintos en la navegacion, lo que
-     obligaba al usuario a saber cual necesitaba antes de empezar. */
-  const [vista, setVista] = useState('nuevo');        // 'nuevo' | 'expedientes'
+  /* Pantalla unica: el recorrido nuevo, canvas de flujograma, y los expedientes
+     viven en la MISMA superficie con pestañas. */
+  const [vista, setVista] = useState('nuevo');        // 'nuevo' | 'canvas' | 'expedientes'
   const [expedientes, setExpedientes] = useState(null);
 
   const cargarExpedientes = useCallback(async () => {
@@ -239,7 +242,12 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
           <nav className="arch-tabs" role="tablist">
             <button role="tab" aria-selected={vista === 'nuevo'}
                     className={`arch-tab${vista === 'nuevo' ? ' on' : ''}`}
-                    onClick={() => setVista('nuevo')}>Caso nuevo</button>
+                    onClick={() => setVista('nuevo')}>Admisión</button>
+            <button role="tab" aria-selected={vista === 'canvas'}
+                    className={`arch-tab${vista === 'canvas' ? ' on' : ''}`}
+                    onClick={() => setVista('canvas')}>
+              ◇ Canvas
+            </button>
             <button role="tab" aria-selected={vista === 'expedientes'}
                     className={`arch-tab${vista === 'expedientes' ? ' on' : ''}`}
                     onClick={() => { setVista('expedientes'); cargarExpedientes(); }}>
@@ -265,7 +273,15 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
           ))}
         </ol>
 
-        {vista === 'expedientes' ? (
+        {vista === 'canvas' ? (
+          <ArchitectCanvas
+            seccion={seccion}
+            allNodes={allNodes}
+            caseName={form.case_name}
+            initialProblem={form.problem}
+            onClose={onClose}
+          />
+        ) : vista === 'expedientes' ? (
           <div className="arch-exps">
             {expedientes === null && <div className="arch-empty">Buscando expedientes…</div>}
             {expedientes?.length === 0 && (

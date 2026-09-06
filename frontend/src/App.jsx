@@ -627,21 +627,16 @@ export default function App() {
 
           {/* ── Etapa Principal · Decidir con Architect ──
                  Architect es el camino principal: decidir qué construir antes de
-                 elegir la tecnología. CTA prominente. */}
+                 elegir la tecnología. CTA prominente.
+                 Los Expedientes viven DENTRO de Architect (pestaña), no como
+                 módulo separado. Issue ya no aparece en la nav principal. */}
           <span className="hdr-stage">Decidir</span>
           <button
             className={`btn-synth btn-architect${architectOpen ? ' active' : ''}`}
             onClick={() => { setShowHome(false); setArchitectOpen(o => !o); }}
-            title="Architect — decidí qué construir, fundado en tu corpus"
+            title="Architect — decidí qué construir, fundado en tu corpus (incluye expedientes)"
           >
             ⬢ Architect
-          </button>
-          <button
-            className={`btn-synth btn-issue${issueOpen || processOpen ? ' active' : ''}`}
-            onClick={() => { setShowHome(false); setArchitectOpen(false); setIssueOpen(o => !o); }}
-            title="Issue — desarrollá un expediente, fundado en tu grafo"
-          >
-            ⚠ Expedientes
           </button>
 
           <span className="hdr-sep" />
@@ -902,6 +897,7 @@ export default function App() {
       {architectOpen && (
         <ArchitectPanel
           seccion={seccion}
+          allNodes={graphData.nodes}
           /* Entrega del caso a Issue: Architect decidió la clase de intervención,
              Issue la desarrolla. Es el paso 2 del mismo recorrido. */
           onDesarrollar={() => { setArchitectOpen(false); setIssueOpen(true); }}
