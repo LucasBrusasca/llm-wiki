@@ -15,15 +15,16 @@ function throttle(fn, ms) {
   };
 }
 
-/* ── Mapa plano de documentos (constelación de miniaturas) ── */
+/* ── Sistema visual premium: fondo profundo, nodos nítidos, edges legibles ── */
 const NODE = {
-  bg:      '#000000', // negro con sesgo azul: el fondo de un instrumento, no violeta
-  card:    '#0B121B60', // relleno de tarjeta neutra (translúcido)
-  border:  'rgba(150,200,230,0.34)', // borde fino de tarjeta
-  label:   'rgba(214,232,244,0.9)',  // texto de etiqueta
-  line:    '90,200,250',             // conexiones: cian del instrumento (rgb base)
-  issue:   '#FFB44D',                // ámbar: reservado para lo excepcional
+  bg:      '#030508', // negro profundo con sesgo azulado: más cinematográfico
+  card:    '#0D151F80', // relleno de tarjeta neutra (translúcido, más contraste)
+  border:  'rgba(130,180,220,0.45)', // borde más visible
+  label:   'rgba(230,242,255,0.95)',  // texto de etiqueta más brillante
+  line:    '100,210,255',             // conexiones: cian más vibrante
+  issue:   '#FFBA55',                // ámbar: reservado para lo excepcional
   sel:     '#FFFFFF',                // retícula de selección
+  glow:    'rgba(90,200,250,0.15)',  // glow sutil para hover (sin bloom)
 };
 
 // "#7C8CFF" → "124,140,255". Se cachea porque linkColor corre por arista y por frame.
@@ -119,16 +120,38 @@ function makeNeutralCardTexture(node, accent) {
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = NODE.card; ctx.fillRect(0, 0, cw, ch);
-  // Barra superior + borde en el COLOR DEL CLUSTER → identidad de grupo (plano, no glow).
-  if (accent) { ctx.fillStyle = accent; ctx.fillRect(0, 0, cw, 6); }
-  ctx.strokeStyle = accent || NODE.border; ctx.lineWidth = 3;
-  ctx.strokeRect(1.5, 1.5, cw - 3, ch - 3);
+  
+  // Fondo con gradiente sutil para profundidad
+  const bg = ctx.createLinearGradient(0, 0, 0, ch);
+  bg.addColorStop(0, '#0F1820');
+  bg.addColorStop(1, '#0A1218');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, cw, ch);
+  
+  // Barra superior del color del cluster (más ancha y brillante)
+  if (accent) {
+    ctx.fillStyle = accent;
+    ctx.fillRect(0, 0, cw, 5);
+    // Brillo sutil debajo de la barra
+    const glow = ctx.createLinearGradient(0, 5, 0, 20);
+    glow.addColorStop(0, accent.replace(')', ',0.2)').replace('rgb', 'rgba'));
+    glow.addColorStop(1, 'transparent');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 5, cw, 15);
+  }
+  
+  // Borde nítido
+  ctx.strokeStyle = accent || NODE.border;
+  ctx.lineWidth = 2.5;
+  ctx.strokeRect(1, 1, cw - 2, ch - 2);
+  
+  // Glyph del tipo de archivo (más visible)
   const glyph = GLYPHS[(node.fuente || '').toLowerCase()] || '◇';
-  ctx.fillStyle = 'rgba(165,180,200,0.7)';
-  ctx.font = `${glyph.length > 1 ? 26 : 40}px 'JetBrains Mono', 'Courier New', monospace`;
+  ctx.fillStyle = 'rgba(180,200,220,0.85)';
+  ctx.font = `${glyph.length > 1 ? 24 : 36}px 'JetBrains Mono', 'Courier New', monospace`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(glyph, cw / 2, ch / 2);
+  ctx.fillText(glyph, cw / 2, ch / 2 + 4);
+  
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
   return { tex, aspect: cw / ch };
@@ -184,28 +207,34 @@ function titleCase(str) {
 
 // Caption: etiqueta de texto chica centrada debajo de la tarjeta.
 function buildCaption(text) {
-  const pad = 5, fontPx = 34; // más px = texto más nítido
+  const pad = 8, fontPx = 32; // padding más generoso, fuente ligeramente más pequeña
   const measure = document.createElement('canvas').getContext('2d');
-  const font = `600 ${fontPx}px 'JetBrains Mono', 'Courier New', monospace`;
+  const font = `600 ${fontPx}px 'Sora', 'Inter', system-ui, sans-serif`;
   measure.font = font;
   let label = titleCase(text);
-  if (label.length > 26) label = label.slice(0, 25) + '…';
+  if (label.length > 28) label = label.slice(0, 27) + '…';
   const tw = Math.max(1, Math.ceil(measure.measureText(label).width));
   const cw = tw + pad * 2, ch = fontPx + pad * 2;
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  // Placa oscura con leve tinte cian + borde fino cian (identidad sin saturar).
-  ctx.fillStyle = 'rgba(12,12,24,0.72)';
-  roundRect(ctx, 0.5, 0.5, cw - 1, ch - 1, 5);
+  
+  // Fondo más sólido con blur visual (sin performance hit)
+  ctx.fillStyle = 'rgba(8,12,20,0.88)';
+  roundRect(ctx, 0, 0, cw, ch, 6);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(124,140,255,0.34)'; ctx.lineWidth = 1;
+  
+  // Borde sutil con gradiente
+  ctx.strokeStyle = 'rgba(90,200,250,0.25)';
+  ctx.lineWidth = 1.5;
   ctx.stroke();
+  
   ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  // Contorno oscuro para contraste sobre fondos claros (páginas blancas).
-  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+  // Sombra más definida
+  ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,0.95)';
   ctx.strokeText(label, cw / 2, ch / 2);
-  ctx.fillStyle = 'rgba(238,245,255,0.98)'; // blanco hueso, más legible
+  // Texto blanco brillante
+  ctx.fillStyle = 'rgba(245,250,255,1)';
   ctx.fillText(label, cw / 2, ch / 2);
   const tex = new THREE.CanvasTexture(cv);
   tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
@@ -229,35 +258,28 @@ function hasThumb(node) {
   return /\.(pdf|png|jpe?g|gif|webp|bmp|mp4|webm|mov|m4v|html?|docx?|pptx?|pptm|xlsx?|txt|md|markdown)$/i.test(node.fuente_path || '');
 }
 
-// Textura de punto (gradiente radial suave) para el nodo "de lejos" (LOD).
-/* Nodo = núcleo brillante con halo ajustado, no un disco con borde.
-   El aro oscuro anterior los hacía leer como botones; un núcleo saturado con
-   caída rápida se lee como punto de luz, que es lo que hace que una constelación
-   densa se vea como red y no como un puñado de pelotas. */
+// Textura de punto premium: núcleo nítido con borde sutil, sin blur excesivo.
+/* Look moderno: centro sólido con caída rápida y un anillo exterior muy tenue.
+   Evita el "confeti blur" manteniendo el núcleo definido. */
 function makeDotTexture() {
   const s = 128, c = document.createElement('canvas');
   c.width = c.height = s;
   const g = c.getContext('2d');
   const cx = s / 2;
 
-  /* El raycaster usa el sprite ENTERO como area de clic, no la parte visible.
-     Con el nucleo ocupando solo el 38% del ancho, cada nodo tenia una zona de clic
-     2,6x mas grande de lo que se veia, y esa zona invisible se tragaba los clics
-     dirigidos a las lineas cercanas. Achicando el halo y agrandando el nucleo, lo
-     que se ve ocupa casi todo lo que se toca. El tamaño visible no cambia: se
-     compensa reduciendo dotBase en la misma proporcion. */
-  const halo = g.createRadialGradient(cx, cx, 0, cx, cx, s * 0.5);
-  halo.addColorStop(0,    'rgba(255,255,255,0.45)');
-  halo.addColorStop(0.45, 'rgba(255,255,255,0.14)');
-  halo.addColorStop(0.75, 'rgba(255,255,255,0.03)');
-  halo.addColorStop(1,    'rgba(255,255,255,0)');
-  g.fillStyle = halo; g.fillRect(0, 0, s, s);
+  // Anillo exterior muy sutil: da profundidad sin blur
+  const outer = g.createRadialGradient(cx, cx, s * 0.28, cx, cx, s * 0.48);
+  outer.addColorStop(0, 'rgba(255,255,255,0)');
+  outer.addColorStop(0.5, 'rgba(255,255,255,0.08)');
+  outer.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = outer; g.fillRect(0, 0, s, s);
 
-  // Núcleo: ocupa 2/3 del sprite. Es lo que da la sensación de brillo.
-  const core = g.createRadialGradient(cx, cx, 0, cx, cx, s * 0.33);
-  core.addColorStop(0,    'rgba(255,255,255,1)');
-  core.addColorStop(0.62, 'rgba(255,255,255,1)');
-  core.addColorStop(1,    'rgba(255,255,255,0)');
+  // Núcleo sólido: borde definido, no difuso
+  const core = g.createRadialGradient(cx, cx, 0, cx, cx, s * 0.28);
+  core.addColorStop(0, 'rgba(255,255,255,1)');
+  core.addColorStop(0.7, 'rgba(255,255,255,0.95)');
+  core.addColorStop(0.85, 'rgba(255,255,255,0.6)');
+  core.addColorStop(1, 'rgba(255,255,255,0)');
   g.fillStyle = core; g.fillRect(0, 0, s, s);
 
   const t = new THREE.CanvasTexture(c);
@@ -267,36 +289,29 @@ function makeDotTexture() {
 }
 const DOT_TEX = makeDotTexture();
 
-/* Anillo de selección: aro fino y nítido, sin relleno. Marca QUÉ estás tocando
-   sin taparlo ni depender de un cambio de opacidad que casi no se percibe. */
-/* Retícula de selección: aro fino y abierto en cuatro arcos, no un círculo macizo.
-   Un aro pleno tapa el nodo y lee a "botón seleccionado"; los arcos leen a mira de
-   instrumento y dejan ver el nodo que están señalando. */
+/* Anillo de selección premium: círculo completo con glow sutil.
+   Más visible y moderno que los arcos fragmentados. */
 function makeRingTexture() {
   const s = 256, c = document.createElement('canvas');
   c.width = c.height = s;
   const g = c.getContext('2d');
-  const cx = s / 2, r = s * 0.36;
+  const cx = s / 2, r = s * 0.38;
 
-  g.strokeStyle = 'rgba(255,255,255,1)';
-  g.lineWidth = s * 0.018;          // fino: el peso lo da el contraste, no el grosor
-  g.lineCap = 'round';
-  const hueco = 0.30;               // porción de cada cuadrante que queda abierta
-  for (let i = 0; i < 4; i++) {
-    const desde = (i * Math.PI / 2) + (hueco * Math.PI / 4);
-    const hasta = ((i + 1) * Math.PI / 2) - (hueco * Math.PI / 4);
-    g.beginPath(); g.arc(cx, cx, r, desde, hasta); g.stroke();
-  }
+  // Glow exterior sutil (sin afectar performance)
+  g.strokeStyle = 'rgba(90,200,250,0.25)';
+  g.lineWidth = s * 0.06;
+  g.beginPath(); g.arc(cx, cx, r, 0, Math.PI * 2); g.stroke();
 
-  // Cuatro marcas radiales cortas en las aberturas: refuerzan la lectura de mira.
-  g.lineWidth = s * 0.014;
-  for (let i = 0; i < 4; i++) {
-    const a = i * Math.PI / 2;
-    g.beginPath();
-    g.moveTo(cx + Math.cos(a) * r * 0.86, cx + Math.sin(a) * r * 0.86);
-    g.lineTo(cx + Math.cos(a) * r * 1.12, cx + Math.sin(a) * r * 1.12);
-    g.stroke();
-  }
+  // Anillo principal blanco
+  g.strokeStyle = 'rgba(255,255,255,0.95)';
+  g.lineWidth = s * 0.022;
+  g.beginPath(); g.arc(cx, cx, r, 0, Math.PI * 2); g.stroke();
+
+  // Punto de referencia arriba (indica orientación)
+  g.fillStyle = 'rgba(255,255,255,1)';
+  g.beginPath();
+  g.arc(cx, cx - r, s * 0.025, 0, Math.PI * 2);
+  g.fill();
 
   const t = new THREE.CanvasTexture(c);
   t.minFilter = THREE.LinearFilter;
@@ -310,7 +325,7 @@ const RING_TEX = makeRingTexture();
    Cerca: vuelve a ser la tarjeta con miniatura. LOD_FAR es estado global del zoom. */
 let LOD_FAR = true; // arranca en "puntos" (vista general); las tarjetas aparecen al acercarse
 let SHOW_CLUSTER_LABELS = false; // las etiquetas de cluster solo se ven en zoom intermedio
-let LINK_ALPHA_MULT = 0.4; // PERF: multiplicador de opacidad de aristas según zoom (más bajo = menos draw calls efectivos)
+let LINK_ALPHA_MULT = 0.55; // Opacidad base más alta para mejor legibilidad (ajustado por zoom)
 
 function setNodeLOD(ud, far) {
   if (!ud) return;
@@ -506,11 +521,9 @@ function buildNode(node, degree, maxDegree, texReg) {
 // Etiqueta de cluster: placa oscura + borde y marcador del COLOR del cluster + texto
 // brillante. El color la distingue de los captions de nodo y de otros clusters.
 function buildClusterTextSprite(text, color) {
-  const H = 66, fontPx = 26, leftPad = 48, rightPad = 26;
-  const font = `bold ${fontPx}px 'JetBrains Mono', 'Courier New', monospace`;
-  // La caja se dimensiona al texto (más abajo), así que dejamos que la etiqueta se
-  // vea COMPLETA. Sólo truncamos si es absurdamente larga (evita un sprite gigante),
-  // y en borde de palabra.
+  const H = 60, fontPx = 24, leftPad = 44, rightPad = 24;
+  const font = `600 ${fontPx}px 'Sora', 'Inter', system-ui, sans-serif`;
+  
   let display = text || '';
   if (display.length > 64) {
     display = display.slice(0, 63);
@@ -518,7 +531,7 @@ function buildClusterTextSprite(text, color) {
     if (sp > 40) display = display.slice(0, sp);
     display += '…';
   }
-  // Medir el texto y dimensionar la caja para que NO se corte.
+  
   const measure = document.createElement('canvas').getContext('2d');
   measure.font = font;
   const textW = Math.ceil(measure.measureText(display).width);
@@ -527,22 +540,38 @@ function buildClusterTextSprite(text, color) {
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
-  roundRect(ctx, 2, 2, W - 4, H - 4, 9);
-  ctx.fillStyle = 'rgba(5, 9, 16, 0.96)';
+  
+  // Fondo premium con gradiente muy sutil
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, 'rgba(12, 18, 28, 0.95)');
+  bgGrad.addColorStop(1, 'rgba(6, 10, 18, 0.97)');
+  roundRect(ctx, 1, 1, W - 2, H - 2, 8);
+  ctx.fillStyle = bgGrad;
   ctx.fill();
+  
+  // Borde con el color del cluster (más sutil)
   ctx.strokeStyle = color;
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 2;
   ctx.stroke();
-  // Marcador de color del cluster (cuadradito a la izquierda).
+  
+  // Marcador de color (círculo en lugar de cuadrado, más moderno)
+  ctx.beginPath();
+  ctx.arc(24, H / 2, 8, 0, Math.PI * 2);
   ctx.fillStyle = color;
-  roundRect(ctx, 16, H / 2 - 10, 20, 20, 4);
   ctx.fill();
-  // Texto del concepto que caracteriza al grupo.
+  // Anillo exterior sutil
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  
+  // Texto con sombra sutil
   ctx.font = font;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(234,245,255,0.98)';
-  ctx.fillText(display, leftPad, H / 2 + 1);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillText(display, leftPad + 1, H / 2 + 2);
+  ctx.fillStyle = 'rgba(245,252,255,1)';
+  ctx.fillText(display, leftPad, H / 2);
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
   const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, depthTest: false, fog: false });
@@ -1263,24 +1292,26 @@ export default function Graph3D({
     const gkD = nodoDestino ? groupKey(nodoDestino) : null;
     const mismoGrupo = gkO != null && gkO === gkD;
 
+    // Colores más legibles: aristas del grupo más visibles, puentes más sutiles
     let rgb, alphaBase;
     if (link.spoke) {
       const gk = nodoDestino ? groupKey(nodoDestino) : (nodoOrigen ? groupKey(nodoOrigen) : null);
-      rgb = hexToRgb(oscurecer(groupColor(gk), 0.45)); alphaBase = 0.16;
+      rgb = hexToRgb(oscurecer(groupColor(gk), 0.35)); alphaBase = 0.22;
     }
-    else if (issue) { rgb = hexToRgb(NODE.issue); alphaBase = 0.5; }
-    else if (mismoGrupo) { rgb = hexToRgb(oscurecer(groupColor(gkO), 0.45)); alphaBase = 0.34; }
-    else { rgb = '150,160,180'; alphaBase = 0.075; }
+    else if (issue) { rgb = hexToRgb(NODE.issue); alphaBase = 0.6; }
+    else if (mismoGrupo) { rgb = hexToRgb(oscurecer(groupColor(gkO), 0.3)); alphaBase = 0.45; }
+    else { rgb = '140,160,185'; alphaBase = 0.12; } // puentes entre grupos más visibles
 
     let result;
     if (isHover) {
+      // Hover: color vibrante del grupo o blanco brillante para puentes
       result = mismoGrupo
-        ? `rgba(${hexToRgb(groupColor(gkO))},0.95)`
-        : 'rgba(198,212,226,0.85)';
+        ? `rgba(${hexToRgb(aclarar(groupColor(gkO), 0.3))},1)`
+        : 'rgba(220,235,255,0.95)';
     } else {
-      // PERF: aplicar multiplicador de opacidad según zoom (aristas más tenues de lejos)
-      const alpha = (!hayFoco ? alphaBase : (enFoco ? 0.95 : 0.02)) * LINK_ALPHA_MULT;
-      result = `rgba(${rgb},${Math.max(0.01, alpha)})`;
+      // PERF: aplicar multiplicador de opacidad según zoom
+      const alpha = (!hayFoco ? alphaBase : (enFoco ? 1 : 0.04)) * LINK_ALPHA_MULT;
+      result = `rgba(${rgb},${Math.max(0.02, alpha)})`;
     }
     _linkColorCache.set(fullKey, result);
     return result;

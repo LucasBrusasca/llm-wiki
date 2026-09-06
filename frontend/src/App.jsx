@@ -27,16 +27,16 @@ import { pedirClave, avisarClaveIncorrecta } from './security.js';
 // Cada uno conserva al menos un canal RGB bajo, que es lo que mantiene la
 // identidad del matiz y evita el aspecto lavado.
 export const CLUSTER_PALETTE = [
-  '#C41E3A', // rubí
-  '#0E9594', // turquesa profundo
-  '#0F52BA', // zafiro
-  '#00A86B', // esmeralda
-  '#9B59B6', // amatista
-  '#D4AF37', // oro viejo
-  '#B03A5B', // granate
-  '#3E7CB1', // azul acero
-  '#6A8D3F', // oliva
-  '#C1553C', // terracota
+  '#FF4D6A', // coral vibrante
+  '#00D4AA', // turquesa neón
+  '#4A90FF', // azul eléctrico
+  '#10D4A0', // esmeralda brillante
+  '#A855F7', // violeta moderno
+  '#F59E0B', // ámbar cálido
+  '#EC4899', // magenta
+  '#06B6D4', // cian
+  '#84CC16', // lima
+  '#F97316', // naranja
 ];
 
 // Reservado: sólo para lo excepcional (issues, alertas). Si aparece, significa algo.
