@@ -48,7 +48,8 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
     } catch { setExpedientes([]); }
   }, [seccion]);
 
-  // Procesar el problema con el LLM para extraer brief (admisión rápida)
+  // Procesar el problema - FLUJO RÁPIDO (sin chat multi-turno obligatorio)
+  // Solo extrae el brief y genera nombre. El análisis de rutas es opcional y separado.
   const procesarProblema = useCallback(async () => {
     const texto = problem.trim();
     if (!texto || texto.length < 10) {
@@ -57,7 +58,18 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
     }
     setPensando(true);
     setError('');
+    
+    // Generar nombre del caso localmente (sin LLM) para reducir latencia
+    if (!caseName) {
+      const palabras = texto.split(/\s+/).slice(0, 4).join(' ');
+      setCaseName(palabras + (texto.split(/\s+/).length > 4 ? '…' : ''));
+    }
+    
+    // Colapsar admisión inmediatamente para dar feedback
+    setAdmisionExpandida(false);
+    
     try {
+      // Llamada opcional al backend para enriquecer (no bloquea el flujo)
       const r = await fetch('/api/architect/intake', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -66,22 +78,20 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
         }),
       });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(d.detail || `Error ${r.status}`);
       
-      // Extraer nombre del caso si el LLM lo generó
-      if (d.case_name && !caseName) {
-        setCaseName(d.case_name);
+      if (r.ok) {
+        // Si el LLM generó un nombre mejor, usarlo
+        if (d.case_name && d.case_name !== 'Caso sin título') {
+          setCaseName(d.case_name);
+        }
+        // Notificar al canvas que puede generar un flujo inicial
+        if (canvasRef.current?.onProblemProcessed) {
+          canvasRef.current.onProblemProcessed(d);
+        }
       }
-      
-      // Colapsar admisión y enfocar el canvas
-      setAdmisionExpandida(false);
-      
-      // Notificar al canvas que puede generar un flujo inicial
-      if (canvasRef.current?.onProblemProcessed) {
-        canvasRef.current.onProblemProcessed(d);
-      }
-    } catch (e) {
-      setError(`No se pudo procesar: ${e.message}`);
+      // Si falla, no es crítico - el usuario puede seguir trabajando
+    } catch {
+      // Silencioso: el canvas sigue funcional aunque falle el enriquecimiento
     } finally {
       setPensando(false);
     }
@@ -233,12 +243,12 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
                       onClick={procesarProblema}
                       disabled={pensando || problem.trim().length < 10}
                     >
-                      {pensando ? 'Procesando…' : 'Empezar →'}
+                      {pensando ? 'Procesando…' : 'Ir al canvas →'}
                     </button>
                   </div>
                   {error && <div className="arch-error arch-error--inline">{error}</div>}
                   <p className="arch-hint">
-                    Architect recupera evidencia de <b>{seccion}</b>. Enter para empezar.
+                    Pasás directo al canvas. La evidencia de <b>{seccion}</b> se vincula en cada nodo.
                   </p>
                 </div>
               )}
