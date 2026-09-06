@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import Graph3D from './components/Graph3D.jsx';
 import NodePanel from './components/NodePanel.jsx';
 import AgentPanel from './components/AgentPanel.jsx';
@@ -155,6 +156,8 @@ export default function App() {
   const [seccion, setSeccionState]      = useState(() => localStorage.getItem('algedi_seccion') || 'personal');
   const [sections, setSections]         = useState([{ nombre: 'personal', count: 0 }]);
   const [seccionOpen, setSeccionOpen]   = useState(false);
+  const [seccionMenuPos, setSeccionMenuPos] = useState({ top: 0, left: 0 }); // FIX: posición del portal
+  const seccionBtnRef = useRef(null); // FIX: ref para posicionar el menú
   const [securityEnabled, setSecurityEnabled] = useState(false);
   const [layoutMode, setLayoutMode]     = useState('components');
   // Vista de FRAGMENTOS: cada documento se abre en la estrella de sus pasajes.
@@ -163,6 +166,8 @@ export default function App() {
   const [ragDebugMode, setRagDebugMode] = useState(false);
   const [ragDebugQuery, setRagDebugQuery] = useState('');
   const [ragDebugResults, setRagDebugResults] = useState([]);
+  // FIX: escala de etiquetas del grafo (compacto 0.7 | normal 1.0 | amplio 1.4)
+  const [labelScale, setLabelScale] = useState(1.0);
   const [focusTrigger, setFocusTrigger] = useState(0);  // botón "enfocar" del panel
   const [fitTrigger, setFitTrigger]     = useState(0);  // botón "ver todo" (desenfocar)
   // Home Architect-first: por defecto muestra el home con CTA a Architect
@@ -596,34 +601,56 @@ export default function App() {
 
         {/* Selector de SECCIÓN (grafo de conocimiento activo) */}
         <div className="hdr-menu-wrap">
-          <button className="seccion-btn"
-            onClick={() => { setSeccionOpen(o => !o); loadSections(); }}
+          <button 
+            ref={seccionBtnRef}
+            className="seccion-btn"
+            onClick={() => { 
+              // FIX: calcular posición del menú antes de abrir
+              if (seccionBtnRef.current) {
+                const rect = seccionBtnRef.current.getBoundingClientRect();
+                setSeccionMenuPos({ top: rect.top, left: rect.right + 8 });
+              }
+              setSeccionOpen(o => !o); 
+              loadSections(); 
+            }}
             title="Sección activa — cada sección es un grafo de conocimiento aparte">
             <span className="seccion-dot" /> {seccion} <span className="seccion-caret">▾</span>
           </button>
-          {seccionOpen && (<>
-            <div className="hdr-menu-backdrop" onClick={() => setSeccionOpen(false)} />
-            <div className="hdr-menu" style={{ left: 0, right: 'auto', minWidth: 290 }}>
-              <div className="hdr-menu-label">Secciones (grafos aparte)</div>
-              {sections.map(s => (
-                <div key={s.nombre} className={`seccion-row${s.nombre === seccion ? ' active' : ''}`}>
-                  <button className="seccion-row-main" onClick={() => cambiarSeccion(s.nombre)} title="Cambiar a esta sección">
-                    <span className="hdr-menu-ico">{s.nombre === seccion ? '●' : '○'}</span>
-                    <span className="seccion-row-name">{s.nombre}</span>
-                    <span className="seccion-row-count">{s.count}</span>
-                  </button>
-                  <button className="seccion-row-act" title={`Renombrar «${s.nombre}»`}
-                    onClick={() => renombrarSeccion(s.nombre)}>✎</button>
-                  <button className="seccion-row-act seccion-row-act--danger" title={`Eliminar «${s.nombre}»`}
-                    onClick={() => eliminarSeccion(s.nombre)}>🗑</button>
-                </div>
-              ))}
-              <div className="hdr-menu-sep" />
-              <button className="hdr-menu-item" onClick={nuevaSeccion}>
-                <span className="hdr-menu-ico">＋</span> Nueva sección…
-              </button>
-            </div>
-          </>)}
+          {/* FIX: Portal a document.body para evitar clipping del sidebar */}
+          {seccionOpen && createPortal(
+            <>
+              <div className="hdr-menu-backdrop" onClick={() => setSeccionOpen(false)} />
+              <div 
+                className="hdr-menu hdr-menu--portal" 
+                style={{ 
+                  position: 'fixed',
+                  top: seccionMenuPos.top, 
+                  left: seccionMenuPos.left,
+                  minWidth: 280,
+                }}
+              >
+                <div className="hdr-menu-label">Secciones (grafos aparte)</div>
+                {sections.map(s => (
+                  <div key={s.nombre} className={`seccion-row${s.nombre === seccion ? ' active' : ''}`}>
+                    <button className="seccion-row-main" onClick={() => cambiarSeccion(s.nombre)} title="Cambiar a esta sección">
+                      <span className="hdr-menu-ico">{s.nombre === seccion ? '●' : '○'}</span>
+                      <span className="seccion-row-name">{s.nombre}</span>
+                      <span className="seccion-row-count">{s.count}</span>
+                    </button>
+                    <button className="seccion-row-act" title={`Renombrar «${s.nombre}»`}
+                      onClick={() => renombrarSeccion(s.nombre)}>✎</button>
+                    <button className="seccion-row-act seccion-row-act--danger" title={`Eliminar «${s.nombre}»`}
+                      onClick={() => eliminarSeccion(s.nombre)}>🗑</button>
+                  </div>
+                ))}
+                <div className="hdr-menu-sep" />
+                <button className="hdr-menu-item" onClick={nuevaSeccion}>
+                  <span className="hdr-menu-ico">＋</span> Nueva sección…
+                </button>
+              </div>
+            </>,
+            document.body
+          )}
         </div>
 
         <input
@@ -814,6 +841,7 @@ export default function App() {
         fitTrigger={fitTrigger}
         ragDebugMode={ragDebugMode}
         ragDebugResults={ragDebugResults}
+        labelScale={labelScale}
       />
 
       {/* Layout Mode Selector */}
@@ -878,6 +906,27 @@ export default function App() {
           )}
         </div>
       )}
+
+      {/* Control de tamaño de etiquetas del grafo */}
+      <div className="label-scale-controls">
+        <span className="label-scale-title">Etiquetas</span>
+        <div className="label-scale-btns">
+          {[
+            { value: 0.7, label: 'S', title: 'Compacto' },
+            { value: 1.0, label: 'M', title: 'Normal' },
+            { value: 1.4, label: 'L', title: 'Amplio' },
+          ].map(({ value, label, title }) => (
+            <button
+              key={value}
+              className={`label-scale-btn${labelScale === value ? ' active' : ''}`}
+              onClick={() => setLabelScale(value)}
+              title={title}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Botón flotante del Agente (estilo chatbot). Abajo a la DERECHA: el inferior
           izquierdo lo ocupa el selector de layout. Se oculta si el agente ya está abierto. */}

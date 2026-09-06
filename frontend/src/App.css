@@ -2430,6 +2430,64 @@ body::before {
   }
 }
 
+/* ── Control de tamaño de etiquetas del grafo ── */
+.label-scale-controls {
+  position: fixed;
+  bottom: calc(var(--bottom-h) + 22px);
+  right: 90px;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--glass);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow-soft);
+}
+.label-scale-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+.label-scale-btns {
+  display: flex;
+  gap: 2px;
+}
+.label-scale-btn {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-mid);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.label-scale-btn:hover {
+  background: rgba(255,255,255,0.08);
+  color: var(--text);
+}
+.label-scale-btn.active {
+  background: var(--accent);
+  color: #07070E;
+}
+
+@media (max-width: 780px) {
+  .label-scale-controls {
+    right: 70px;
+    padding: 4px 8px;
+  }
+  .label-scale-title { display: none; }
+}
+
 /* ── Zoom: esquina inferior derecha, base de la columna ── */
 .zoom-controls {
   right: 22px;
@@ -2524,15 +2582,14 @@ body::before {
   font-size: 13px;
 }
 
-/* FIX: Menú de secciones abre hacia la DERECHA, no hacia arriba (se cortaba) */
-.header > .hdr-menu-wrap .hdr-menu {
-  top: 0;
-  bottom: auto;
-  left: calc(100% + 8px);
-  right: auto;
-  min-width: 220px;
+/* FIX: Menú de secciones como portal a body — nunca se corta */
+.hdr-menu--portal {
+  position: fixed !important;
+  z-index: 9999 !important;
+  min-width: 280px;
   max-height: calc(100vh - 40px);
   overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255,255,255,0.06);
 }
 
 .search-input {

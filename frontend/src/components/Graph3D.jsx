@@ -474,6 +474,9 @@ function buildNode(node, degree, maxDegree, texReg) {
       caption.userData.worldH *= k;
     }
   }
+  // FIX: guardar escala base para poder aplicar labelScale dinámicamente
+  caption.userData.baseScaleX = caption.scale.x;
+  caption.userData.baseScaleY = caption.scale.y;
   caption.position.set(0, -(fh / 2) - caption.userData.worldH / 2 - 0.8, 0);
   group.add(caption);
   if (texReg) { texReg.add(caption.material.map); texReg.add(caption.material); }
@@ -729,6 +732,7 @@ export default function Graph3D({
   onNodeClick, onNodeHover, onLinkClick, synthMode, layoutMode = 'components',
   projectRef, focusTrigger = 0, fitTrigger = 0,
   ragDebugMode = false, ragDebugResults = [],
+  labelScale = 1.0,  // FIX: escala de labels (0.7 = compacto, 1.0 = normal, 1.4 = amplio)
 }) {
   const fgRef                 = useRef();
   const stageRef              = useRef(null);      // contenedor real del lienzo
@@ -1085,6 +1089,18 @@ export default function Graph3D({
     });
     wakeRef.current();  // renderizar el cambio de highlight/selección (luego idle)
   }, [highlighted, selectedNode, graphData, ragNodeIds]);
+
+  // FIX: actualizar escala de captions cuando cambia labelScale
+  useEffect(() => {
+    spriteMap.current.forEach((obj) => {
+      const ud = obj.userData;
+      if (ud?.caption?.userData?.baseScaleX) {
+        const capUd = ud.caption.userData;
+        ud.caption.scale.set(capUd.baseScaleX * labelScale, capUd.baseScaleY * labelScale, 1);
+      }
+    });
+    wakeRef.current();
+  }, [labelScale]);
 
   // (Sin fly-to automático al seleccionar: clickear un nodo NO mueve el grafo.)
   // Enfoque + destello EXPLÍCITO (botón ⌖ del panel): acerca la cámara al nodo y
@@ -1457,9 +1473,33 @@ export default function Graph3D({
     }
   }, [selectedNode]);
 
+  // FIX: proyectar posición 3D del nodo a coordenadas de pantalla para el tooltip
+  const projectNodeToScreen = useCallback((node) => {
+    if (!node || !fgRef.current) return null;
+    const fg = fgRef.current;
+    const camera = fg.camera();
+    const renderer = fg.renderer();
+    if (!camera || !renderer) return null;
+    
+    const pos = new THREE.Vector3(node.x || 0, node.y || 0, node.z || 0);
+    pos.project(camera);
+    
+    const rect = stageRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    
+    // Convertir de coordenadas normalizadas (-1 a 1) a píxeles
+    const x = (pos.x * 0.5 + 0.5) * rect.width;
+    const y = (-pos.y * 0.5 + 0.5) * rect.height;
+    
+    // Solo mostrar si está frente a la cámara
+    if (pos.z > 1) return null;
+    
+    return { x, y };
+  }, []);
+
   // PERF: throttle del hover para reducir recálculos en mousemove
-  // FIX: mostrar tooltip con nombre completo del documento
-  const handleHoverRaw = useCallback((node, event) => {
+  // FIX: tooltip sigue al nodo (proyección 3D → 2D)
+  const handleHoverRaw = useCallback((node) => {
     document.body.style.cursor = node ? (synthMode ? 'crosshair' : 'pointer') : 'default';
     const prev = hoverIdRef.current;
     const next = node?.id ?? null;
@@ -1469,26 +1509,25 @@ export default function Graph3D({
       hoverIdRef.current = next;
       wakeRef.current();
       
-      // FIX: tooltip con nombre completo
+      // FIX: tooltip anclado al nodo (proyección 3D)
       if (node && node.label) {
-        // Posición del mouse para el tooltip (usar coordenadas del evento si disponibles)
-        const stageRect = stageRef.current?.getBoundingClientRect();
-        if (stageRect && event) {
+        const screenPos = projectNodeToScreen(node);
+        if (screenPos) {
           setNodeTooltip({
             text: node.label,
-            x: event.clientX - stageRect.left + 15,
-            y: event.clientY - stageRect.top - 10,
+            x: screenPos.x + 20,  // offset a la derecha del nodo
+            y: screenPos.y - 10,  // ligeramente arriba
+            nodeId: node.id,      // para actualizar posición en render
           });
         } else {
-          // Sin posición exacta, mostrar en esquina
-          setNodeTooltip({ text: node.label, x: 20, y: 20 });
+          setNodeTooltip({ text: node.label, x: 20, y: 20, nodeId: node.id });
         }
       } else {
         setNodeTooltip(null);
       }
     }
     if (onNodeHover) onNodeHover(node || null);
-  }, [onNodeHover, synthMode, paintHover]);
+  }, [onNodeHover, synthMode, paintHover, projectNodeToScreen]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleHover = useMemo(() => throttle(handleHoverRaw, 32), [handleHoverRaw]);
 
