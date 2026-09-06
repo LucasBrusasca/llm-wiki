@@ -276,7 +276,8 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
                 {mostrarSugerencias && (
                   <div className="arch-suggestions-body">
                     <p className="arch-suggestions-hint">
-                      Esto es una sugerencia basada en tu corpus, no una clasificación obligatoria.
+                      <strong>Opcional:</strong> Esto es una sugerencia basada en tu corpus. 
+                      No es necesario seguirla — podés trabajar directamente en el canvas.
                     </p>
                     <div className="arch-rutas-mini">
                       {RUTAS.map(r => {

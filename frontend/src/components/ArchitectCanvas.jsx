@@ -554,14 +554,15 @@ const ArchitectCanvas = forwardRef(function ArchitectCanvas({
           </button>
           {onAnalyze && (
             <button
-              className="arch-canvas-btn arch-canvas-btn--primary"
+              className="arch-canvas-btn arch-canvas-btn--secondary"
               onClick={() => onAnalyze({
                 nodes: nodes.map(n => ({ id: n.id, type: n.type, label: n.data.label })),
                 edges: edges.map(e => ({ source: e.source, target: e.target })),
               })}
               disabled={analizando || nodes.length < 1}
+              title="Opcional: obtener sugerencia de ruta basada en tu corpus"
             >
-              {analizando ? 'Analizando…' : '⬢ Analizar caso'}
+              {analizando ? 'Analizando…' : '⬢ Sugerir ruta (opcional)'}
             </button>
           )}
           <button className="arch-canvas-btn" onClick={exportarFlujo}>

@@ -4026,6 +4026,17 @@ body::before {
   color: #000;
 }
 
+.arch-canvas-btn--secondary {
+  border-color: var(--border-mid);
+  color: var(--text-dim);
+}
+
+.arch-canvas-btn--secondary:hover {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--accent-glow);
+}
+
 .arch-canvas-btn--big {
   padding: 14px 24px;
   font-size: 14px;
