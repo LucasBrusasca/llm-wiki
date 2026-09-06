@@ -2251,6 +2251,83 @@ Devolvé SOLO JSON:
     }
 
 
+class GenerateFlowRequest(BaseModel):
+    """Genera un flujograma inicial desde una descripción del problema."""
+    problem: str
+    case_name: str = ""
+
+
+@app.post("/api/architect/generate-flow")
+async def generate_flow_from_prompt(payload: GenerateFlowRequest):
+    """Genera un flujograma de decisión a partir de un prompt.
+
+    Usa el LLM para extraer pasos, decisiones y resultados del problema descripto.
+    Devuelve nodos y aristas listos para React Flow.
+    """
+    from processor import parsear_json, query_llm
+
+    problem = payload.problem.strip()[:2000]
+    if len(problem) < 10:
+        raise HTTPException(400, "Describí el problema con al menos 10 caracteres")
+
+    prompt = f"""Analizá este problema y generá un flujograma de decisión simple.
+
+PROBLEMA: {problem}
+
+Devolvé SOLO JSON válido con este formato:
+{{
+  "nodes": [
+    {{"id": "1", "type": "paso", "label": "Analizar situación", "position": {{"x": 250, "y": 50}}}},
+    {{"id": "2", "type": "decision", "label": "¿Cumple criterios?", "position": {{"x": 250, "y": 170}}}},
+    {{"id": "3", "type": "resultado", "label": "Implementar", "position": {{"x": 100, "y": 300}}}},
+    {{"id": "4", "type": "resultado", "label": "No implementar", "position": {{"x": 400, "y": 300}}}}
+  ],
+  "edges": [
+    {{"source": "1", "target": "2"}},
+    {{"source": "2", "target": "3"}},
+    {{"source": "2", "target": "4"}}
+  ]
+}}
+
+Tipos válidos: paso (acción), decision (bifurcación con Sí/No), resultado (fin).
+Posiciones: empieza en y=50, incrementa ~120 por nivel. x=250 centrado, x=100 izquierda, x=400 derecha.
+Máximo 6 nodos. Decisiones tienen dos salidas. Sé conciso en los labels (máx 40 chars).
+NO inventes etapas genéricas si el problema no las necesita.
+SOLO JSON, sin explicación."""
+
+    try:
+        import asyncio
+        raw = await asyncio.to_thread(
+            query_llm,
+            [{"role": "user", "content": prompt}],
+            "Sos un experto en modelado de procesos. Generás flujogramas concisos. Respondés SOLO JSON.",
+        )
+        data = parsear_json(raw.strip())
+        if not isinstance(data, dict) or not data.get("nodes"):
+            raise ValueError("respuesta inválida")
+        return {
+            "nodes": data.get("nodes", [])[:6],
+            "edges": data.get("edges", []),
+        }
+    except Exception as exc:
+        # Fallback: devolver un flujo mínimo para que el frontend no falle
+        return {
+            "nodes": [
+                {"id": "1", "type": "paso", "label": problem[:40] + ("…" if len(problem) > 40 else ""), "position": {"x": 250, "y": 50}},
+                {"id": "2", "type": "decision", "label": "¿Proceder?", "position": {"x": 250, "y": 170}},
+                {"id": "3", "type": "resultado", "label": "Implementar", "position": {"x": 100, "y": 300}},
+                {"id": "4", "type": "resultado", "label": "No implementar", "position": {"x": 400, "y": 300}},
+            ],
+            "edges": [
+                {"source": "1", "target": "2"},
+                {"source": "2", "target": "3"},
+                {"source": "2", "target": "4"},
+            ],
+            "fallback": True,
+            "error": str(exc),
+        }
+
+
 @app.post("/api/architect/analyze")
 async def analyze_with_architect(
     payload: ArchitectAnalyzeRequest,
