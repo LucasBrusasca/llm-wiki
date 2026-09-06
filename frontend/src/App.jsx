@@ -159,6 +159,10 @@ export default function App() {
   const [layoutMode, setLayoutMode]     = useState('components');
   // Vista de FRAGMENTOS: cada documento se abre en la estrella de sus pasajes.
   const [verFragmentos, setVerFragmentos] = useState(false);
+  // Modo RAG Debug: visualiza los nodos recuperados para una query
+  const [ragDebugMode, setRagDebugMode] = useState(false);
+  const [ragDebugQuery, setRagDebugQuery] = useState('');
+  const [ragDebugResults, setRagDebugResults] = useState([]);
   const [focusTrigger, setFocusTrigger] = useState(0);  // botón "enfocar" del panel
   const [fitTrigger, setFitTrigger]     = useState(0);  // botón "ver todo" (desenfocar)
   // Home Architect-first: por defecto muestra el home con CTA a Architect
@@ -238,6 +242,21 @@ export default function App() {
           .catch(() => { setFetchError(true); setLoading(false); });
       });
   }, [seccion, verFragmentos]);
+
+  // RAG Debug: buscar top-k chunks para una query
+  const runRagDebug = useCallback(async (query) => {
+    if (!query?.trim()) {
+      setRagDebugResults([]);
+      return;
+    }
+    try {
+      const r = await fetch(`/api/rag-debug?q=${encodeURIComponent(query)}&top_k=8`);
+      const data = await r.json();
+      setRagDebugResults(data.results || []);
+    } catch {
+      setRagDebugResults([]);
+    }
+  }, []);
 
   const renombrarSeccion = useCallback(async (nombre) => {
     setSeccionOpen(false);
@@ -793,6 +812,8 @@ export default function App() {
         projectRef={projectRef}
         focusTrigger={focusTrigger}
         fitTrigger={fitTrigger}
+        ragDebugMode={ragDebugMode}
+        ragDebugResults={ragDebugResults}
       />
 
       {/* Layout Mode Selector */}
@@ -815,10 +836,48 @@ export default function App() {
             <div className="layout-btn-tooltip">{tip}</div>
           </div>
         ))}
-        {/* La vista de Fragmentos se retira del selector: mostraba densidad pero no
-            respondia ninguna pregunta. El endpoint /api/graph/chunks queda vivo para
-            cuando se conecte con las citas del agente, que es lo que la haria util. */}
+
+        {/* Modo RAG Debug: visualizar resultados de recuperación */}
+        <div className="layout-btn-wrap layout-btn-divider">
+          <button
+            className={`layout-btn layout-btn--rag${ragDebugMode ? ' active' : ''}`}
+            onClick={() => { 
+              setRagDebugMode(!ragDebugMode);
+              if (!ragDebugMode) setRagDebugQuery('');
+              setRagDebugResults([]);
+            }}
+            title="Explorar recuperación RAG"
+          >
+            <span className="layout-btn-icon">◎</span>
+            <span className="layout-btn-label">RAG</span>
+          </button>
+          <div className="layout-btn-tooltip">Debug visual del RAG: lanzá una query y ve qué nodos se recuperan.</div>
+        </div>
       </div>
+
+      {/* RAG Debug Input */}
+      {ragDebugMode && (
+        <div className="rag-debug-controls">
+          <input
+            type="text"
+            className="rag-debug-input"
+            placeholder="Pregunta para debug de recuperación..."
+            value={ragDebugQuery}
+            onChange={e => setRagDebugQuery(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && runRagDebug(ragDebugQuery)}
+          />
+          <button
+            className="rag-debug-run"
+            onClick={() => runRagDebug(ragDebugQuery)}
+            disabled={!ragDebugQuery.trim()}
+          >
+            Buscar
+          </button>
+          {ragDebugResults.length > 0 && (
+            <span className="rag-debug-count">{ragDebugResults.length} nodos</span>
+          )}
+        </div>
+      )}
 
       {/* Botón flotante del Agente (estilo chatbot). Abajo a la DERECHA: el inferior
           izquierdo lo ocupa el selector de layout. Se oculta si el agente ya está abierto. */}

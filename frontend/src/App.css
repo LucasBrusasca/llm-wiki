@@ -2347,6 +2347,89 @@ body::before {
   border-top-color: var(--border-mid);
 }
 
+/* ── RAG Debug Mode ── */
+.layout-btn-divider {
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.layout-btn--rag.active {
+  color: #00FFFF;
+  background: rgba(0,255,255,0.12);
+  box-shadow: 0 2px 12px rgba(0,255,255,0.25);
+}
+
+.rag-debug-controls {
+  position: fixed;
+  bottom: calc(var(--bottom-h) + 72px);
+  left: calc(var(--rail-w) + 22px);
+  z-index: 91;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--glass-hi);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 1px solid rgba(0,255,255,0.3);
+  border-radius: 999px;
+  box-shadow: var(--shadow-panel);
+}
+.rag-debug-input {
+  width: 280px;
+  padding: 8px 14px;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(0,255,255,0.2);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font);
+  outline: none;
+  transition: border-color var(--transition);
+}
+.rag-debug-input::placeholder {
+  color: var(--text-dim);
+}
+.rag-debug-input:focus {
+  border-color: rgba(0,255,255,0.5);
+}
+.rag-debug-run {
+  padding: 8px 16px;
+  background: linear-gradient(135deg, rgba(0,255,255,0.2), rgba(0,255,255,0.08));
+  border: 1px solid rgba(0,255,255,0.4);
+  border-radius: 999px;
+  color: #00FFFF;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.rag-debug-run:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(0,255,255,0.3), rgba(0,255,255,0.12));
+  box-shadow: 0 0 16px rgba(0,255,255,0.2);
+}
+.rag-debug-run:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.rag-debug-count {
+  font-size: 11px;
+  color: #00FFFF;
+  font-weight: 600;
+  padding: 0 8px;
+}
+
+@media (max-width: 900px) {
+  .rag-debug-controls {
+    left: 12px;
+    bottom: calc(var(--bottom-h) + 60px);
+  }
+  .rag-debug-input {
+    width: 180px;
+  }
+}
+
 /* ── Zoom: esquina inferior derecha, base de la columna ── */
 .zoom-controls {
   right: 22px;
@@ -3781,6 +3864,202 @@ body::before {
 .arch-chat-suggestion:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* ── Trazabilidad: fuentes del corpus ── */
+.arch-chat-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.arch-chat-sources-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.arch-chat-source {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(168,139,250,0.08);
+  border: 1px solid rgba(168,139,250,0.25);
+  border-radius: 12px;
+  padding: 4px 10px;
+  color: rgba(168,139,250,0.9);
+  font-family: var(--font);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.arch-chat-source:hover {
+  background: rgba(168,139,250,0.15);
+  border-color: rgba(168,139,250,0.5);
+  transform: translateY(-1px);
+}
+
+.arch-chat-source-icon {
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.arch-chat-source-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arch-chat-source-score {
+  font-size: 9px;
+  opacity: 0.7;
+  font-weight: 600;
+}
+
+/* ── Drawer de detalle de fuente ── */
+.arch-source-drawer {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 320px;
+  height: 100%;
+  background: var(--glass-hi);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border-left: 1px solid rgba(168,139,250,0.3);
+  display: flex;
+  flex-direction: column;
+  z-index: 200;
+  animation: slideInRight 0.2s ease-out;
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.arch-source-drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(168,139,250,0.05);
+}
+
+.arch-source-drawer-header h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(168,139,250,0.9);
+  letter-spacing: 0.5px;
+}
+
+.arch-source-drawer-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 20px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all var(--transition);
+}
+
+.arch-source-drawer-close:hover {
+  background: rgba(255,255,255,0.1);
+  color: var(--text);
+}
+
+.arch-source-drawer-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.arch-source-drawer-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.arch-source-drawer-icon {
+  color: rgba(168,139,250,0.8);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.arch-source-drawer-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 0;
+}
+
+.arch-source-drawer-sim {
+  font-size: 12px;
+  color: var(--text-mid);
+}
+
+.arch-source-drawer-sim strong {
+  color: rgba(168,139,250,0.9);
+}
+
+.arch-source-drawer-excerpt {
+  background: rgba(0,0,0,0.2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.arch-source-drawer-excerpt h5 {
+  margin: 0 0 8px 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.arch-source-drawer-excerpt p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.arch-source-drawer-goto {
+  margin-top: auto;
+  background: rgba(168,139,250,0.12);
+  border: 1px solid rgba(168,139,250,0.35);
+  border-radius: 8px;
+  padding: 10px 16px;
+  color: rgba(168,139,250,0.95);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+  text-align: center;
+}
+
+.arch-source-drawer-goto:hover {
+  background: rgba(168,139,250,0.2);
+  border-color: rgba(168,139,250,0.6);
+  transform: translateY(-1px);
 }
 
 /* Typing indicator */

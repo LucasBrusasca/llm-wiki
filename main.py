@@ -1713,6 +1713,46 @@ async def semantic_search(
     return {"ids": ids}
 
 
+@app.get("/api/rag-debug")
+async def rag_debug_search(
+    q: str,
+    top_k: int = 10,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Debug visual de RAG: devuelve los top-k chunks recuperados con scores y node_ids.
+    
+    Usado por el modo "Explorar recuperación" en el grafo 3D.
+    """
+    if not q or len(q.strip()) < 3:
+        return {"query": q, "results": [], "node_ids": []}
+    
+    chunks = await _chunks_relevantes_scored(q.strip(), max_n=top_k, db=db)
+    
+    # Agrupar por nodo, quedarse con el mejor chunk por nodo
+    by_node = {}
+    for chunk in chunks:
+        nid = chunk["node_id"]
+        if nid not in by_node or chunk["sim"] > by_node[nid]["sim"]:
+            by_node[nid] = {
+                "node_id": nid,
+                "label": chunk["label"],
+                "sim": round(chunk["sim"], 3),
+                "excerpt": chunk["content"][:300],
+                "page": chunk.get("page"),
+                "chunk_id": chunk["id"],
+            }
+    
+    results = sorted(by_node.values(), key=lambda x: x["sim"], reverse=True)
+    node_ids = [r["node_id"] for r in results]
+    
+    return {
+        "query": q,
+        "results": results,
+        "node_ids": node_ids,
+        "count": len(results),
+    }
+
+
 # ── Node operations ───────────────────────────────────────────────────
 
 @app.delete("/api/node/{node_id}")
@@ -2344,8 +2384,8 @@ async def architect_chat(
     
     A diferencia del intake one-shot, este endpoint:
     - Devuelve sugerencias CLICKEABLES que el frontend puede ejecutar
+    - Incluye TRAZABILIDAD: fuentes/evidencia de donde salió cada respuesta
     - Responde rápido con feedback inmediato
-    - No hace clasificación completa en cada turno
     """
     import asyncio
     from processor import parsear_json, query_llm
@@ -2361,6 +2401,26 @@ async def architect_chat(
     case_name = canvas.get("caseName", "")
     problem = canvas.get("problem", "")
     
+    # TRAZABILIDAD: buscar evidencia relevante al mensaje + problema
+    search_query = f"{problem[:500]} {ultimo_msg}"
+    chunks = await _chunks_relevantes_scored(search_query, max_n=5, db=db)
+    
+    # Formatear fuentes para incluir en respuesta
+    sources = []
+    evidence_context = ""
+    if chunks:
+        evidence_lines = []
+        for i, chunk in enumerate(chunks[:4]):
+            sources.append({
+                "node_id": chunk["node_id"],
+                "label": chunk["label"],
+                "excerpt": chunk["content"][:200],
+                "page": chunk.get("page"),
+                "sim": round(chunk["sim"], 2),
+            })
+            evidence_lines.append(f"[{i+1}] {chunk['label']}: {chunk['content'][:150]}...")
+        evidence_context = "\n".join(evidence_lines)
+    
     # Historial resumido (últimos 6 mensajes)
     historial = "\n".join(
         f"{'Usuario' if m.get('role') == 'user' else 'Asistente'}: {str(m.get('content'))[:500]}"
@@ -2373,13 +2433,18 @@ async def architect_chat(
         nodos_desc = ", ".join(n.get("data", {}).get("label", "?")[:30] for n in canvas.get("nodes", [])[:5])
         canvas_context = f"\nCANVAS ACTUAL: {num_nodos} nodos ({nodos_desc}...)"
     
+    # Contexto de evidencia para el LLM
+    evidence_prompt = ""
+    if evidence_context:
+        evidence_prompt = f"\n\nEVIDENCIA RELACIONADA (del corpus):\n{evidence_context}"
+    
     prompt = f"""Sos el asistente de Algedi Architect, un taller de casos.
 Tu rol es ayudar al usuario a construir un flujo de decisión, NO dar respuestas largas.
 
 CONTEXTO:
 - Caso: {case_name or '(sin nombre)'}
 - Problema: {problem[:300] or '(no definido)'}
-{canvas_context}
+{canvas_context}{evidence_prompt}
 
 HISTORIAL:
 {historial}
@@ -2389,7 +2454,7 @@ ULTIMO MENSAJE: {ultimo_msg}
 REGLAS:
 1. Respuestas CORTAS (2-3 oraciones máximo)
 2. Siempre incluí al menos 1 SUGERENCIA accionable
-3. NO hagas clasificación de rutas (eso es otro paso)
+3. Si hay evidencia relacionada, mencioná brevemente qué encontraste
 4. Si piden generar flujo, sugerí la acción correspondiente
 5. Si el canvas está vacío, sugerí empezar con una plantilla o generar desde el problema
 
@@ -2400,6 +2465,7 @@ TIPOS DE SUGERENCIAS (usa el "action" correspondiente):
 - find_evidence: buscar evidencia relacionada
 - refine_problem: el problema necesita más detalle
 - analyze_routes: analizar rutas (solo si el usuario lo pide explícitamente)
+- view_source: ver una fuente específica (params: node_id)
 
 Devolvé SOLO JSON:
 {{
@@ -2407,7 +2473,7 @@ Devolvé SOLO JSON:
   "suggestions": [
     {{"label": "texto del botón", "action": "generate_flow", "params": {{}}}},
     {{"label": "Agregar paso: X", "action": "add_node", "params": {{"type": "paso", "label": "X"}}}},
-    {{"label": "Plantilla simple", "action": "use_template", "params": {{"template": "simple"}}}}
+    {{"label": "Ver fuente: Doc X", "action": "view_source", "params": {{"node_id": "..."}}}}
   ],
   "case_name": "nombre sugerido si detectás uno mejor, o null"
 }}
@@ -2450,6 +2516,7 @@ Máximo 3 sugerencias. Las sugerencias deben ser relevantes al mensaje."""
             "message": str(data.get("message", "")).strip()[:500] or "¿En qué te puedo ayudar?",
             "suggestions": suggestions,
             "case_name": data.get("case_name") if data.get("case_name") else None,
+            "sources": sources,  # TRAZABILIDAD: fuentes de donde salió la respuesta
         }
     except Exception as exc:
         # Fallback rápido sin LLM
@@ -2463,6 +2530,7 @@ Máximo 3 sugerencias. Las sugerencias deben ser relevantes al mensaje."""
             "message": "Contame más sobre tu caso. Puedo ayudarte a armar el flujo.",
             "suggestions": default_suggestions,
             "case_name": None,
+            "sources": sources if 'sources' in dir() else [],  # Incluir sources si se recuperaron
             "_fallback": True,
         }
 

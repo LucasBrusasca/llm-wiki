@@ -682,6 +682,7 @@ export default function Graph3D({
   graphData, selectedNode, highlighted, filteredIds,
   onNodeClick, onNodeHover, onLinkClick, synthMode, layoutMode = 'components',
   projectRef, focusTrigger = 0, fitTrigger = 0,
+  ragDebugMode = false, ragDebugResults = [],
 }) {
   const fgRef                 = useRef();
   const stageRef              = useRef(null);      // contenedor real del lienzo
@@ -738,6 +739,12 @@ export default function Graph3D({
     m.forEach(v => { if (v > max) max = v; });
     return { degreeMap: m, maxDegree: max };
   }, [graphData.links]);
+
+  /* ── RAG Debug: Set de IDs de nodos recuperados ── */
+  const ragNodeIds = useMemo(() => {
+    if (!ragDebugMode || !ragDebugResults.length) return new Set();
+    return new Set(ragDebugResults.map(r => r.node_id));
+  }, [ragDebugMode, ragDebugResults]);
 
   const nodeThreeObject = useMemo(() => {
     spriteMap.current = new Map();
@@ -951,6 +958,7 @@ export default function Graph3D({
   }, [graphData, layoutMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Estado visual: atenuar las tarjetas no resaltadas, agrandar la seleccionada.
+  // RAG Debug: resaltar nodos recuperados, atenuar el resto.
   useEffect(() => {
     // Vecinos directos del nodo elegido (para mostrarles el nombre).
     const conectados = new Set();
@@ -965,24 +973,49 @@ export default function Graph3D({
       const ud = obj.userData;
       if (!ud?.face) return;
       const isSel = selectedNode?.id === id;
-      const isDim = highlighted.size > 0 && !highlighted.has(id);
+      
+      // RAG Debug: nodos recuperados se resaltan, el resto se atenúa fuertemente
+      const isRagHit = ragNodeIds.has(id);
+      const ragActive = ragNodeIds.size > 0;
+      
+      // isDim: atenuado por búsqueda normal O por RAG debug (no recuperado)
+      const isDim = ragActive
+        ? !isRagHit && !isSel  // RAG mode: solo brillan los recuperados + seleccionado
+        : (highlighted.size > 0 && !highlighted.has(id));
+      
       // Lo seleccionado se marca por FORMA (anillo + escala), no sólo por opacidad:
       // un delta de 0.9 a 1.0 en un punto de 2px era imperceptible.
       // Lo atenuado baja más que antes, para que el foco realmente destaque.
-      ud.face.material.opacity    = isDim ? 0.16 : 1;
-      ud.caption.material.opacity = isDim ? 0.08 : (isSel ? 1 : 0.62);
-      const fs = isSel ? 1.18 : 1;
+      const faceOpacity = isDim ? (ragActive ? 0.08 : 0.16) : 1;
+      ud.face.material.opacity = faceOpacity;
+      ud.caption.material.opacity = isDim ? 0.05 : (isSel ? 1 : 0.62);
+      
+      // RAG hits: escala ligeramente mayor para destacar visualmente
+      const fs = isSel ? 1.18 : (isRagHit && ragActive ? 1.12 : 1);
       ud.face.scale.set(ud.baseFW * fs, ud.baseFH * fs, 1);
 
       // Punto LOD (vista lejana): conserva SU color de grupo — cambiarlo a cian
       // hacía perder la referencia de a qué tema pertenece el nodo elegido.
+      // RAG hits: cambiar a color distintivo (cian brillante)
       if (ud.dot) {
-        ud.dot.material.color.set(ud.dotColor);
-        ud.dot.material.opacity = isDim ? 0.12 : (isSel ? 1 : 0.88);
-        ud.dot.scale.setScalar(isSel ? ud.dotBase * 1.45 : ud.dotBase);
+        if (isRagHit && ragActive) {
+          ud.dot.material.color.set('#00FFFF');  // cian brillante para RAG hits
+          ud.dot.material.opacity = 1;
+          ud.dot.scale.setScalar(ud.dotBase * 1.5);
+        } else {
+          ud.dot.material.color.set(ud.dotColor);
+          ud.dot.material.opacity = isDim ? (ragActive ? 0.06 : 0.12) : (isSel ? 1 : 0.88);
+          ud.dot.scale.setScalar(isSel ? ud.dotBase * 1.45 : ud.dotBase);
+        }
       }
       // Halo de grupo (vista cercana): atenuar / realzar, sutil.
-      if (ud.halo) ud.halo.material.opacity = isDim ? 0.03 : (isSel ? 0.34 : 0.2);
+      if (ud.halo) {
+        if (isRagHit && ragActive) {
+          ud.halo.material.opacity = 0.5;  // halo más visible para RAG hits
+        } else {
+          ud.halo.material.opacity = isDim ? 0.02 : (isSel ? 0.34 : 0.2);
+        }
+      }
 
       // Anillo: la señal principal de "esto es lo que estás tocando".
       // Al seleccionar, los VECINOS muestran su nombre: saber con que se conecta
@@ -991,10 +1024,12 @@ export default function Graph3D({
         const vecino = selectedNode ? conectados.has(id) : false;
         /* `conectados` son los VECINOS, no incluye al nodo elegido: sin isSel aca,
            el documento en foco era el unico sin nombre visible. */
-        ud.caption.visible = isSel || vecino || (!isDim && !LOD_FAR);
+        // RAG hits siempre muestran caption
+        ud.caption.visible = isSel || vecino || (isRagHit && ragActive) || (!isDim && !LOD_FAR);
         if (isSel) ud.caption.material.opacity = 1;
         else if (vecino) ud.caption.material.opacity = 0.95;
-        ud.forzarCaption = isSel || vecino;
+        else if (isRagHit && ragActive) ud.caption.material.opacity = 0.9;
+        ud.forzarCaption = isSel || vecino || (isRagHit && ragActive);
       }
       if (ud.ring) {
         ud.ring.visible = false;   // retícula retirada a pedido: molestaba mas de lo que marcaba
@@ -1002,7 +1037,7 @@ export default function Graph3D({
       }
     });
     wakeRef.current();  // renderizar el cambio de highlight/selección (luego idle)
-  }, [highlighted, selectedNode, graphData]);
+  }, [highlighted, selectedNode, graphData, ragNodeIds]);
 
   // (Sin fly-to automático al seleccionar: clickear un nodo NO mueve el grafo.)
   // Enfoque + destello EXPLÍCITO (botón ⌖ del panel): acerca la cámara al nodo y

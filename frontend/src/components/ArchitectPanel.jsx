@@ -27,11 +27,14 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
   const [chatMessages, setChatMessages] = useState([
     { role: 'assistant', content: '¡Hola! Contame qué problema querés resolver. Voy a ayudarte a armar el flujo de decisión.', suggestions: [
       { label: 'Empezar con plantilla', action: 'use_template', params: { template: 'simple' } },
-    ]}
+    ], sources: [] }
   ]);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const chatEndRef = useRef(null);
+  
+  // Trazabilidad: detalle de fuente seleccionada
+  const [sourceDetail, setSourceDetail] = useState(null);
   
   // Expedientes (vista alternativa)
   const [vistaExpedientes, setVistaExpedientes] = useState(false);
@@ -101,11 +104,12 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
       
       const data = await r.json().catch(() => ({}));
       
-      // Agregar respuesta del asistente
+      // Agregar respuesta del asistente CON TRAZABILIDAD (sources)
       const assistantMsg = {
         role: 'assistant',
         content: data.message || 'Contame más sobre tu caso.',
         suggestions: data.suggestions || [],
+        sources: data.sources || [],  // TRAZABILIDAD: fuentes del corpus
       };
       setChatMessages(prev => [...prev, assistantMsg]);
       
@@ -118,6 +122,7 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
         role: 'assistant',
         content: 'Hubo un error. Intentá de nuevo.',
         suggestions: [],
+        sources: [],
       }]);
     } finally {
       setChatLoading(false);
@@ -327,6 +332,26 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
                 {chatMessages.map((msg, i) => (
                   <div key={i} className={`arch-chat-msg arch-chat-msg--${msg.role}${msg.isAction ? ' action' : ''}`}>
                     <div className="arch-chat-msg-content">{msg.content}</div>
+                    
+                    {/* TRAZABILIDAD: mostrar fuentes del corpus */}
+                    {msg.sources?.length > 0 && (
+                      <div className="arch-chat-sources">
+                        <span className="arch-chat-sources-label">Basado en:</span>
+                        {msg.sources.map((src, k) => (
+                          <button
+                            key={k}
+                            className="arch-chat-source"
+                            onClick={() => setSourceDetail(src)}
+                            title={`${src.label} (sim: ${src.sim})`}
+                          >
+                            <span className="arch-chat-source-icon">◇</span>
+                            <span className="arch-chat-source-name">{src.label?.slice(0, 30)}</span>
+                            {src.sim && <span className="arch-chat-source-score">{Math.round(src.sim * 100)}%</span>}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    
                     {msg.suggestions?.length > 0 && (
                       <div className="arch-chat-suggestions">
                         {msg.suggestions.map((s, j) => (
@@ -430,6 +455,50 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
                 )}
               </div>
             )}
+          </div>
+        )}
+        
+        {/* ── Drawer de detalle de fuente (trazabilidad) ── */}
+        {sourceDetail && (
+          <div className="arch-source-drawer">
+            <div className="arch-source-drawer-header">
+              <h4>Fuente</h4>
+              <button className="arch-source-drawer-close" onClick={() => setSourceDetail(null)}>×</button>
+            </div>
+            <div className="arch-source-drawer-content">
+              <div className="arch-source-drawer-title">
+                <span className="arch-source-drawer-icon">◇</span>
+                {sourceDetail.label}
+              </div>
+              {sourceDetail.page && (
+                <div className="arch-source-drawer-meta">
+                  Página {sourceDetail.page}
+                </div>
+              )}
+              {sourceDetail.sim && (
+                <div className="arch-source-drawer-sim">
+                  Relevancia: <strong>{Math.round(sourceDetail.sim * 100)}%</strong>
+                </div>
+              )}
+              <div className="arch-source-drawer-excerpt">
+                <h5>Extracto</h5>
+                <p>{sourceDetail.excerpt || '(Sin extracto disponible)'}</p>
+              </div>
+              {sourceDetail.node_id && onNavigate && (
+                <button
+                  className="arch-source-drawer-goto"
+                  onClick={() => {
+                    const node = allNodes.find(n => n.id === sourceDetail.node_id);
+                    if (node) {
+                      onNavigate(node);
+                      setSourceDetail(null);
+                    }
+                  }}
+                >
+                  Ver en el grafo →
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>
