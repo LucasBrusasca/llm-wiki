@@ -201,10 +201,9 @@ const ArchitectCanvas = forwardRef(function ArchitectCanvas({
   
   const nodeIdCounter = useRef(1);
 
-  // Exponer métodos al padre via ref
+  // Exponer métodos al padre via ref (para el chat interactivo)
   useImperativeHandle(ref, () => ({
     onProblemProcessed: (data) => {
-      // Cuando el problema se procesa, podemos generar un flujo inicial
       if (nodes.length === 0 && data.brief?.problem) {
         generarFlujoDesdePrompt(data.brief.problem);
       }
@@ -219,6 +218,15 @@ const ArchitectCanvas = forwardRef(function ArchitectCanvas({
       })),
       edges: edges.map(e => ({ source: e.source, target: e.target })),
     }),
+    // Métodos para el chat interactivo
+    cargarPlantilla: (templateId) => {
+      const template = PLANTILLAS.find(p => p.id === templateId) || PLANTILLAS[0];
+      cargarPlantillaInternal(template);
+    },
+    addNode: (type, label) => {
+      addNodeWithLabel(type, label);
+    },
+    generarFlujoDesdePrompt,
   }));
 
   const onConnect = useCallback(
@@ -237,11 +245,22 @@ const ArchitectCanvas = forwardRef(function ArchitectCanvas({
     };
     setNodes((nds) => [...nds, newNode]);
     setShowNodePicker(false);
-    // Abrir drawer inmediatamente para editar
     setSelectedNode(newNode);
     setEditingLabel(newNode.data.label);
     setEditingNotas('');
     setDrawerOpen(true);
+  }, [nodes.length, setNodes]);
+
+  // Versión para el chat: agrega nodo con label específico sin abrir drawer
+  const addNodeWithLabel = useCallback((type, label) => {
+    const id = `node-${nodeIdCounter.current++}`;
+    const newNode = {
+      id,
+      type: type || 'paso',
+      position: { x: 250 + Math.random() * 100, y: 100 + nodes.length * 120 },
+      data: { label: label || 'Nuevo paso', evidencias: [], notas: '' },
+    };
+    setNodes((nds) => [...nds, newNode]);
   }, [nodes.length, setNodes]);
 
   // Click en nodo → abrir drawer (Fase 2)
@@ -340,8 +359,8 @@ const ArchitectCanvas = forwardRef(function ArchitectCanvas({
     );
   }, [selectedNode, setNodes]);
 
-  // Cargar plantilla
-  const cargarPlantilla = useCallback((plantilla) => {
+  // Cargar plantilla (interno)
+  const cargarPlantillaInternal = useCallback((plantilla) => {
     const baseId = nodeIdCounter.current;
     const newNodes = plantilla.nodes.map((n, i) => ({
       ...n,
@@ -362,6 +381,11 @@ const ArchitectCanvas = forwardRef(function ArchitectCanvas({
     setEdges(newEdges);
     setShowPlantillas(false);
   }, [setNodes, setEdges]);
+  
+  // Wrapper para UI
+  const cargarPlantilla = useCallback((plantilla) => {
+    cargarPlantillaInternal(plantilla);
+  }, [cargarPlantillaInternal]);
 
   // Generar flujo desde prompt (Fase 3)
   const generarFlujoDesdePrompt = useCallback(async (problemText) => {

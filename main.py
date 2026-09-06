@@ -2328,6 +2328,145 @@ SOLO JSON, sin explicación."""
         }
 
 
+class ArchitectChatRequest(BaseModel):
+    """Chat interactivo del caso: el usuario dialoga y recibe sugerencias accionables."""
+    messages: list = []
+    canvas_state: dict = {}  # {nodes: [], edges: [], caseName: "", problem: ""}
+    seccion: str = "personal"
+
+
+@app.post("/api/architect/chat")
+async def architect_chat(
+    payload: ArchitectChatRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Chat interactivo para el taller de casos.
+    
+    A diferencia del intake one-shot, este endpoint:
+    - Devuelve sugerencias CLICKEABLES que el frontend puede ejecutar
+    - Responde rápido con feedback inmediato
+    - No hace clasificación completa en cada turno
+    """
+    import asyncio
+    from processor import parsear_json, query_llm
+
+    mensajes = [m for m in (payload.messages or [])
+                if isinstance(m, dict) and str(m.get("content") or "").strip()]
+    if not mensajes:
+        raise HTTPException(400, "No hay mensaje para procesar")
+
+    ultimo_msg = str(mensajes[-1].get("content", "")).strip()[:2000]
+    canvas = payload.canvas_state or {}
+    num_nodos = len(canvas.get("nodes", []))
+    case_name = canvas.get("caseName", "")
+    problem = canvas.get("problem", "")
+    
+    # Historial resumido (últimos 6 mensajes)
+    historial = "\n".join(
+        f"{'Usuario' if m.get('role') == 'user' else 'Asistente'}: {str(m.get('content'))[:500]}"
+        for m in mensajes[-6:]
+    )
+    
+    # Contexto del canvas
+    canvas_context = ""
+    if num_nodos > 0:
+        nodos_desc = ", ".join(n.get("data", {}).get("label", "?")[:30] for n in canvas.get("nodes", [])[:5])
+        canvas_context = f"\nCANVAS ACTUAL: {num_nodos} nodos ({nodos_desc}...)"
+    
+    prompt = f"""Sos el asistente de Algedi Architect, un taller de casos.
+Tu rol es ayudar al usuario a construir un flujo de decisión, NO dar respuestas largas.
+
+CONTEXTO:
+- Caso: {case_name or '(sin nombre)'}
+- Problema: {problem[:300] or '(no definido)'}
+{canvas_context}
+
+HISTORIAL:
+{historial}
+
+ULTIMO MENSAJE: {ultimo_msg}
+
+REGLAS:
+1. Respuestas CORTAS (2-3 oraciones máximo)
+2. Siempre incluí al menos 1 SUGERENCIA accionable
+3. NO hagas clasificación de rutas (eso es otro paso)
+4. Si piden generar flujo, sugerí la acción correspondiente
+5. Si el canvas está vacío, sugerí empezar con una plantilla o generar desde el problema
+
+TIPOS DE SUGERENCIAS (usa el "action" correspondiente):
+- generate_flow: generar flujograma desde el problema actual
+- add_node: agregar un nodo específico al canvas
+- use_template: usar una plantilla predefinida (simple, verificacion, hitl)
+- find_evidence: buscar evidencia relacionada
+- refine_problem: el problema necesita más detalle
+- analyze_routes: analizar rutas (solo si el usuario lo pide explícitamente)
+
+Devolvé SOLO JSON:
+{{
+  "message": "tu respuesta corta al usuario",
+  "suggestions": [
+    {{"label": "texto del botón", "action": "generate_flow", "params": {{}}}},
+    {{"label": "Agregar paso: X", "action": "add_node", "params": {{"type": "paso", "label": "X"}}}},
+    {{"label": "Plantilla simple", "action": "use_template", "params": {{"template": "simple"}}}}
+  ],
+  "case_name": "nombre sugerido si detectás uno mejor, o null"
+}}
+
+Máximo 3 sugerencias. Las sugerencias deben ser relevantes al mensaje."""
+
+    try:
+        raw = await asyncio.to_thread(
+            query_llm,
+            [{"role": "user", "content": prompt}],
+            "Sos un asistente conciso de taller de casos. Respondés SOLO JSON válido.",
+        )
+        data = parsear_json(raw.strip())
+        if not isinstance(data, dict):
+            raise ValueError("respuesta inválida")
+        
+        # Validar y limpiar sugerencias
+        suggestions = []
+        for s in data.get("suggestions", [])[:3]:
+            if isinstance(s, dict) and s.get("label") and s.get("action"):
+                suggestions.append({
+                    "label": str(s["label"])[:60],
+                    "action": str(s["action"]),
+                    "params": s.get("params", {}),
+                })
+        
+        # Si no hay sugerencias, agregar una por defecto
+        if not suggestions:
+            if num_nodos == 0:
+                suggestions = [
+                    {"label": "Generar flujo", "action": "generate_flow", "params": {}},
+                    {"label": "Plantilla simple", "action": "use_template", "params": {"template": "simple"}},
+                ]
+            else:
+                suggestions = [
+                    {"label": "Agregar nodo", "action": "add_node", "params": {"type": "paso", "label": "Nuevo paso"}},
+                ]
+        
+        return {
+            "message": str(data.get("message", "")).strip()[:500] or "¿En qué te puedo ayudar?",
+            "suggestions": suggestions,
+            "case_name": data.get("case_name") if data.get("case_name") else None,
+        }
+    except Exception as exc:
+        # Fallback rápido sin LLM
+        default_suggestions = [
+            {"label": "Generar flujo", "action": "generate_flow", "params": {}},
+            {"label": "Usar plantilla", "action": "use_template", "params": {"template": "simple"}},
+        ] if num_nodos == 0 else [
+            {"label": "Agregar paso", "action": "add_node", "params": {"type": "paso", "label": "Nuevo paso"}},
+        ]
+        return {
+            "message": "Contame más sobre tu caso. Puedo ayudarte a armar el flujo.",
+            "suggestions": default_suggestions,
+            "case_name": None,
+            "_fallback": True,
+        }
+
+
 @app.post("/api/architect/analyze")
 async def analyze_with_architect(
     payload: ArchitectAnalyzeRequest,

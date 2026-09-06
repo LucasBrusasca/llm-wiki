@@ -1,13 +1,13 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import ArchitectCanvas from './ArchitectCanvas.jsx';
 
-/* ── Architect · Taller de Casos de Algedi ───────────────────────────────────
-   CANVAS-FIRST: el flujograma es la pantalla principal, no un tab aparte.
-   - Admisión compacta arriba (prompt del problema)
+/* ── Architect · Taller de Casos con Chat Interactivo ─────────────────────────
+   CHAT + CANVAS: el usuario dialoga y el canvas se actualiza en vivo.
+   - Chat lateral para ida y vuelta con sugerencias clickeables
    - Canvas como área de trabajo central
-   - Click en nodo → drawer lateral (no cambiar de vista)
-   - 6 rutas son SUGERENCIA, no clasificación obligatoria
-   ────────────────────────────────────────────────────────────────────────── */
+   - Click en nodo → drawer lateral
+   - Sugerencias = botones que aplican acciones al canvas
+   ───────────────────────────────────────────────────────────────────────────── */
 
 const RUTAS = [
   { key: 'redesign',  label: 'Rediseño',       hint: 'ordenar el proceso',      tone: '#B8F0FF' },
@@ -22,11 +22,18 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
   // Estado del caso
   const [caseName, setCaseName] = useState('');
   const [problem, setProblem] = useState('');
-  const [admisionExpandida, setAdmisionExpandida] = useState(true);
-  const [pensando, setPensando] = useState(false);
-  const [error, setError] = useState('');
   
-  // Expedientes (vista alternativa, accesible pero no principal)
+  // Chat interactivo
+  const [chatMessages, setChatMessages] = useState([
+    { role: 'assistant', content: '¡Hola! Contame qué problema querés resolver. Voy a ayudarte a armar el flujo de decisión.', suggestions: [
+      { label: 'Empezar con plantilla', action: 'use_template', params: { template: 'simple' } },
+    ]}
+  ]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = useRef(null);
+  
+  // Expedientes (vista alternativa)
   const [vistaExpedientes, setVistaExpedientes] = useState(false);
   const [expedientes, setExpedientes] = useState(null);
   
@@ -37,6 +44,11 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
 
   // Referencia al canvas para comunicación
   const canvasRef = useRef(null);
+  
+  // Auto-scroll del chat
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
 
   const cargarExpedientes = useCallback(async () => {
     setExpedientes(null);
@@ -48,61 +60,159 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
     } catch { setExpedientes([]); }
   }, [seccion]);
 
-  // Procesar el problema - FLUJO RÁPIDO (sin chat multi-turno obligatorio)
-  // Solo extrae el brief y genera nombre. El análisis de rutas es opcional y separado.
-  const procesarProblema = useCallback(async () => {
-    const texto = problem.trim();
-    if (!texto || texto.length < 10) {
-      setError('Describí el problema con al menos una oración.');
-      return;
+  // Obtener estado actual del canvas
+  const getCanvasState = useCallback(() => {
+    if (canvasRef.current?.getFlowData) {
+      const { nodes, edges } = canvasRef.current.getFlowData();
+      return { nodes, edges, caseName, problem };
     }
-    setPensando(true);
-    setError('');
+    return { nodes: [], edges: [], caseName, problem };
+  }, [caseName, problem]);
+
+  // Enviar mensaje al chat
+  const sendChatMessage = useCallback(async (messageText) => {
+    const text = messageText?.trim() || chatInput.trim();
+    if (!text || chatLoading) return;
     
-    // Generar nombre del caso localmente (sin LLM) para reducir latencia
-    if (!caseName) {
-      const palabras = texto.split(/\s+/).slice(0, 4).join(' ');
-      setCaseName(palabras + (texto.split(/\s+/).length > 4 ? '…' : ''));
+    // Agregar mensaje del usuario inmediatamente
+    const userMsg = { role: 'user', content: text };
+    setChatMessages(prev => [...prev, userMsg]);
+    setChatInput('');
+    setChatLoading(true);
+    
+    // Si es el primer mensaje sustancial, usarlo como problema
+    if (!problem && text.length > 15) {
+      setProblem(text);
     }
-    
-    // Colapsar admisión inmediatamente para dar feedback
-    setAdmisionExpandida(false);
     
     try {
-      // Llamada opcional al backend para enriquecer (no bloquea el flujo)
-      const r = await fetch('/api/architect/intake', {
+      const canvasState = getCanvasState();
+      const allMessages = [...chatMessages, userMsg];
+      
+      const r = await fetch('/api/architect/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          messages: [{ role: 'user', content: texto }] 
+        body: JSON.stringify({
+          messages: allMessages.map(m => ({ role: m.role, content: m.content })),
+          canvas_state: canvasState,
+          seccion,
         }),
       });
-      const d = await r.json().catch(() => ({}));
       
-      if (r.ok) {
-        // Si el LLM generó un nombre mejor, usarlo
-        if (d.case_name && d.case_name !== 'Caso sin título') {
-          setCaseName(d.case_name);
-        }
-        // Notificar al canvas que puede generar un flujo inicial
-        if (canvasRef.current?.onProblemProcessed) {
-          canvasRef.current.onProblemProcessed(d);
-        }
+      const data = await r.json().catch(() => ({}));
+      
+      // Agregar respuesta del asistente
+      const assistantMsg = {
+        role: 'assistant',
+        content: data.message || 'Contame más sobre tu caso.',
+        suggestions: data.suggestions || [],
+      };
+      setChatMessages(prev => [...prev, assistantMsg]);
+      
+      // Actualizar nombre del caso si el LLM sugirió uno mejor
+      if (data.case_name && !caseName) {
+        setCaseName(data.case_name);
       }
-      // Si falla, no es crítico - el usuario puede seguir trabajando
-    } catch {
-      // Silencioso: el canvas sigue funcional aunque falle el enriquecimiento
+    } catch (err) {
+      setChatMessages(prev => [...prev, {
+        role: 'assistant',
+        content: 'Hubo un error. Intentá de nuevo.',
+        suggestions: [],
+      }]);
     } finally {
-      setPensando(false);
+      setChatLoading(false);
     }
-  }, [problem, caseName]);
+  }, [chatInput, chatMessages, chatLoading, problem, caseName, seccion, getCanvasState]);
 
-  // Analizar el caso completo (opcional, para sugerencias de rutas)
-  const analizarCaso = useCallback(async (flowData) => {
-    if (!problem.trim()) {
-      setError('Primero describí el problema.');
-      return;
+  // Ejecutar una sugerencia clickeable
+  const executeSuggestion = useCallback(async (suggestion) => {
+    const { action, params = {}, label } = suggestion;
+    
+    // Feedback inmediato en el chat
+    setChatMessages(prev => [...prev, {
+      role: 'user',
+      content: `→ ${label}`,
+      isAction: true,
+    }]);
+    
+    switch (action) {
+      case 'generate_flow':
+        if (canvasRef.current?.generarFlujoDesdePrompt) {
+          setChatLoading(true);
+          await canvasRef.current.generarFlujoDesdePrompt(problem);
+          setChatLoading(false);
+          setChatMessages(prev => [...prev, {
+            role: 'assistant',
+            content: '¡Listo! Generé un flujo inicial. Podés editar los nodos haciendo click.',
+            suggestions: [
+              { label: 'Agregar paso', action: 'add_node', params: { type: 'paso', label: 'Nuevo paso' } },
+              { label: 'Analizar rutas', action: 'analyze_routes', params: {} },
+            ],
+          }]);
+        }
+        break;
+        
+      case 'use_template':
+        if (canvasRef.current?.cargarPlantilla) {
+          canvasRef.current.cargarPlantilla(params.template || 'simple');
+          setChatMessages(prev => [...prev, {
+            role: 'assistant',
+            content: `Cargué la plantilla "${params.template || 'simple'}". Hacé click en cualquier nodo para editarlo.`,
+            suggestions: [
+              { label: 'Generar desde problema', action: 'generate_flow', params: {} },
+            ],
+          }]);
+        }
+        break;
+        
+      case 'add_node':
+        if (canvasRef.current?.addNode) {
+          canvasRef.current.addNode(params.type || 'paso', params.label || 'Nuevo paso');
+          setChatMessages(prev => [...prev, {
+            role: 'assistant',
+            content: `Agregué el nodo "${params.label}". Arrastralo donde quieras.`,
+            suggestions: [],
+          }]);
+        }
+        break;
+        
+      case 'find_evidence':
+        setChatMessages(prev => [...prev, {
+          role: 'assistant',
+          content: 'Para vincular evidencia, hacé click en un nodo y usá el buscador en el drawer lateral.',
+          suggestions: [],
+        }]);
+        break;
+        
+      case 'refine_problem':
+        setChatMessages(prev => [...prev, {
+          role: 'assistant',
+          content: '¿Podrías contarme un poco más sobre el problema? Por ejemplo: ¿cuál es el proceso actual? ¿qué decisiones se toman?',
+          suggestions: [],
+        }]);
+        break;
+        
+      case 'analyze_routes':
+        if (canvasRef.current?.getFlowData) {
+          const flowData = canvasRef.current.getFlowData();
+          await analizarCaso(flowData);
+          setChatMessages(prev => [...prev, {
+            role: 'assistant',
+            content: 'Analicé el caso. Mirá las sugerencias de ruta abajo del canvas.',
+            suggestions: [],
+          }]);
+        }
+        break;
+        
+      default:
+        // Acción desconocida - enviar como mensaje
+        sendChatMessage(label);
     }
+  }, [problem, sendChatMessage]);
+
+  // Analizar el caso (para rutas)
+  const analizarCaso = useCallback(async (flowData) => {
+    if (!problem.trim()) return;
     setAnalizando(true);
     setSugerencias(null);
     try {
@@ -117,18 +227,16 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
           available_data: '',
           constraints: '',
           expected_value: '',
-          flow: flowData, // enviar el flujo si existe
+          flow: flowData,
         }),
       });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.detail || `Error ${r.status}`);
-      setSugerencias(data);
-      setMostrarSugerencias(true);
-    } catch (e) {
-      setError(`Error al analizar: ${e.message}`);
-    } finally {
-      setAnalizando(false);
-    }
+      if (r.ok) {
+        setSugerencias(data);
+        setMostrarSugerencias(true);
+      }
+    } catch { }
+    finally { setAnalizando(false); }
   }, [problem, caseName]);
 
   const rutaSugerida = useMemo(
@@ -138,9 +246,9 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
 
   return (
     <div className="arch-overlay">
-      <div className="arch-panel arch-panel--canvas-first">
+      <div className="arch-panel arch-panel--chat">
 
-        {/* ── Cabecera compacta ── */}
+        {/* ── Cabecera ── */}
         <header className="arch-head arch-head--compact">
           <div className="arch-head-id">
             <span className="arch-mark">⬢</span>
@@ -166,7 +274,7 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
         </header>
 
         {vistaExpedientes ? (
-          /* ── Vista de expedientes (alternativa, no principal) ── */
+          /* ── Vista de expedientes ── */
           <div className="arch-expedientes-view">
             <div className="arch-exps">
               {expedientes === null && <div className="arch-empty">Buscando expedientes…</div>}
@@ -183,7 +291,6 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
                 return (
                   <button key={n.id} className="arch-exp"
                           onClick={() => {
-                            // Cargar expediente en el canvas
                             setCaseName(n.label);
                             if (n.solve?.inputs?.problem) {
                               setProblem(n.solve.inputs.problem);
@@ -202,56 +309,72 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
             </div>
           </div>
         ) : (
-          /* ── Vista principal: Admisión + Canvas ── */
-          <div className="arch-workspace">
+          /* ── Vista principal: Chat + Canvas ── */
+          <div className="arch-workspace arch-workspace--chat">
             
-            {/* ── Admisión compacta (arriba) ── */}
-            <div className={`arch-admission${admisionExpandida ? ' expanded' : ' collapsed'}`}>
-              <div className="arch-admission-header" onClick={() => setAdmisionExpandida(e => !e)}>
-                <span className="arch-admission-toggle">{admisionExpandida ? '▾' : '▸'}</span>
-                <span className="arch-admission-title">
-                  {caseName || 'Nuevo caso'} {problem && !admisionExpandida && <small>— {problem.slice(0, 60)}…</small>}
-                </span>
+            {/* ── Panel de Chat (izquierda) ── */}
+            <div className="arch-chat-panel">
+              <div className="arch-chat-header">
+                <input
+                  className="arch-chat-case-name"
+                  placeholder="Nombre del caso"
+                  value={caseName}
+                  onChange={e => setCaseName(e.target.value)}
+                />
               </div>
               
-              {admisionExpandida && (
-                <div className="arch-admission-body">
-                  <div className="arch-admission-row">
-                    <input
-                      className="arch-input arch-input--name"
-                      placeholder="Nombre del caso (opcional)"
-                      value={caseName}
-                      onChange={e => setCaseName(e.target.value)}
-                    />
+              <div className="arch-chat-messages">
+                {chatMessages.map((msg, i) => (
+                  <div key={i} className={`arch-chat-msg arch-chat-msg--${msg.role}${msg.isAction ? ' action' : ''}`}>
+                    <div className="arch-chat-msg-content">{msg.content}</div>
+                    {msg.suggestions?.length > 0 && (
+                      <div className="arch-chat-suggestions">
+                        {msg.suggestions.map((s, j) => (
+                          <button
+                            key={j}
+                            className="arch-chat-suggestion"
+                            onClick={() => executeSuggestion(s)}
+                            disabled={chatLoading}
+                          >
+                            {s.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <div className="arch-admission-row">
-                    <textarea
-                      className="arch-textarea arch-textarea--problem"
-                      rows={3}
-                      placeholder="Describí el problema como se lo contarías a un colega. Ej: 'Tenemos un proceso de aprobación que tarda 3 días y nadie sabe en qué paso está.'"
-                      value={problem}
-                      onChange={e => setProblem(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter' && !e.shiftKey && problem.trim().length > 10) {
-                          e.preventDefault();
-                          procesarProblema();
-                        }
-                      }}
-                    />
-                    <button 
-                      className="arch-btn arch-btn--start"
-                      onClick={procesarProblema}
-                      disabled={pensando || problem.trim().length < 10}
-                    >
-                      {pensando ? 'Procesando…' : 'Ir al canvas →'}
-                    </button>
+                ))}
+                {chatLoading && (
+                  <div className="arch-chat-msg arch-chat-msg--assistant">
+                    <div className="arch-chat-msg-content arch-chat-typing">
+                      <span></span><span></span><span></span>
+                    </div>
                   </div>
-                  {error && <div className="arch-error arch-error--inline">{error}</div>}
-                  <p className="arch-hint">
-                    Pasás directo al canvas. La evidencia de <b>{seccion}</b> se vincula en cada nodo.
-                  </p>
-                </div>
-              )}
+                )}
+                <div ref={chatEndRef} />
+              </div>
+              
+              <div className="arch-chat-input-wrap">
+                <textarea
+                  className="arch-chat-input"
+                  placeholder="Escribí tu mensaje..."
+                  value={chatInput}
+                  onChange={e => setChatInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      sendChatMessage();
+                    }
+                  }}
+                  rows={2}
+                />
+                <button
+                  className="arch-chat-send"
+                  onClick={() => sendChatMessage()}
+                  disabled={chatLoading || !chatInput.trim()}
+                >
+                  ↑
+                </button>
+              </div>
             </div>
 
             {/* ── Canvas (área principal) ── */}
@@ -269,7 +392,7 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
               />
             </div>
 
-            {/* ── Sugerencias de rutas (colapsable, opcional) ── */}
+            {/* ── Sugerencias de rutas (colapsable) ── */}
             {sugerencias && (
               <div className={`arch-suggestions${mostrarSugerencias ? ' open' : ''}`}>
                 <button 
@@ -286,8 +409,7 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
                 {mostrarSugerencias && (
                   <div className="arch-suggestions-body">
                     <p className="arch-suggestions-hint">
-                      <strong>Opcional:</strong> Esto es una sugerencia basada en tu corpus. 
-                      No es necesario seguirla — podés trabajar directamente en el canvas.
+                      <strong>Opcional:</strong> Sugerencia basada en tu corpus.
                     </p>
                     <div className="arch-rutas-mini">
                       {RUTAS.map(r => {
@@ -303,11 +425,6 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
                     </div>
                     {sugerencias.problem_understanding && (
                       <p className="arch-understand">{sugerencias.problem_understanding}</p>
-                    )}
-                    {sugerencias.critical_review?.objection && (
-                      <div className="arch-objection-mini">
-                        <b>Objeción:</b> {sugerencias.critical_review.objection}
-                      </div>
                     )}
                   </div>
                 )}
