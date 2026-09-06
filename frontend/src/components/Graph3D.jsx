@@ -91,13 +91,11 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-/* ── Tamaño de tarjeta = centralidad (grado de conexiones), chico ── */
+/* ── Tamaño de tarjeta = centralidad (grado de conexiones), MUY chico ── */
 function cardHeight(degree, maxDegree) {
   const norm = maxDegree > 0 ? Math.sqrt(degree / maxDegree) : 0;
-  // Achicadas: con 5..10 las tarjetas se encimaban en UMAP, donde los documentos
-  // quedan naturalmente juntos. El tope de 14 tarjetas simultaneas ayuda, pero si
-  // cada una es grande igual se pisan entre si.
-  return 4.4 + norm * 4.4; // ~4.4 (periferico) .. ~8.8 (hub)
+  // Tarjetas pequeñas para no tapar el grafo. Preview grande solo en hover/selección.
+  return 1.8 + norm * 2.2; // ~1.8 (periférico) .. ~4.0 (hub) - antes era 4.4..8.8
 }
 
 // Dimensiones de la tarjeta normalizadas por ÁREA: un video 16:9 (ancho) y un PDF
@@ -1292,22 +1290,21 @@ export default function Graph3D({
     const gkD = nodoDestino ? groupKey(nodoDestino) : null;
     const mismoGrupo = gkO != null && gkO === gkD;
 
-    // Colores más legibles: aristas del grupo más visibles, puentes más sutiles
+    // Aristas GRIS NEUTRO por defecto - el color está en los nodos, no en las líneas
+    // Solo resaltamos con color en hover/selección
     let rgb, alphaBase;
-    if (link.spoke) {
-      const gk = nodoDestino ? groupKey(nodoDestino) : (nodoOrigen ? groupKey(nodoOrigen) : null);
-      rgb = hexToRgb(oscurecer(groupColor(gk), 0.35)); alphaBase = 0.22;
+    if (issue) { 
+      rgb = hexToRgb(NODE.issue); alphaBase = 0.5; 
+    } else {
+      // Gris neutro para TODAS las aristas (mismo grupo o no)
+      rgb = '120,135,160'; 
+      alphaBase = link.spoke ? 0.15 : (mismoGrupo ? 0.28 : 0.18);
     }
-    else if (issue) { rgb = hexToRgb(NODE.issue); alphaBase = 0.6; }
-    else if (mismoGrupo) { rgb = hexToRgb(oscurecer(groupColor(gkO), 0.3)); alphaBase = 0.45; }
-    else { rgb = '140,160,185'; alphaBase = 0.12; } // puentes entre grupos más visibles
 
     let result;
     if (isHover) {
-      // Hover: color vibrante del grupo o blanco brillante para puentes
-      result = mismoGrupo
-        ? `rgba(${hexToRgb(aclarar(groupColor(gkO), 0.3))},1)`
-        : 'rgba(220,235,255,0.95)';
+      // Hover: blanco brillante para destacar la arista seleccionada
+      result = 'rgba(220,235,255,0.95)';
     } else {
       // PERF: aplicar multiplicador de opacidad según zoom
       const alpha = (!hayFoco ? alphaBase : (enFoco ? 1 : 0.04)) * LINK_ALPHA_MULT;
@@ -1516,8 +1513,8 @@ export default function Graph3D({
         onNodeHover={handleHover}
         onLinkClick={onLinkClick}
         /* Una linea de 1px es casi imposible de acertar. Esto ensancha SOLO el area
-           de deteccion del puntero, sin engrosar el trazo dibujado. */
-        linkHoverPrecision={12}
+           de deteccion del puntero, sin engrosar el trazo dibujado. Aumentado a 20. */
+        linkHoverPrecision={20}
         onLinkHover={handleLinkHover}
         onEngineTick={handleEngineTick}
         onEngineStop={handleEngineStop}
