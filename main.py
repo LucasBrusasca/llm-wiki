@@ -36,7 +36,7 @@ THUMBS.mkdir(exist_ok=True)
 VAULT = BASE / "vault"
 VAULT.mkdir(exist_ok=True)
 
-MAX_UPLOAD_MB = max(1, int(os.getenv("ALGEDI_MAX_UPLOAD_MB", "50")))
+MAX_UPLOAD_MB = max(1, int(os.getenv("ALGEDI_MAX_UPLOAD_MB", "150")))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 INGEST_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".html", ".htm", ".txt", ".md",
                      ".docx", ".pptx", ".pptm"}
