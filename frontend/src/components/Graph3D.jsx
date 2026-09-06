@@ -203,45 +203,88 @@ function titleCase(str) {
   }).join('');
 }
 
-// Caption: etiqueta de texto chica centrada debajo de la tarjeta.
-function buildCaption(text) {
-  const pad = 8, fontPx = 32; // padding más generoso, fuente ligeramente más pequeña
+// Truncado inteligente: preserva palabras clave, no corta a mitad de palabra
+function smartTruncate(text, maxLen) {
+  if (!text || text.length <= maxLen) return text;
+  // Intentar cortar en un espacio antes del límite
+  let cut = text.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(' ');
+  // Si hay un espacio razonable (no muy al inicio), cortar ahí
+  if (lastSpace > maxLen * 0.5) {
+    cut = cut.slice(0, lastSpace);
+  }
+  return cut.trim() + '…';
+}
+
+// Caption: etiqueta de texto centrada debajo de la tarjeta.
+// FIX: títulos más largos (hasta 48 chars) con truncado inteligente, 2 líneas si es necesario
+function buildCaption(text, fullText = null) {
+  const pad = 10, fontPx = 28, lineH = 34; // fuente legible, padding generoso
   const measure = document.createElement('canvas').getContext('2d');
   const font = `600 ${fontPx}px 'Sora', 'Inter', system-ui, sans-serif`;
   measure.font = font;
-  let label = titleCase(text);
-  if (label.length > 28) label = label.slice(0, 27) + '…';
-  const tw = Math.max(1, Math.ceil(measure.measureText(label).width));
-  const cw = tw + pad * 2, ch = fontPx + pad * 2;
+  
+  const original = titleCase(text);
+  const full = fullText || original;  // texto completo para tooltip
+  
+  // Truncado inteligente: hasta 48 chars, o 2 líneas de ~28 cada una
+  let lines = [];
+  if (original.length <= 48) {
+    // Cabe en una línea
+    lines = [original];
+  } else {
+    // Intentar 2 líneas de ~28 chars
+    const firstLine = smartTruncate(original, 28);
+    const rest = original.slice(firstLine.length - 1).trim(); // sin el "…"
+    if (rest.length > 0) {
+      const secondLine = smartTruncate(rest, 26);
+      lines = [firstLine.replace('…', ''), secondLine];
+    } else {
+      lines = [smartTruncate(original, 48)];
+    }
+  }
+  
+  const numLines = lines.length;
+  const maxTw = Math.max(...lines.map(l => Math.ceil(measure.measureText(l).width)));
+  const cw = maxTw + pad * 2;
+  const ch = lineH * numLines + pad * 2;
+  
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
   
   // Fondo más sólido con blur visual (sin performance hit)
-  ctx.fillStyle = 'rgba(8,12,20,0.88)';
+  ctx.fillStyle = 'rgba(8,12,20,0.92)';
   roundRect(ctx, 0, 0, cw, ch, 6);
   ctx.fill();
   
   // Borde sutil con gradiente
-  ctx.strokeStyle = 'rgba(90,200,250,0.25)';
+  ctx.strokeStyle = 'rgba(90,200,250,0.3)';
   ctx.lineWidth = 1.5;
   ctx.stroke();
   
   ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  // Sombra más definida
-  ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,0.95)';
-  ctx.strokeText(label, cw / 2, ch / 2);
-  // Texto blanco brillante
-  ctx.fillStyle = 'rgba(245,250,255,1)';
-  ctx.fillText(label, cw / 2, ch / 2);
+  
+  // Dibujar cada línea
+  lines.forEach((line, i) => {
+    const y = pad + lineH / 2 + i * lineH;
+    // Sombra más definida
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,0.95)';
+    ctx.strokeText(line, cw / 2, y);
+    // Texto blanco brillante
+    ctx.fillStyle = 'rgba(245,250,255,1)';
+    ctx.fillText(line, cw / 2, y);
+  });
+  
   const tex = new THREE.CanvasTexture(cv);
   tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false, fog: false });
   const sprite = new THREE.Sprite(mat);
-  const worldH = 1.7, worldW = worldH * cw / ch;
+  const worldH = 1.8 + (numLines - 1) * 0.9;  // más alto si hay 2 líneas
+  const worldW = worldH * cw / ch;
   sprite.scale.set(worldW, worldH, 1);
   sprite.renderOrder = 3;
-  sprite.userData = { worldW, worldH };
+  sprite.userData = { worldW, worldH, fullText: full };  // guardar texto completo
   return sprite;
 }
 
@@ -325,12 +368,13 @@ let LOD_FAR = true; // arranca en "puntos" (vista general); las tarjetas aparece
 let SHOW_CLUSTER_LABELS = false; // las etiquetas de cluster solo se ven en zoom intermedio
 let LINK_ALPHA_MULT = 0.55; // Opacidad base más alta para mejor legibilidad (ajustado por zoom)
 
-function setNodeLOD(ud, far) {
+function setNodeLOD(ud, far, isHovered = false) {
   if (!ud) return;
   if (ud.esFragmento) return;   // siempre punto
   if (ud.face)    ud.face.visible = !far;
-  // El nodo elegido y sus vecinos conservan el nombre aunque el LOD los pase a punto.
-  if (ud.caption) ud.caption.visible = !far || !!ud.forzarCaption;
+  // FIX: caption visible en hover, selección, o zoom cercano para identificar documentos
+  // El nodo elegido, sus vecinos, o el hover conservan el nombre aunque el LOD los pase a punto.
+  if (ud.caption) ud.caption.visible = !far || !!ud.forzarCaption || isHovered;
   if (ud.halo)    ud.halo.visible = !far;
   if (ud.dot)     ud.dot.visible = far;
   // El anillo acompaña el LOD: rodea el punto de lejos y la tarjeta de cerca.
@@ -518,15 +562,17 @@ function buildNode(node, degree, maxDegree, texReg) {
 
 // Etiqueta de cluster: placa oscura + borde y marcador del COLOR del cluster + texto
 // brillante. El color la distingue de los captions de nodo y de otros clusters.
+// FIX: truncado más agresivo para que no tapen los nodos al hacer zoom
 function buildClusterTextSprite(text, color) {
-  const H = 60, fontPx = 24, leftPad = 44, rightPad = 24;
+  const H = 52, fontPx = 20, leftPad = 36, rightPad = 18;  // más compacto
   const font = `600 ${fontPx}px 'Sora', 'Inter', system-ui, sans-serif`;
   
+  // FIX: truncado mucho más agresivo (max ~35 chars) para evitar pills gigantes
   let display = text || '';
-  if (display.length > 64) {
-    display = display.slice(0, 63);
+  if (display.length > 36) {
+    display = display.slice(0, 35);
     const sp = display.lastIndexOf(' ');
-    if (sp > 40) display = display.slice(0, sp);
+    if (sp > 20) display = display.slice(0, sp);
     display += '…';
   }
   
@@ -725,6 +771,7 @@ export default function Graph3D({
   const prevLayoutRef         = useRef(null);      // detectar cambio de layout vs refresh
   const didFitRef             = useRef(false);     // ya encuadró alguna vez
   const fitPendingRef         = useRef(true);      // encuadrar en el próximo asentamiento
+  const hoverIdRef            = useRef(null);      // FIX: ID del nodo en hover (para mostrar caption)
 
   /* ── CANAL: centralidad = grado (cantidad de aristas conectadas) ── */
   const { degreeMap, maxDegree } = useMemo(() => {
@@ -1229,11 +1276,25 @@ export default function Graph3D({
       if (changed) LOD_FAR = far;
 
       // PERF: las etiquetas de cluster solo se ven en zoom intermedio (no muy cerca, no muy lejos)
-      const LABEL_SHOW = R * 2.8, LABEL_HIDE = R * 1.2;
+      // Fix: escalar inversamente al zoom para que no crezcan y tapen todo al acercarse
+      const LABEL_SHOW = R * 3.2, LABEL_HIDE = R * 0.9;  // rango más amplio pero con escala controlada
       const showLabels = d > LABEL_HIDE && d < LABEL_SHOW;
       if (showLabels !== SHOW_CLUSTER_LABELS) {
         SHOW_CLUSTER_LABELS = showLabels;
         clusterLabelSprites.current.forEach(s => { s.visible = showLabels; });
+      }
+      
+      // FIX: escalar etiquetas de cluster inversamente al zoom para tamaño visual constante
+      // Al acercarse (d pequeña) → escala baja; al alejarse → escala normal (1)
+      // Esto evita que las pills gigantes tapen los nodos
+      if (showLabels) {
+        const baseScale = 1.0;  // escala de referencia a distancia media
+        const refDist = R * 2.0;  // distancia de referencia
+        // Escala inversa con límites: min 0.3 (muy cerca), max 1.2 (lejos)
+        const clusterLabelScale = Math.min(1.2, Math.max(0.3, (d / refDist) * baseScale));
+        clusterLabelSprites.current.forEach(s => {
+          s.scale.setScalar(clusterLabelScale);
+        });
       }
 
       // PERF: aristas más tenues de lejos (menos overdraw visual, más legible)
@@ -1268,7 +1329,9 @@ export default function Graph3D({
         spriteMap.current.forEach((obj, id) => {
           const ud = obj.userData;
           const comoPunto = far || (cercanos ? !cercanos.has(id) : false);
-          setNodeLOD(ud, comoPunto);
+          // FIX: pasar estado de hover para mantener caption visible al pasar el mouse
+          const isHovered = hoverIdRef.current === id;
+          setNodeLOD(ud, comoPunto, isHovered);
           if (comoPunto && ud.dot) ud.dot.scale.setScalar(far ? dotScale : ud.dotBase);
         });
         // NO llamar a wake() acá: este handler corre dentro del evento 'change' de los
@@ -1298,6 +1361,9 @@ export default function Graph3D({
      justamente lo que estas apuntando. Encender la relacion bajo el puntero
      hace visible el blanco antes de hacer clic. */
   const [hoverLink, setHoverLink] = useState(null);
+  
+  // FIX: tooltip con nombre completo del documento en hover
+  const [nodeTooltip, setNodeTooltip] = useState(null); // { text, x, y }
 
   const linkColor = useCallback(link => {
     // PERF: cache de colores por arista - invalidar cuando cambian selección/hover
@@ -1375,7 +1441,7 @@ export default function Graph3D({
 
   // Hover: anillo tenue del color del grupo. Distinto de la selección (anillo blanco
   // y opaco), para que se distinga "lo que estoy señalando" de "lo que elegí".
-  const hoverIdRef = useRef(null);
+  // FIX: también mostrar caption en hover para identificar el documento
   const paintHover = useCallback((id, on) => {
     const ud = spriteMap.current.get(id)?.userData;
     if (!ud?.ring) return;
@@ -1384,10 +1450,16 @@ export default function Graph3D({
     ud.ring.visible = false;
     ud.ring.material.opacity = 0;
     if (ud.dot) ud.dot.scale.setScalar(on ? ud.dotBase * 1.2 : ud.dotBase);
+    // FIX: mostrar caption en hover incluso en modo puntos para identificar el documento
+    if (ud.caption) {
+      ud.caption.visible = on || !LOD_FAR || !!ud.forzarCaption;
+      ud.caption.material.opacity = on ? 1 : (ud.forzarCaption ? 0.95 : 0.62);
+    }
   }, [selectedNode]);
 
   // PERF: throttle del hover para reducir recálculos en mousemove
-  const handleHoverRaw = useCallback(node => {
+  // FIX: mostrar tooltip con nombre completo del documento
+  const handleHoverRaw = useCallback((node, event) => {
     document.body.style.cursor = node ? (synthMode ? 'crosshair' : 'pointer') : 'default';
     const prev = hoverIdRef.current;
     const next = node?.id ?? null;
@@ -1396,6 +1468,24 @@ export default function Graph3D({
       if (next) paintHover(next, true);
       hoverIdRef.current = next;
       wakeRef.current();
+      
+      // FIX: tooltip con nombre completo
+      if (node && node.label) {
+        // Posición del mouse para el tooltip (usar coordenadas del evento si disponibles)
+        const stageRect = stageRef.current?.getBoundingClientRect();
+        if (stageRect && event) {
+          setNodeTooltip({
+            text: node.label,
+            x: event.clientX - stageRect.left + 15,
+            y: event.clientY - stageRect.top - 10,
+          });
+        } else {
+          // Sin posición exacta, mostrar en esquina
+          setNodeTooltip({ text: node.label, x: 20, y: 20 });
+        }
+      } else {
+        setNodeTooltip(null);
+      }
     }
     if (onNodeHover) onNodeHover(node || null);
   }, [onNodeHover, synthMode, paintHover]);
@@ -1563,6 +1653,22 @@ export default function Graph3D({
         cooldownTicks={esPesado ? 0 : (layoutMode === 'force' ? 30 : 6)}
         cooldownTime={esPesado ? 0 : (layoutMode === 'force' ? 800 : 600)}
       />
+      
+      {/* FIX: Tooltip con nombre completo del documento */}
+      {nodeTooltip && (
+        <div 
+          className="graph-node-tooltip"
+          style={{
+            position: 'absolute',
+            left: nodeTooltip.x,
+            top: nodeTooltip.y,
+            pointerEvents: 'none',
+            zIndex: 1000,
+          }}
+        >
+          {nodeTooltip.text}
+        </div>
+      )}
     </div>
   );
 }
