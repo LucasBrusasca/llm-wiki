@@ -1329,7 +1329,8 @@ body::before {
 .graph-toolbar {
   position: fixed;
   bottom: calc(var(--bottom-h, 0px) + 22px);
-  left: 50%;
+  /* Centrar en el área de contenido (excluyendo sidebar) */
+  left: calc(var(--rail-w, 0px) + (100vw - var(--rail-w, 0px)) / 2);
   transform: translateX(-50%);
   z-index: 90;
   display: flex;
@@ -2441,7 +2442,7 @@ body::before {
 .agent-fab { right: 74px !important; }
 
 @media (max-width: 780px) {
-  .zoom-controls { right: 12px; bottom: calc(var(--bottom-h) + 12px); }
+  .zoom-controls { display: none !important; }
   .agent-fab { right: 60px !important; }
 }
 
@@ -2670,10 +2671,9 @@ body::before {
   .label-scale-title { display: none; }
 }
 
-/* ── Zoom: esquina inferior derecha, base de la columna ── */
+/* ── Zoom: oculto, integrado en graph-toolbar ── */
 .zoom-controls {
-  right: 22px;
-  bottom: calc(var(--bottom-h) + 22px);
+  display: none !important;
 }
 
 /* ── Agente: justo encima del zoom, misma columna y mismo ancho de gesto ── */
@@ -2703,7 +2703,7 @@ body::before {
 
 @media (max-width: 780px) {
   .layout-controls { left: 12px; bottom: calc(var(--bottom-h) + 12px); }
-  .zoom-controls   { right: 12px; bottom: calc(var(--bottom-h) + 12px); }
+  .zoom-controls   { display: none !important; }
   .agent-fab       { right: 12px !important; bottom: calc(var(--bottom-h) + 122px); }
   .layout-btn-label { display: none; }
   .layout-btn { padding: 8px 12px; }
@@ -2782,6 +2782,11 @@ body::before {
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid var(--border);
   border-radius: 8px;
+  /* Prevenir cualquier apariencia nativa */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
 }
 
 .header-actions {
