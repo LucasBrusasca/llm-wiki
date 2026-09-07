@@ -854,30 +854,38 @@ export default function App() {
         labelScale={labelScale}
       />
 
-      {/* Layout Mode Selector — ocultar en Home para pantalla limpia */}
+      {/* ═══════════════════════════════════════════════════════════════════
+          TOOLBAR UNIFICADO DEL GRAFO — ocultar en Home
+          ═══════════════════════════════════════════════════════════════════ */}
       {!showHome && (
-        <div className="layout-controls">
-          {[
-            { id: 'density',    icon: '⊞', label: 'Densidad',   tip: 'Dónde se concentra tu atención: agrupa los documentos por tema, revelando los focos del corpus (los atractores del espacio latente).' },
-            { id: 'components', icon: '⬡', label: 'UMAP',       tip: 'La forma real del conocimiento: proyecta los embeddings preservando la vecindad semántica. La distancia entre nodos refleja qué tan relacionados están.' },
-            { id: 'force',      icon: '⧉', label: 'Relacional', tip: 'La estructura de vínculos: las relaciones tiran de los nodos. Lo conectado se junta, lo suelto se aleja — quedan a la vista los hubs, los puentes y los aislados.' },
-          ].map(({ id, icon, label, tip }) => (
-            <div key={id} className="layout-btn-wrap">
-              <button
-                className={`layout-btn${layoutMode === id ? ' active' : ''}`}
-                onClick={() => { setLayoutMode(id); setFitTrigger(f => f + 1); }}
-              >
-                <span className="layout-btn-icon">{icon}</span>
-                <span className="layout-btn-label">{label}</span>
-              </button>
-              <div className="layout-btn-tooltip">{tip}</div>
+        <div className="graph-toolbar">
+          {/* Vista: Densidad | UMAP | Relacional */}
+          <div className="gtb-group">
+            <span className="gtb-label">Vista</span>
+            <div className="gtb-segment">
+              {[
+                { id: 'density',    label: 'Densidad' },
+                { id: 'components', label: 'UMAP' },
+                { id: 'force',      label: 'Relacional' },
+              ].map(({ id, label }) => (
+                <button
+                  key={id}
+                  className={`gtb-seg-btn${layoutMode === id ? ' active' : ''}`}
+                  onClick={() => { setLayoutMode(id); setFitTrigger(f => f + 1); }}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
-          ))}
+          </div>
 
-          {/* Modo RAG Debug: visualizar resultados de recuperación */}
-          <div className="layout-btn-wrap layout-btn-divider">
+          {/* Separador */}
+          <div className="gtb-divider" />
+
+          {/* RAG Debug */}
+          <div className="gtb-group">
             <button
-              className={`layout-btn layout-btn--rag${ragDebugMode ? ' active' : ''}`}
+              className={`gtb-toggle${ragDebugMode ? ' active' : ''}`}
               onClick={() => { 
                 setRagDebugMode(!ragDebugMode);
                 if (!ragDebugMode) setRagDebugQuery('');
@@ -885,57 +893,53 @@ export default function App() {
               }}
               title="Explorar recuperación RAG"
             >
-              <span className="layout-btn-icon">◎</span>
-              <span className="layout-btn-label">RAG</span>
+              <span className="gtb-toggle-dot" />
+              RAG
             </button>
-            <div className="layout-btn-tooltip">Debug visual del RAG: lanzá una query y ve qué nodos se recuperan.</div>
+            {ragDebugMode && (
+              <div className="gtb-rag-input">
+                <input
+                  type="text"
+                  placeholder="Query..."
+                  value={ragDebugQuery}
+                  onChange={e => setRagDebugQuery(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && runRagDebug(ragDebugQuery)}
+                />
+                <button onClick={() => runRagDebug(ragDebugQuery)} disabled={!ragDebugQuery.trim()}>⏎</button>
+                {ragDebugResults.length > 0 && <span className="gtb-rag-count">{ragDebugResults.length}</span>}
+              </div>
+            )}
           </div>
-        </div>
-      )}
 
-      {/* RAG Debug Input — ocultar en Home */}
-      {!showHome && ragDebugMode && (
-        <div className="rag-debug-controls">
-          <input
-            type="text"
-            className="rag-debug-input"
-            placeholder="Pregunta para debug de recuperación..."
-            value={ragDebugQuery}
-            onChange={e => setRagDebugQuery(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && runRagDebug(ragDebugQuery)}
-          />
-          <button
-            className="rag-debug-run"
-            onClick={() => runRagDebug(ragDebugQuery)}
-            disabled={!ragDebugQuery.trim()}
-          >
-            Buscar
-          </button>
-          {ragDebugResults.length > 0 && (
-            <span className="rag-debug-count">{ragDebugResults.length} nodos</span>
-          )}
-        </div>
-      )}
+          {/* Separador */}
+          <div className="gtb-divider" />
 
-      {/* Control de tamaño de etiquetas del grafo — ocultar en Home */}
-      {!showHome && (
-        <div className="label-scale-controls">
-          <span className="label-scale-title">Etiquetas</span>
-          <div className="label-scale-btns">
-            {[
-              { value: 0.7, label: 'S', title: 'Compacto' },
-              { value: 1.0, label: 'M', title: 'Normal' },
-              { value: 1.4, label: 'L', title: 'Amplio' },
-            ].map(({ value, label, title }) => (
-              <button
-                key={value}
-                className={`label-scale-btn${labelScale === value ? ' active' : ''}`}
-                onClick={() => setLabelScale(value)}
-                title={title}
-              >
-                {label}
-              </button>
-            ))}
+          {/* Etiquetas: S | M | L */}
+          <div className="gtb-group">
+            <span className="gtb-label">Etiquetas</span>
+            <div className="gtb-segment gtb-segment--sm">
+              {[
+                { value: 0.7, label: 'S' },
+                { value: 1.0, label: 'M' },
+                { value: 1.4, label: 'L' },
+              ].map(({ value, label }) => (
+                <button
+                  key={value}
+                  className={`gtb-seg-btn${labelScale === value ? ' active' : ''}`}
+                  onClick={() => setLabelScale(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Separador */}
+          <div className="gtb-divider" />
+
+          {/* Zoom */}
+          <div className="gtb-group gtb-zoom">
+            <button className="gtb-zoom-btn" onClick={() => setFitTrigger(f => f + 1)} title="Encuadrar">⊡</button>
           </div>
         </div>
       )}
