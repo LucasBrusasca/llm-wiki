@@ -137,6 +137,19 @@ body::before {
   color: var(--text); font-family: var(--font); font-size: 13px;
   padding: 0 14px; border-radius: 999px; outline: none;
   transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
+  /* Ocultar controles nativos de spinners y flechas */
+  -moz-appearance: textfield;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.search-input::-webkit-outer-spin-button,
+.search-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.search-input::-webkit-search-cancel-button,
+.search-input::-webkit-search-decoration {
+  -webkit-appearance: none;
 }
 .search-input::placeholder { color: var(--text-dim); }
 .search-input:focus {
@@ -2052,17 +2065,35 @@ body::before {
 }
 .library-backup-btn:hover { background: rgba(120, 160, 220, 0.2); }
 
-/* ── Selector de sección (grafo activo) ── */
+/* ── Selector de sección (grafo activo) — dropdown custom ── */
 .seccion-btn {
-  display: inline-flex; align-items: center; gap: 8px;
-  height: 36px; padding: 0 14px; border-radius: 8px; cursor: pointer;
-  background: rgba(90, 140, 200, 0.08); border: 1px solid rgba(90, 140, 200, 0.2);
-  color: #c8d8ec; font-size: 12px; font-weight: 600; font-family: inherit;
-  letter-spacing: 0.4px; text-transform: capitalize; transition: all 0.18s;
+  display: inline-flex; align-items: center; gap: 10px;
+  height: 38px; padding: 0 16px; border-radius: 8px; cursor: pointer;
+  background: linear-gradient(135deg, rgba(90, 200, 250, 0.08) 0%, rgba(47, 224, 200, 0.04) 100%);
+  border: 1px solid rgba(90, 200, 250, 0.25);
+  color: var(--text); font-size: 13px; font-weight: 600; font-family: inherit;
+  letter-spacing: 0.3px; text-transform: capitalize; transition: all 0.18s;
+  /* Ocultar apariencia nativa */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
 }
-.seccion-btn:hover { background: rgba(90, 140, 200, 0.14); border-color: rgba(90, 140, 200, 0.35); }
-.seccion-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
-.seccion-caret { opacity: 0.5; font-size: 9px; margin-left: 2px; }
+.seccion-btn:hover { 
+  background: linear-gradient(135deg, rgba(90, 200, 250, 0.14) 0%, rgba(47, 224, 200, 0.08) 100%);
+  border-color: rgba(90, 200, 250, 0.4);
+  box-shadow: 0 0 12px rgba(90, 200, 250, 0.1);
+}
+.seccion-dot { 
+  width: 8px; height: 8px; border-radius: 50%; 
+  background: var(--data); 
+  box-shadow: 0 0 6px rgba(47, 224, 200, 0.5);
+  flex-shrink: 0; 
+}
+.seccion-caret { 
+  opacity: 0.6; font-size: 10px; margin-left: 4px; 
+  transition: transform 0.2s;
+}
+.seccion-btn:hover .seccion-caret { opacity: 0.9; }
 .hdr-menu-item--active { background: rgba(90, 140, 200, 0.12); color: #f0f6ff; }
 
 /* ── Filas de sección con acciones por fila (renombrar / eliminar) ── */
@@ -2728,9 +2759,10 @@ body::before {
 
 .header > .hdr-menu-wrap .seccion-btn {
   width: 100%;
-  height: 38px;
-  padding: 0 14px;
+  height: 40px;
+  padding: 0 16px;
   font-size: 13px;
+  justify-content: flex-start;
 }
 
 /* FIX: Menú de secciones como portal a body — nunca se corta */
@@ -2744,9 +2776,12 @@ body::before {
 }
 
 .search-input {
-  width: 100%; height: 38px; font-size: 13px;
-  margin-bottom: 12px; flex-shrink: 0;
-  padding: 0 14px;
+  width: 100%; height: 40px; font-size: 13px;
+  margin-bottom: 14px; flex-shrink: 0;
+  padding: 0 16px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 
 .header-actions {
