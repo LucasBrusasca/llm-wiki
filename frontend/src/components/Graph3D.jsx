@@ -1434,8 +1434,8 @@ export default function Graph3D({
 
     let result;
     if (isHover) {
-      // Hover: blanco brillante para destacar la arista seleccionada
-      result = 'rgba(220,235,255,0.95)';
+      // FIX: hover más brillante (cian/turquesa) para destacar claramente la arista
+      result = 'rgba(47,224,200,1)';  // turquesa sólido, muy visible
     } else {
       // PERF: aplicar multiplicador de opacidad según zoom
       const alpha = (!hayFoco ? alphaBase : (enFoco ? 1 : 0.04)) * LINK_ALPHA_MULT;
@@ -1445,17 +1445,13 @@ export default function Graph3D({
     return result;
   }, [selectedNode, highlighted, hoverLink]);
 
-  /* SIEMPRE 0. Con cualquier valor > 0, react-force-graph deja de dibujar una
-     línea y pasa a construir un CILINDRO en unidades de mundo: al acercar la
-     cámara esos cilindros se agrandan y tapan el grafo (los "fideos" gigantes).
-     Con 0 dibuja THREE.Line, de 1px constante en pantalla a cualquier zoom, que
-     es lo que da el filamento fino. El énfasis se hace por color, no por grosor. */
-
-  /* SIEMPRE 0. Con linkWidth > 0, react-force-graph abandona THREE.Line —que da
-     un trazo de 1px constante en pantalla— y dibuja un cilindro en unidades del
-     mundo, que se engrosa a medida que te acercas. El resaltado del hover se hace
-     por COLOR, nunca por grosor. */
-  const linkWidth = useCallback(() => 0, []);
+  /* FIX: linkWidth > 0 en hover para que la arista sea más visible y fácil de
+     seleccionar. Con linkWidth > 0, react-force-graph dibuja un cilindro en lugar
+     de THREE.Line (1px). Solo engrosamos en hover para no saturar el grafo. */
+  const linkWidth = useCallback(link => {
+    if (hoverLink && link === hoverLink) return 2;  // arista hover más gruesa
+    return 0;  // el resto sigue siendo 1px
+  }, [hoverLink]);
 
   /* Curvatura: las líneas rectas leen como diagrama de ingeniería; las curvas
      leen como filamento. Es el cambio que más acerca el grafo a una red neuronal.
@@ -1695,9 +1691,9 @@ export default function Graph3D({
         onNodeClick={onNodeClick}
         onNodeHover={handleHover}
         onLinkClick={onLinkClick}
-        /* Una linea de 1px es casi imposible de acertar. Esto ensancha SOLO el area
-           de deteccion del puntero, sin engrosar el trazo dibujado. Aumentado a 20. */
-        linkHoverPrecision={20}
+        /* FIX: área de detección más generosa para facilitar selección de aristas.
+           Una línea de 1px es casi imposible de acertar. Aumentado a 35. */
+        linkHoverPrecision={35}
         onLinkHover={handleLinkHover}
         onEngineTick={handleEngineTick}
         onEngineStop={handleEngineStop}
