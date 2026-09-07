@@ -1434,8 +1434,8 @@ export default function Graph3D({
 
     let result;
     if (isHover) {
-      // FIX: hover más brillante (cian/turquesa) para destacar claramente la arista
-      result = 'rgba(47,224,200,1)';  // turquesa sólido, muy visible
+      // FIX: hover sutil — solo un poco más claro/opaco, no tubo neón
+      result = 'rgba(200,210,225,0.85)';  // blanco-gris suave, diferenciable pero no agresivo
     } else {
       // PERF: aplicar multiplicador de opacidad según zoom
       const alpha = (!hayFoco ? alphaBase : (enFoco ? 1 : 0.04)) * LINK_ALPHA_MULT;
@@ -1445,11 +1445,12 @@ export default function Graph3D({
     return result;
   }, [selectedNode, highlighted, hoverLink]);
 
-  /* FIX: linkWidth > 0 en hover para que la arista sea más visible y fácil de
-     seleccionar. Con linkWidth > 0, react-force-graph dibuja un cilindro en lugar
-     de THREE.Line (1px). Solo engrosamos en hover para no saturar el grafo. */
+  /* FIX: linkWidth 0 mantiene líneas finas 1px. El picking funciona gracias a
+     linkHoverPrecision=35. El resalte de hover es sutil (solo color más claro),
+     no un tubo neón grueso. */
   const linkWidth = useCallback(link => {
-    if (hoverLink && link === hoverLink) return 2;  // arista hover más gruesa
+    // Hover sutil: ligeramente más ancha pero no gruesa (0.5 da línea ~2px sin cilindro 3D)
+    if (hoverLink && link === hoverLink) return 0.5;
     return 0;  // el resto sigue siendo 1px
   }, [hoverLink]);
 

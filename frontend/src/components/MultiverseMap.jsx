@@ -273,24 +273,25 @@ export default function MultiverseMap({
     document.body.style.cursor = link ? 'pointer' : 'default';
   }, [graphData.nodes]);
 
-  // Color de aristas/puentes
+  // Color de aristas/puentes — hover sutil, no tubo neón
   const linkColor = useCallback((link) => {
     const isHovered = hoveredLink === link;
-    if (isHovered) {
-      return 'rgba(255, 255, 255, 0.95)';
-    }
-    // Color basado en peso: más fuerte = más brillante
     const weight = link.weight || 1;
     const alpha = Math.min(0.8, 0.3 + weight * 0.15);
+    if (isHovered) {
+      // Hover sutil: mismo tono pero más opaco/claro, no blanco brillante
+      return `rgba(130, 220, 255, ${Math.min(0.95, alpha + 0.25)})`;
+    }
     return `rgba(90, 200, 250, ${alpha})`;
   }, [hoveredLink]);
 
-  // Ancho de aristas proporcional al peso
+  // Ancho de aristas proporcional al peso — hover sutil
   const linkWidth = useCallback((link) => {
     const isHovered = hoveredLink === link;
     const weight = link.weight || 1;
-    const base = Math.max(1, Math.min(4, weight * 1.5));
-    return isHovered ? base * 2 : base;
+    const base = Math.max(1, Math.min(3, weight * 1.2));  // base más moderada
+    // Hover: solo ligeramente más ancha, no el doble
+    return isHovered ? Math.min(base + 1, 4) : base;
   }, [hoveredLink]);
 
   // Partículas en los puentes para visualizar flujo
