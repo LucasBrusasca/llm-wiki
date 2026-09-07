@@ -91,11 +91,13 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-/* ── Tamaño de tarjeta = centralidad (grado de conexiones), MUY chico ── */
+/* ── Tamaño de tarjeta = centralidad (grado de conexiones) ── */
 function cardHeight(degree, maxDegree) {
   const norm = maxDegree > 0 ? Math.sqrt(degree / maxDegree) : 0;
-  // Tarjetas pequeñas para no tapar el grafo. Preview grande solo en hover/selección.
-  return 1.8 + norm * 2.2; // ~1.8 (periférico) .. ~4.0 (hub) - antes era 4.4..8.8
+  // FIX: tamaño medio para que las miniaturas sean reconocibles
+  // Antes: 1.8..4.0 (muy chico, no se veía el preview)
+  // Ahora: 3.0..6.0 (visible pero no gigante)
+  return 3.0 + norm * 3.0;
 }
 
 // Dimensiones de la tarjeta normalizadas por ÁREA: un video 16:9 (ancho) y un PDF
@@ -1041,9 +1043,11 @@ export default function Graph3D({
       ud.face.material.opacity = faceOpacity;
       ud.caption.material.opacity = isDim ? 0.05 : (isSel ? 1 : 0.62);
       
-      // RAG hits: escala ligeramente mayor para destacar visualmente
-      const fs = isSel ? 1.18 : (isRagHit && ragActive ? 1.12 : 1);
-      ud.face.scale.set(ud.baseFW * fs, ud.baseFH * fs, 1);
+      // Escala de tarjeta: base (labelScale) + boost por selección/RAG hit
+      // Seleccionado: +30% para destacar el preview
+      // RAG hit: +20% para identificar resultados
+      const boost = isSel ? 1.3 : (isRagHit && ragActive ? 1.2 : 1);
+      ud.face.scale.set(ud.baseFW * boost, ud.baseFH * boost, 1);
 
       // Punto LOD (vista lejana): conserva SU color de grupo — cambiarlo a cian
       // hacía perder la referencia de a qué tema pertenece el nodo elegido.
@@ -1090,13 +1094,23 @@ export default function Graph3D({
     wakeRef.current();  // renderizar el cambio de highlight/selección (luego idle)
   }, [highlighted, selectedNode, graphData, ragNodeIds]);
 
-  // FIX: actualizar escala de captions cuando cambia labelScale
+  // FIX: actualizar escala de captions Y tarjetas cuando cambia labelScale
   useEffect(() => {
     spriteMap.current.forEach((obj) => {
       const ud = obj.userData;
+      // Escalar caption
       if (ud?.caption?.userData?.baseScaleX) {
         const capUd = ud.caption.userData;
         ud.caption.scale.set(capUd.baseScaleX * labelScale, capUd.baseScaleY * labelScale, 1);
+      }
+      // Escalar tarjeta (face) - las miniaturas también deben escalar
+      if (ud?.face && ud?.baseFW && ud?.baseFH) {
+        ud.face.scale.set(ud.baseFW * labelScale, ud.baseFH * labelScale, 1);
+        // Reposicionar caption debajo de la tarjeta escalada
+        if (ud.caption) {
+          const scaledFH = ud.baseFH * labelScale;
+          ud.caption.position.y = -(scaledFH / 2) - (ud.caption.userData?.worldH || 1) / 2 - 0.8;
+        }
       }
     });
     wakeRef.current();
@@ -1457,7 +1471,7 @@ export default function Graph3D({
 
   // Hover: anillo tenue del color del grupo. Distinto de la selección (anillo blanco
   // y opaco), para que se distinga "lo que estoy señalando" de "lo que elegí".
-  // FIX: también mostrar caption en hover para identificar el documento
+  // FIX: también mostrar caption y agrandar tarjeta en hover para identificar el documento
   const paintHover = useCallback((id, on) => {
     const ud = spriteMap.current.get(id)?.userData;
     if (!ud?.ring) return;
@@ -1466,6 +1480,11 @@ export default function Graph3D({
     ud.ring.visible = false;
     ud.ring.material.opacity = 0;
     if (ud.dot) ud.dot.scale.setScalar(on ? ud.dotBase * 1.2 : ud.dotBase);
+    // FIX: agrandar tarjeta en hover para ver mejor el preview
+    if (ud.face && ud.baseFW && ud.baseFH) {
+      const hoverBoost = on ? 1.15 : 1;  // +15% en hover
+      ud.face.scale.set(ud.baseFW * hoverBoost, ud.baseFH * hoverBoost, 1);
+    }
     // FIX: mostrar caption en hover incluso en modo puntos para identificar el documento
     if (ud.caption) {
       ud.caption.visible = on || !LOD_FAR || !!ud.forzarCaption;
