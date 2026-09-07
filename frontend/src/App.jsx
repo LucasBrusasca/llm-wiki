@@ -14,6 +14,7 @@ import ProcessPanel from './components/ProcessPanel.jsx';
 import ArchitectPanel from './components/ArchitectPanel.jsx';
 import VaultBadge from './components/VaultBadge.jsx';
 import HomeView from './components/HomeView.jsx';
+import MultiverseMap from './components/MultiverseMap.jsx';
 import { computeDiscoveries } from './discoveries.js';
 import { pedirClave, avisarClaveIncorrecta } from './security.js';
 
@@ -172,6 +173,8 @@ export default function App() {
   const [fitTrigger, setFitTrigger]     = useState(0);  // botón "ver todo" (desenfocar)
   // Home Architect-first: por defecto muestra el home con CTA a Architect
   const [showHome, setShowHome]         = useState(true);
+  // Multiverse: mapa de secciones/dimensiones
+  const [showMultiverse, setShowMultiverse] = useState(false);
 
   const hoverTimer = useRef(null);
   const searchTimer = useRef(null);
@@ -588,6 +591,25 @@ export default function App() {
     setSeccionOpen(true);
   }, [loadSections]);
 
+  // Multiverse: abrir mapa de secciones
+  const handleOpenMultiverse = useCallback(() => {
+    loadSections();
+    setShowHome(false);
+    setShowMultiverse(true);
+  }, [loadSections]);
+
+  // Multiverse: seleccionar una sección y entrar
+  const handleSelectSectionFromMultiverse = useCallback((nombre) => {
+    cambiarSeccion(nombre);
+    setShowMultiverse(false);
+  }, [cambiarSeccion]);
+
+  // Multiverse: cerrar y volver al Home
+  const handleCloseMultiverse = useCallback(() => {
+    setShowMultiverse(false);
+    setShowHome(true);
+  }, []);
+
   return (
     <div className="app">
       {/* Home Architect-first: CTA principal a decidir con evidencia */}
@@ -600,8 +622,20 @@ export default function App() {
           onOpenAgent={handleOpenAgentFromHome}
           onOpenIssue={handleOpenIssueFromHome}
           onChangeSection={handleChangeSectionFromHome}
+          onOpenMultiverse={handleOpenMultiverse}
         />
       )}
+
+      {/* Multiverse: mapa de secciones/dimensiones */}
+      {showMultiverse && (
+        <MultiverseMap
+          sections={sections}
+          currentSection={seccion}
+          onSelectSection={handleSelectSectionFromMultiverse}
+          onClose={handleCloseMultiverse}
+        />
+      )}
+
       <VaultBadge onGraphChanged={loadGraph} />
       <header className="header">
         <div className="header-brand">
@@ -673,10 +707,19 @@ export default function App() {
           {/* ── Botón de Inicio (volver al Home Architect-first) ── */}
           <button
             className={`btn-synth${showHome ? ' active' : ''}`}
-            onClick={() => setShowHome(true)}
+            onClick={() => { setShowHome(true); setShowMultiverse(false); }}
             title="Inicio — volver al home de Algedi"
           >
             ◇ Inicio
+          </button>
+
+          {/* ── Multiverso: mapa de secciones/dimensiones ── */}
+          <button
+            className={`btn-synth${showMultiverse ? ' active' : ''}`}
+            onClick={() => { loadSections(); setShowHome(false); setShowMultiverse(true); }}
+            title="Multiverso — mapa de todas las secciones"
+          >
+            ◈ Multiverso
           </button>
 
           <span className="hdr-sep" />
@@ -855,9 +898,9 @@ export default function App() {
       />
 
       {/* ═══════════════════════════════════════════════════════════════════
-          TOOLBAR UNIFICADO DEL GRAFO — ocultar en Home
+          TOOLBAR UNIFICADO DEL GRAFO — ocultar en Home y Multiverse
           ═══════════════════════════════════════════════════════════════════ */}
-      {!showHome && (
+      {!showHome && !showMultiverse && (
         <div className="graph-toolbar">
           {/* Vista: Densidad | UMAP | Relacional */}
           <div className="gtb-group">

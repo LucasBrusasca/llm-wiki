@@ -17,6 +17,7 @@ export default function HomeView({
   onOpenAgent,
   onOpenIssue,
   onChangeSection,
+  onOpenMultiverse,
 }) {
   const [expedientes, setExpedientes] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -67,18 +68,25 @@ export default function HomeView({
           </button>
         </section>
 
-        {/* Sección activa — más visible + atajo a cambiar */}
+        {/* Sección activa — más visible + atajos */}
         <div className="home-section-selector">
           <div className="home-section-current">
             <span className="home-section-dot" />
             <span className="home-section-label">Sección activa:</span>
             <strong className="home-section-name">{seccion}</strong>
           </div>
-          {onChangeSection && (
-            <button className="home-section-change" onClick={onChangeSection}>
-              Cambiar sección
-            </button>
-          )}
+          <div className="home-section-actions">
+            {onChangeSection && (
+              <button className="home-section-change" onClick={onChangeSection}>
+                Cambiar
+              </button>
+            )}
+            {onOpenMultiverse && (
+              <button className="home-section-multiverse" onClick={onOpenMultiverse}>
+                ◈ Multiverso
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Expedientes recientes */}

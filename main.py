@@ -730,6 +730,57 @@ async def get_sections(db: AsyncSession = Depends(get_async_session)):
     return {"secciones": secciones}
 
 
+@app.get("/api/sections/bridges")
+async def get_section_bridges(db: AsyncSession = Depends(get_async_session)):
+    """Puentes entre secciones: conexiones cross-dominio basadas en conceptos compartidos.
+    
+    MVP: usa heurística simple basada en overlap de taxonomías (temas) entre secciones.
+    Si dos secciones comparten temas similares, hay un puente entre ellas.
+    """
+    # Obtener todas las secciones con sus nodos
+    rows = (await db.execute(
+        select(Node.dominio, Node.group_label).where(
+            Node.is_centroid == False,
+            Node.is_issue == False,
+            Node.group_label.isnot(None)
+        )
+    )).all()
+    
+    # Agrupar temas por sección
+    section_themes = {}
+    for dominio, theme in rows:
+        d = dominio or "personal"
+        if d not in section_themes:
+            section_themes[d] = set()
+        if theme:
+            section_themes[d].add(theme.lower().strip())
+    
+    # Calcular puentes basados en temas compartidos
+    bridges = []
+    sections_list = list(section_themes.keys())
+    for i, s1 in enumerate(sections_list):
+        for s2 in sections_list[i+1:]:
+            themes1 = section_themes[s1]
+            themes2 = section_themes[s2]
+            # Overlap: temas en común
+            common = themes1 & themes2
+            if common:
+                # Peso basado en cantidad de temas compartidos
+                weight = len(common) / max(1, min(len(themes1), len(themes2)))
+                if weight > 0.1:  # umbral mínimo
+                    bridges.append({
+                        "source": s1,
+                        "target": s2,
+                        "weight": round(weight * 3, 2),  # escalar para visualización
+                        "shared_themes": list(common)[:5],  # máximo 5 para no saturar
+                    })
+    
+    # Ordenar por peso descendente
+    bridges.sort(key=lambda b: b["weight"], reverse=True)
+    
+    return {"bridges": bridges[:20]}  # máximo 20 puentes
+
+
 @app.get("/api/traceability/status")
 async def traceability_status(db: AsyncSession = Depends(get_async_session)):
     """Cobertura de la migración Source → Document → Chunk."""
