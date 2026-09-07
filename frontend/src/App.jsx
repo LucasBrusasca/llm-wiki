@@ -579,6 +579,15 @@ export default function App() {
     }
   }, [graphData.nodes]);
 
+  const handleChangeSectionFromHome = useCallback(() => {
+    loadSections();
+    if (seccionBtnRef.current) {
+      const rect = seccionBtnRef.current.getBoundingClientRect();
+      setSeccionMenuPos({ top: rect.top, left: rect.right + 8 });
+    }
+    setSeccionOpen(true);
+  }, [loadSections]);
+
   return (
     <div className="app">
       {/* Home Architect-first: CTA principal a decidir con evidencia */}
@@ -590,6 +599,7 @@ export default function App() {
           onOpenLibrary={handleOpenLibraryFromHome}
           onOpenAgent={handleOpenAgentFromHome}
           onOpenIssue={handleOpenIssueFromHome}
+          onChangeSection={handleChangeSectionFromHome}
         />
       )}
       <VaultBadge onGraphChanged={loadGraph} />
@@ -844,47 +854,47 @@ export default function App() {
         labelScale={labelScale}
       />
 
-      {/* Layout Mode Selector */}
-      <div className="layout-controls">
-        {[
-          { id: 'density',    icon: '⊞', label: 'Densidad',   tip: 'Dónde se concentra tu atención: agrupa los documentos por tema, revelando los focos del corpus (los atractores del espacio latente).' },
-          { id: 'components', icon: '⬡', label: 'UMAP',       tip: 'La forma real del conocimiento: proyecta los embeddings preservando la vecindad semántica. La distancia entre nodos refleja qué tan relacionados están.' },
-          { id: 'force',      icon: '⧉', label: 'Relacional', tip: 'La estructura de vínculos: las relaciones tiran de los nodos. Lo conectado se junta, lo suelto se aleja — quedan a la vista los hubs, los puentes y los aislados.' },
-        ].map(({ id, icon, label, tip }) => (
-          <div key={id} className="layout-btn-wrap">
+      {/* Layout Mode Selector — ocultar en Home para pantalla limpia */}
+      {!showHome && (
+        <div className="layout-controls">
+          {[
+            { id: 'density',    icon: '⊞', label: 'Densidad',   tip: 'Dónde se concentra tu atención: agrupa los documentos por tema, revelando los focos del corpus (los atractores del espacio latente).' },
+            { id: 'components', icon: '⬡', label: 'UMAP',       tip: 'La forma real del conocimiento: proyecta los embeddings preservando la vecindad semántica. La distancia entre nodos refleja qué tan relacionados están.' },
+            { id: 'force',      icon: '⧉', label: 'Relacional', tip: 'La estructura de vínculos: las relaciones tiran de los nodos. Lo conectado se junta, lo suelto se aleja — quedan a la vista los hubs, los puentes y los aislados.' },
+          ].map(({ id, icon, label, tip }) => (
+            <div key={id} className="layout-btn-wrap">
+              <button
+                className={`layout-btn${layoutMode === id ? ' active' : ''}`}
+                onClick={() => { setLayoutMode(id); setFitTrigger(f => f + 1); }}
+              >
+                <span className="layout-btn-icon">{icon}</span>
+                <span className="layout-btn-label">{label}</span>
+              </button>
+              <div className="layout-btn-tooltip">{tip}</div>
+            </div>
+          ))}
+
+          {/* Modo RAG Debug: visualizar resultados de recuperación */}
+          <div className="layout-btn-wrap layout-btn-divider">
             <button
-              className={`layout-btn${layoutMode === id ? ' active' : ''}`}
-              /* Encuadrar en cada cambio de modo: cada layout deja el grafo con otra
-               forma y extension, asi que la camara anterior casi nunca sirve. */
-            onClick={() => { setLayoutMode(id); setFitTrigger(f => f + 1); }}
+              className={`layout-btn layout-btn--rag${ragDebugMode ? ' active' : ''}`}
+              onClick={() => { 
+                setRagDebugMode(!ragDebugMode);
+                if (!ragDebugMode) setRagDebugQuery('');
+                setRagDebugResults([]);
+              }}
+              title="Explorar recuperación RAG"
             >
-              <span className="layout-btn-icon">{icon}</span>
-              <span className="layout-btn-label">{label}</span>
+              <span className="layout-btn-icon">◎</span>
+              <span className="layout-btn-label">RAG</span>
             </button>
-            <div className="layout-btn-tooltip">{tip}</div>
+            <div className="layout-btn-tooltip">Debug visual del RAG: lanzá una query y ve qué nodos se recuperan.</div>
           </div>
-        ))}
-
-        {/* Modo RAG Debug: visualizar resultados de recuperación */}
-        <div className="layout-btn-wrap layout-btn-divider">
-          <button
-            className={`layout-btn layout-btn--rag${ragDebugMode ? ' active' : ''}`}
-            onClick={() => { 
-              setRagDebugMode(!ragDebugMode);
-              if (!ragDebugMode) setRagDebugQuery('');
-              setRagDebugResults([]);
-            }}
-            title="Explorar recuperación RAG"
-          >
-            <span className="layout-btn-icon">◎</span>
-            <span className="layout-btn-label">RAG</span>
-          </button>
-          <div className="layout-btn-tooltip">Debug visual del RAG: lanzá una query y ve qué nodos se recuperan.</div>
         </div>
-      </div>
+      )}
 
-      {/* RAG Debug Input */}
-      {ragDebugMode && (
+      {/* RAG Debug Input — ocultar en Home */}
+      {!showHome && ragDebugMode && (
         <div className="rag-debug-controls">
           <input
             type="text"
@@ -907,26 +917,28 @@ export default function App() {
         </div>
       )}
 
-      {/* Control de tamaño de etiquetas del grafo */}
-      <div className="label-scale-controls">
-        <span className="label-scale-title">Etiquetas</span>
-        <div className="label-scale-btns">
-          {[
-            { value: 0.7, label: 'S', title: 'Compacto' },
-            { value: 1.0, label: 'M', title: 'Normal' },
-            { value: 1.4, label: 'L', title: 'Amplio' },
-          ].map(({ value, label, title }) => (
-            <button
-              key={value}
-              className={`label-scale-btn${labelScale === value ? ' active' : ''}`}
-              onClick={() => setLabelScale(value)}
-              title={title}
-            >
-              {label}
-            </button>
-          ))}
+      {/* Control de tamaño de etiquetas del grafo — ocultar en Home */}
+      {!showHome && (
+        <div className="label-scale-controls">
+          <span className="label-scale-title">Etiquetas</span>
+          <div className="label-scale-btns">
+            {[
+              { value: 0.7, label: 'S', title: 'Compacto' },
+              { value: 1.0, label: 'M', title: 'Normal' },
+              { value: 1.4, label: 'L', title: 'Amplio' },
+            ].map(({ value, label, title }) => (
+              <button
+                key={value}
+                className={`label-scale-btn${labelScale === value ? ' active' : ''}`}
+                onClick={() => setLabelScale(value)}
+                title={title}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Botón flotante del Agente (estilo chatbot). Abajo a la DERECHA: el inferior
           izquierdo lo ocupa el selector de layout. Se oculta si el agente ya está abierto. */}

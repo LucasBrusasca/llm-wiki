@@ -2996,31 +2996,68 @@ body::before {
   color: var(--text-mid);
 }
 
-/* ── Sección activa badge ── */
-.home-section-badge {
+/* ── Sección activa — selector mejorado ── */
+.home-section-selector {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text-dim);
-  padding: 10px 16px;
-  background: var(--glass);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  align-self: center;
+  gap: 16px;
+  padding: 16px 24px;
+  background: linear-gradient(135deg, rgba(47,224,200,0.08) 0%, rgba(90,200,250,0.04) 100%);
+  border: 1px solid rgba(47,224,200,0.25);
+  border-radius: 12px;
+  flex-wrap: wrap;
 }
 
-.home-section-badge strong {
-  color: var(--accent);
-  text-transform: capitalize;
+.home-section-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--text-mid);
 }
 
 .home-section-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--data);
+  box-shadow: 0 0 8px rgba(47,224,200,0.5);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.15); }
+}
+
+.home-section-label {
+  color: var(--text-dim);
+}
+
+.home-section-name {
+  color: var(--data);
+  font-size: 16px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.home-section-change {
+  background: transparent;
+  border: 1px solid var(--border-hi);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.home-section-change:hover {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 /* ── Expedientes recientes ── */
@@ -3067,7 +3104,7 @@ body::before {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
 }
 
 .home-exp-item {
@@ -3077,46 +3114,54 @@ body::before {
 .home-exp-btn {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   width: 100%;
-  padding: 12px 14px;
+  padding: 16px 18px;
   cursor: pointer;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: rgba(0,0,0,0.2);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(15,24,32,0.8) 0%, rgba(10,18,24,0.9) 100%);
   transition: all var(--transition);
   text-align: left;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }
 
 .home-exp-btn:hover {
-  border-color: var(--border-hi);
-  background: var(--accent-glow);
-  transform: translateX(4px);
+  border-color: var(--accent);
+  background: linear-gradient(135deg, rgba(47,224,200,0.08) 0%, rgba(15,24,32,0.9) 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25), 0 0 0 1px rgba(47,224,200,0.1);
 }
 
 .home-exp-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   background: var(--warn);
   flex-shrink: 0;
+  box-shadow: 0 0 6px rgba(255,180,50,0.4);
 }
 
 .home-exp-label {
   flex: 1;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.4;
 }
 
 .home-exp-status {
-  font-size: 10px;
+  font-size: 11px;
   font-family: var(--font-mono);
   color: var(--text-dim);
   text-transform: capitalize;
+  padding: 4px 10px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 4px;
+  border: 1px solid var(--border);
 }
 
 .home-link {

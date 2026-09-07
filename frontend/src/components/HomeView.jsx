@@ -16,6 +16,7 @@ export default function HomeView({
   onOpenLibrary,
   onOpenAgent,
   onOpenIssue,
+  onChangeSection,
 }) {
   const [expedientes, setExpedientes] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -66,10 +67,18 @@ export default function HomeView({
           </button>
         </section>
 
-        {/* Sección activa */}
-        <div className="home-section-badge">
-          <span className="home-section-dot" />
-          Sección activa: <strong>{seccion}</strong>
+        {/* Sección activa — más visible + atajo a cambiar */}
+        <div className="home-section-selector">
+          <div className="home-section-current">
+            <span className="home-section-dot" />
+            <span className="home-section-label">Sección activa:</span>
+            <strong className="home-section-name">{seccion}</strong>
+          </div>
+          {onChangeSection && (
+            <button className="home-section-change" onClick={onChangeSection}>
+              Cambiar sección
+            </button>
+          )}
         </div>
 
         {/* Expedientes recientes */}
