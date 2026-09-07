@@ -4997,7 +4997,7 @@ body::before {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   MULTIVERSE MAP — Mapa de Secciones/Dimensiones
+   MULTIVERSE MAP — Mapa de Secciones/Dimensiones (Tesseract Style)
    ══════════════════════════════════════════════════════════════════════════ */
 .multiverse-map {
   position: fixed;
@@ -5005,73 +5005,110 @@ body::before {
   z-index: 200;
   display: flex;
   flex-direction: column;
-  background: #050508;
+  background: radial-gradient(ellipse at center, #0a0d14 0%, #030407 100%);
 }
 
-/* Efecto de nebulosa espacial */
+/* Efecto de nebulosa espacial premium */
 .multiverse-map::before {
   content: "";
   position: absolute;
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(ellipse 600px 400px at 20% 30%, rgba(90, 200, 250, 0.04), transparent 60%),
-    radial-gradient(ellipse 500px 350px at 80% 70%, rgba(47, 224, 200, 0.03), transparent 60%),
-    radial-gradient(ellipse 400px 300px at 60% 20%, rgba(124, 140, 255, 0.03), transparent 60%);
+    radial-gradient(ellipse 800px 500px at 15% 25%, rgba(0, 200, 255, 0.06), transparent 50%),
+    radial-gradient(ellipse 600px 400px at 85% 75%, rgba(47, 224, 200, 0.05), transparent 50%),
+    radial-gradient(ellipse 500px 350px at 50% 10%, rgba(124, 100, 255, 0.04), transparent 50%),
+    radial-gradient(ellipse 400px 300px at 70% 40%, rgba(255, 100, 200, 0.025), transparent 50%);
   z-index: 1;
+  animation: nebulaPulse 15s ease-in-out infinite;
+}
+
+/* Segundo layer de estrellas sutiles */
+.multiverse-map::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: 
+    radial-gradient(1px 1px at 20px 30px, rgba(255,255,255,0.3), transparent),
+    radial-gradient(1px 1px at 40px 70px, rgba(255,255,255,0.2), transparent),
+    radial-gradient(1px 1px at 50px 160px, rgba(255,255,255,0.25), transparent),
+    radial-gradient(1px 1px at 90px 40px, rgba(255,255,255,0.2), transparent),
+    radial-gradient(1px 1px at 130px 80px, rgba(255,255,255,0.3), transparent),
+    radial-gradient(1.5px 1.5px at 160px 120px, rgba(0,212,255,0.4), transparent),
+    radial-gradient(1px 1px at 200px 150px, rgba(255,255,255,0.2), transparent),
+    radial-gradient(1px 1px at 230px 20px, rgba(255,255,255,0.25), transparent);
+  background-size: 250px 200px;
+  opacity: 0.6;
+  z-index: 2;
+}
+
+@keyframes nebulaPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.85; }
 }
 
 .multiverse-header {
   position: relative;
-  padding: 24px 32px;
-  background: linear-gradient(180deg, rgba(5,5,8,0.98) 0%, rgba(5,5,8,0.6) 60%, transparent 100%);
+  padding: 28px 36px;
+  background: linear-gradient(180deg, rgba(5,5,10,0.99) 0%, rgba(5,5,10,0.8) 50%, transparent 100%);
   z-index: 10;
 }
 
 .multiverse-title {
   display: flex;
   align-items: center;
-  gap: 12px;
-  font-size: 24px;
+  gap: 14px;
+  font-size: 26px;
   font-weight: 700;
   color: var(--text);
-  letter-spacing: 2px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
 }
 
 .multiverse-icon {
-  font-size: 28px;
-  color: var(--accent);
-  filter: drop-shadow(0 0 12px var(--accent));
+  font-size: 32px;
+  color: #00D4FF;
+  filter: drop-shadow(0 0 16px rgba(0, 212, 255, 0.6));
+  animation: iconGlow 3s ease-in-out infinite;
+}
+
+@keyframes iconGlow {
+  0%, 100% { filter: drop-shadow(0 0 16px rgba(0, 212, 255, 0.6)); }
+  50% { filter: drop-shadow(0 0 24px rgba(0, 212, 255, 0.8)); }
 }
 
 .multiverse-subtitle {
-  margin: 8px 0 0;
-  font-size: 13px;
+  margin: 10px 0 0;
+  font-size: 14px;
   color: var(--text-dim);
-  max-width: 500px;
+  max-width: 520px;
+  line-height: 1.5;
 }
 
 .multiverse-close {
   position: absolute;
-  top: 24px;
-  right: 24px;
-  width: 40px;
-  height: 40px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: rgba(0,0,0,0.3);
+  top: 28px;
+  right: 28px;
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(10, 14, 24, 0.6);
   color: var(--text-mid);
-  font-size: 18px;
+  font-size: 20px;
   cursor: pointer;
   transition: all var(--transition);
   display: grid;
   place-items: center;
+  backdrop-filter: blur(8px);
 }
 
 .multiverse-close:hover {
-  background: rgba(255,100,100,0.1);
-  border-color: rgba(255,100,100,0.4);
+  background: rgba(255, 80, 100, 0.15);
+  border-color: rgba(255, 80, 100, 0.5);
   color: #FF6B6B;
+  transform: scale(1.05);
 }
 
 .multiverse-stage {
@@ -5086,40 +5123,69 @@ body::before {
   bottom: 24px;
   left: 24px;
   display: flex;
-  gap: 20px;
-  padding: 12px 20px;
-  background: rgba(10,14,24,0.9);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  backdrop-filter: blur(12px);
+  gap: 24px;
+  padding: 14px 22px;
+  background: linear-gradient(135deg, rgba(10,14,24,0.95) 0%, rgba(5,8,15,0.95) 100%);
+  border: 1px solid rgba(0, 212, 255, 0.2);
+  border-radius: 12px;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255,255,255,0.03) inset;
   z-index: 10;
 }
 
 .multiverse-legend-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--text-dim);
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-mid);
+  font-weight: 500;
 }
 
 .multiverse-legend-cube {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border-radius: 3px;
+  background: linear-gradient(135deg, #00D4FF 0%, #0090B0 100%);
+  border: 1px solid rgba(0, 212, 255, 0.5);
+  box-shadow: 0 0 8px rgba(0, 212, 255, 0.4);
 }
 
 .multiverse-legend-line {
-  width: 24px;
+  width: 28px;
   height: 2px;
-  background: linear-gradient(90deg, transparent, rgba(90,200,250,0.6), transparent);
+  background: linear-gradient(90deg, transparent 0%, rgba(100,200,250,0.7) 50%, transparent 100%);
+  border-radius: 1px;
+  position: relative;
 }
 
-.multiverse-legend-ring {
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(255,255,255,0.5);
+.multiverse-legend-line::before,
+.multiverse-legend-line::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  background: rgba(100, 200, 250, 0.8);
   border-radius: 50%;
+  transform: translateY(-50%);
+}
+
+.multiverse-legend-line::before { left: 2px; }
+.multiverse-legend-line::after { right: 2px; }
+
+.multiverse-legend-ring {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(0, 255, 255, 0.7);
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(0, 255, 255, 0.4);
+  animation: ringPulse 2s ease-in-out infinite;
+}
+
+@keyframes ringPulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(0, 255, 255, 0.4); }
+  50% { box-shadow: 0 0 14px rgba(0, 255, 255, 0.6); }
 }
 
 /* Tooltip de puente/bridge */
@@ -5127,72 +5193,91 @@ body::before {
   position: absolute;
   top: 100px;
   right: 24px;
-  width: 280px;
-  padding: 16px;
-  background: rgba(10, 14, 24, 0.95);
-  border: 1px solid rgba(90, 200, 250, 0.3);
-  border-radius: 12px;
-  backdrop-filter: blur(12px);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 20px rgba(90, 200, 250, 0.1);
+  width: 300px;
+  padding: 18px;
+  background: linear-gradient(145deg, rgba(10, 14, 24, 0.98) 0%, rgba(5, 8, 15, 0.98) 100%);
+  border: 1px solid rgba(0, 212, 255, 0.3);
+  border-radius: 14px;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 0 30px rgba(0, 212, 255, 0.08);
   z-index: 20;
+  animation: tooltipAppear 0.2s ease-out;
+}
+
+@keyframes tooltipAppear {
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 .multiverse-bridge-header {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  margin-bottom: 12px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  gap: 12px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(0, 212, 255, 0.15);
 }
 
 .multiverse-bridge-from,
 .multiverse-bridge-to {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text);
   text-transform: capitalize;
+  padding: 4px 10px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 6px;
 }
 
 .multiverse-bridge-arrow {
-  color: var(--accent);
-  font-size: 16px;
+  color: var(--data);
+  font-size: 18px;
+  text-shadow: 0 0 10px rgba(47, 224, 200, 0.5);
 }
 
 .multiverse-bridge-label {
   font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
+  font-weight: 700;
+  letter-spacing: 1px;
   text-transform: uppercase;
-  color: var(--text-dim);
-  margin-bottom: 8px;
+  color: rgba(150, 180, 200, 0.7);
+  margin-bottom: 10px;
 }
 
 .multiverse-bridge-themes {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .multiverse-theme-chip {
   font-size: 11px;
-  padding: 4px 10px;
-  background: rgba(90, 200, 250, 0.15);
-  border: 1px solid rgba(90, 200, 250, 0.3);
-  border-radius: 12px;
-  color: var(--accent);
+  padding: 5px 12px;
+  background: rgba(0, 212, 255, 0.12);
+  border: 1px solid rgba(0, 212, 255, 0.25);
+  border-radius: 14px;
+  color: rgba(0, 230, 255, 0.95);
+  font-weight: 500;
+}
+
+.multiverse-theme-more {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--text-dim);
 }
 
 .multiverse-bridge-strength {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--data);
-  font-weight: 600;
+  font-weight: 700;
   text-align: center;
-  padding: 8px;
-  background: rgba(47, 224, 200, 0.1);
-  border-radius: 6px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, rgba(47, 224, 200, 0.15) 0%, rgba(0, 212, 255, 0.1) 100%);
+  border: 1px solid rgba(47, 224, 200, 0.25);
+  border-radius: 8px;
+  letter-spacing: 0.5px;
 }
 
 /* Hint de controles */
@@ -5201,12 +5286,14 @@ body::before {
   bottom: 24px;
   right: 24px;
   font-size: 11px;
-  color: var(--text-dim);
-  padding: 8px 14px;
-  background: rgba(10, 14, 24, 0.8);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  backdrop-filter: blur(8px);
+  color: rgba(150, 180, 200, 0.7);
+  padding: 10px 16px;
+  background: linear-gradient(135deg, rgba(10, 14, 24, 0.9) 0%, rgba(5, 8, 15, 0.9) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  backdrop-filter: blur(12px);
+  letter-spacing: 0.3px;
+  z-index: 10;
 }
 
 /* Botón Multiverse en HomeView */

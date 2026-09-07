@@ -5,14 +5,15 @@ import * as THREE from 'three';
 /* ══════════════════════════════════════════════════════════════════════════
    MULTIVERSE MAP — Mapa de Dimensiones con Layout por Afinidad
    
+   Inspiración visual: tesseract de cristal con bordes brillantes.
    Las secciones se posicionan según sus conexiones: dimensiones con más
    temas compartidos quedan más cerca. Los puentes visualizan la afinidad.
    ══════════════════════════════════════════════════════════════════════════ */
 
 const DIMENSION_COLORS = [
-  '#5AC8FA', // azul cielo
+  '#00D4FF', // cian brillante
   '#2FE0C8', // turquesa
-  '#7C8CFF', // índigo
+  '#7B68EE', // índigo medio
   '#FF6B9D', // rosa
   '#FFB84D', // ámbar
   '#A78BFA', // violeta
@@ -32,7 +33,7 @@ function hexToRgb(hex) {
     r: parseInt(result[1], 16),
     g: parseInt(result[2], 16),
     b: parseInt(result[3], 16)
-  } : { r: 90, g: 200, b: 250 };
+  } : { r: 0, g: 212, b: 255 };
 }
 
 export default function MultiverseMap({ 
@@ -66,7 +67,7 @@ export default function MultiverseMap({
                 heuristicBridges.push({
                   source: sections[i].nombre,
                   target: sections[j].nombre,
-                  weight: 1,
+                  weight: 1.5,
                   shared_themes: ['conocimiento compartido'],
                 });
               }
@@ -80,19 +81,19 @@ export default function MultiverseMap({
   // Construir datos del grafo con posiciones iniciales estratégicas
   const graphData = useMemo(() => {
     const nodes = sections.map((s, i) => {
-      // Posición inicial en círculo para layout estable
-      const angle = (2 * Math.PI * i) / Math.max(sections.length, 1);
-      const radius = 50;
+      // Posición inicial en esfera para layout 3D estable
+      const phi = Math.acos(-1 + (2 * i + 1) / Math.max(sections.length, 1));
+      const theta = Math.sqrt(Math.max(sections.length, 1) * Math.PI) * phi;
+      const radius = 60;
       return {
         id: s.nombre,
         nombre: s.nombre,
         count: s.count,
         color: getDimensionColor(i),
         isCurrent: s.nombre === currentSection,
-        // Posición inicial
-        x: Math.cos(angle) * radius,
-        y: Math.sin(angle) * radius,
-        z: (Math.random() - 0.5) * 20,
+        x: Math.cos(theta) * Math.sin(phi) * radius,
+        y: Math.sin(theta) * Math.sin(phi) * radius,
+        z: Math.cos(phi) * radius,
       };
     });
 
@@ -117,24 +118,24 @@ export default function MultiverseMap({
     // Link force: atracción proporcional al peso del puente
     fg.d3Force('link')
       ?.distance(link => {
-        // Puentes más fuertes = dimensiones más cerca
         const weight = link.weight || 1;
-        return Math.max(30, 100 - weight * 20);
+        // Puentes fuertes = más cerca (40-80 unidades)
+        return Math.max(40, 120 - weight * 25);
       })
       .strength(link => {
         const weight = link.weight || 1;
-        return Math.min(1, 0.3 + weight * 0.2);
+        return Math.min(0.8, 0.2 + weight * 0.15);
       });
 
-    // Charge: repulsión moderada para espaciar
-    fg.d3Force('charge')?.strength(-200);
+    // Charge: repulsión moderada pero visible
+    fg.d3Force('charge')?.strength(-300);
 
     // Center: mantener centrado
-    fg.d3Force('center')?.strength(0.05);
+    fg.d3Force('center')?.strength(0.03);
 
   }, [graphData]);
 
-  // Crear cubo 3D premium para cada dimensión
+  // Crear cubo 3D tipo tesseract para cada dimensión
   const nodeThreeObject = useCallback((node) => {
     const isHovered = hoveredNode === node.id;
     const isCurrent = node.isCurrent;
@@ -143,99 +144,158 @@ export default function MultiverseMap({
     
     const group = new THREE.Group();
     
-    // Tamaño basado en documentos (mín 6, máx 14)
-    const baseSize = Math.max(6, Math.min(14, 6 + Math.sqrt(node.count) * 1.5));
-    const size = isHovered ? baseSize * 1.15 : baseSize;
+    // Tamaño basado en documentos (mín 8, máx 16)
+    const baseSize = Math.max(8, Math.min(16, 8 + Math.sqrt(node.count) * 1.2));
+    const size = isHovered ? baseSize * 1.12 : baseSize;
     
-    // Cubo principal con material premium
-    const geometry = new THREE.BoxGeometry(size, size, size);
-    const material = new THREE.MeshPhongMaterial({
+    // ═══════════════════════════════════════════════════════════════════
+    // CUBO INTERIOR — cristal semitransparente
+    // ═══════════════════════════════════════════════════════════════════
+    const innerGeo = new THREE.BoxGeometry(size * 0.85, size * 0.85, size * 0.85);
+    const innerMat = new THREE.MeshPhongMaterial({
       color: color,
       transparent: true,
-      opacity: 0.85,
+      opacity: isHovered ? 0.5 : 0.35,
       emissive: color,
-      emissiveIntensity: isHovered ? 0.5 : (isCurrent ? 0.35 : 0.2),
-      shininess: 100,
-      specular: new THREE.Color(0x444444),
+      emissiveIntensity: isHovered ? 0.4 : 0.2,
+      shininess: 150,
+      specular: new THREE.Color(0x666666),
+      side: THREE.DoubleSide,
     });
-    const cube = new THREE.Mesh(geometry, material);
-    group.add(cube);
+    const innerCube = new THREE.Mesh(innerGeo, innerMat);
+    group.add(innerCube);
     
-    // Wireframe brillante
-    const wireGeo = new THREE.EdgesGeometry(geometry);
-    const wireMat = new THREE.LineBasicMaterial({ 
-      color: isHovered ? 0xFFFFFF : new THREE.Color(node.color).multiplyScalar(1.5),
-      linewidth: 2,
+    // ═══════════════════════════════════════════════════════════════════
+    // BORDES BRILLANTES — líneas neon estilo tesseract
+    // ═══════════════════════════════════════════════════════════════════
+    const edgeGeo = new THREE.BoxGeometry(size, size, size);
+    const edges = new THREE.EdgesGeometry(edgeGeo);
+    const edgeMat = new THREE.LineBasicMaterial({ 
+      color: isHovered ? 0xFFFFFF : color.clone().multiplyScalar(1.8),
+      linewidth: 3,
       transparent: true,
-      opacity: isHovered ? 1 : 0.8,
+      opacity: isHovered ? 1 : 0.95,
     });
-    const wireframe = new THREE.LineSegments(wireGeo, wireMat);
-    group.add(wireframe);
+    const edgeLines = new THREE.LineSegments(edges, edgeMat);
+    group.add(edgeLines);
     
-    // Glow exterior (halo)
-    const glowSize = size * 1.4;
+    // Segundo set de bordes más interno para profundidad
+    const innerEdgeGeo = new THREE.BoxGeometry(size * 0.7, size * 0.7, size * 0.7);
+    const innerEdges = new THREE.EdgesGeometry(innerEdgeGeo);
+    const innerEdgeMat = new THREE.LineBasicMaterial({ 
+      color: color.clone().multiplyScalar(0.7),
+      linewidth: 1,
+      transparent: true,
+      opacity: 0.6,
+    });
+    const innerEdgeLines = new THREE.LineSegments(innerEdges, innerEdgeMat);
+    group.add(innerEdgeLines);
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // GLOW EXTERIOR — halo suave
+    // ═══════════════════════════════════════════════════════════════════
+    const glowSize = size * 1.5;
     const glowGeo = new THREE.BoxGeometry(glowSize, glowSize, glowSize);
     const glowMat = new THREE.MeshBasicMaterial({
       color: color,
       transparent: true,
-      opacity: isHovered ? 0.25 : 0.12,
+      opacity: isHovered ? 0.18 : 0.08,
       side: THREE.BackSide,
     });
     const glow = new THREE.Mesh(glowGeo, glowMat);
     group.add(glow);
     
-    // Indicador de sección actual (anillo orbital)
+    // ═══════════════════════════════════════════════════════════════════
+    // PUNTOS EN VÉRTICES — estrellas en las esquinas
+    // ═══════════════════════════════════════════════════════════════════
+    const vertices = [
+      [-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1],
+      [1, -1, -1], [1, -1, 1], [1, 1, -1], [1, 1, 1]
+    ];
+    const pointsGeo = new THREE.BufferGeometry();
+    const positions = new Float32Array(vertices.flat().map(v => v * size * 0.5));
+    pointsGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const pointsMat = new THREE.PointsMaterial({
+      color: 0xFFFFFF,
+      size: isHovered ? 3 : 2,
+      transparent: true,
+      opacity: isHovered ? 1 : 0.7,
+      sizeAttenuation: true,
+    });
+    const points = new THREE.Points(pointsGeo, pointsMat);
+    group.add(points);
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // INDICADOR DE SECCIÓN ACTUAL — anillo orbital pulsante
+    // ═══════════════════════════════════════════════════════════════════
     if (isCurrent) {
-      const ringGeo = new THREE.TorusGeometry(size * 0.9, 0.4, 8, 32);
+      const ringGeo = new THREE.TorusGeometry(size * 0.85, 0.5, 8, 48);
       const ringMat = new THREE.MeshBasicMaterial({ 
-        color: 0xFFFFFF,
+        color: 0x00FFFF,
         transparent: true,
-        opacity: 0.7,
+        opacity: 0.9,
       });
       const ring = new THREE.Mesh(ringGeo, ringMat);
       ring.rotation.x = Math.PI / 2;
       group.add(ring);
+      
+      // Segundo anillo perpendicular
+      const ring2 = ring.clone();
+      ring2.rotation.x = 0;
+      ring2.rotation.y = Math.PI / 2;
+      ring2.material = ring2.material.clone();
+      ring2.material.opacity = 0.6;
+      group.add(ring2);
     }
     
-    // Label flotante con nombre y count
+    // ═══════════════════════════════════════════════════════════════════
+    // LABEL FLOTANTE — nombre y count
+    // ═══════════════════════════════════════════════════════════════════
     const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 80;
+    canvas.width = 320;
+    canvas.height = 96;
     const ctx = canvas.getContext('2d');
     
-    // Fondo del label
-    ctx.fillStyle = `rgba(${rgb.r * 0.2}, ${rgb.g * 0.2}, ${rgb.b * 0.2}, 0.9)`;
+    // Fondo con gradiente sutil
+    const gradient = ctx.createLinearGradient(0, 0, 0, 96);
+    gradient.addColorStop(0, `rgba(${rgb.r * 0.15}, ${rgb.g * 0.15}, ${rgb.b * 0.15}, 0.95)`);
+    gradient.addColorStop(1, `rgba(5, 8, 15, 0.95)`);
+    ctx.fillStyle = gradient;
     ctx.beginPath();
-    ctx.roundRect(8, 8, 240, 64, 8);
+    ctx.roundRect(8, 8, 304, 80, 10);
     ctx.fill();
     
-    // Borde del color de la dimensión
+    // Borde brillante
     ctx.strokeStyle = node.color;
     ctx.lineWidth = 2;
+    ctx.shadowColor = node.color;
+    ctx.shadowBlur = 8;
     ctx.stroke();
+    ctx.shadowBlur = 0;
     
     // Nombre de la dimensión
     ctx.fillStyle = '#FFFFFF';
-    ctx.font = 'bold 20px Inter, system-ui, sans-serif';
+    ctx.font = 'bold 24px Inter, system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const displayName = node.nombre.charAt(0).toUpperCase() + node.nombre.slice(1);
-    ctx.fillText(displayName, 128, 32);
+    ctx.fillText(displayName, 160, 38);
     
     // Count de documentos
-    ctx.font = '14px Inter, system-ui, sans-serif';
+    ctx.font = '16px Inter, system-ui, sans-serif';
     ctx.fillStyle = node.color;
-    ctx.fillText(`${node.count} documentos`, 128, 54);
+    ctx.fillText(`${node.count} documentos`, 160, 66);
     
     const labelTex = new THREE.CanvasTexture(canvas);
+    labelTex.minFilter = THREE.LinearFilter;
     const labelMat = new THREE.SpriteMaterial({ 
       map: labelTex, 
       transparent: true,
       depthTest: false,
     });
     const label = new THREE.Sprite(labelMat);
-    label.scale.set(20, 6.25, 1);
-    label.position.y = size * 0.8 + 5;
+    label.scale.set(24, 7.2, 1);
+    label.position.y = size * 0.75 + 8;
     group.add(label);
     
     return group;
@@ -256,7 +316,7 @@ export default function MultiverseMap({
   }, []);
 
   // Manejar hover en link/puente
-  const handleLinkHover = useCallback((link, event) => {
+  const handleLinkHover = useCallback((link) => {
     setHoveredLink(link);
     if (link && link.shared_themes?.length > 0) {
       const sourceNode = typeof link.source === 'object' ? link.source : graphData.nodes.find(n => n.id === link.source);
@@ -273,38 +333,36 @@ export default function MultiverseMap({
     document.body.style.cursor = link ? 'pointer' : 'default';
   }, [graphData.nodes]);
 
-  // Color de aristas/puentes — hover sutil, no tubo neón
+  // Color de aristas/puentes — sutil, no neón agresivo
   const linkColor = useCallback((link) => {
     const isHovered = hoveredLink === link;
     const weight = link.weight || 1;
-    const alpha = Math.min(0.8, 0.3 + weight * 0.15);
+    const alpha = Math.min(0.7, 0.25 + weight * 0.12);
     if (isHovered) {
-      // Hover sutil: mismo tono pero más opaco/claro, no blanco brillante
-      return `rgba(130, 220, 255, ${Math.min(0.95, alpha + 0.25)})`;
+      return `rgba(150, 230, 255, ${Math.min(0.85, alpha + 0.3)})`;
     }
-    return `rgba(90, 200, 250, ${alpha})`;
+    return `rgba(100, 200, 250, ${alpha})`;
   }, [hoveredLink]);
 
-  // Ancho de aristas proporcional al peso — hover sutil
+  // Ancho de aristas — hover sutil
   const linkWidth = useCallback((link) => {
     const isHovered = hoveredLink === link;
     const weight = link.weight || 1;
-    const base = Math.max(1, Math.min(3, weight * 1.2));  // base más moderada
-    // Hover: solo ligeramente más ancha, no el doble
-    return isHovered ? Math.min(base + 1, 4) : base;
+    const base = Math.max(1, Math.min(2.5, 0.8 + weight * 0.5));
+    return isHovered ? Math.min(base + 1.5, 4) : base;
   }, [hoveredLink]);
 
-  // Partículas en los puentes para visualizar flujo
+  // Partículas en puentes
   const linkDirectionalParticles = useCallback((link) => {
     const weight = link.weight || 1;
-    return Math.max(2, Math.min(6, Math.floor(weight * 2)));
+    return Math.max(2, Math.min(5, Math.floor(weight * 1.5)));
   }, []);
 
   // Encuadrar al montar
   useEffect(() => {
     const timer = setTimeout(() => {
-      fgRef.current?.zoomToFit(600, 80);
-    }, 800);
+      fgRef.current?.zoomToFit(600, 100);
+    }, 900);
     return () => clearTimeout(timer);
   }, [graphData]);
 
@@ -316,7 +374,7 @@ export default function MultiverseMap({
           <span>Multiverso</span>
         </div>
         <p className="multiverse-subtitle">
-          Las dimensiones cercanas comparten más conocimiento. Click en un cubo para explorar.
+          Cada dimensión es un espacio de conocimiento. Click en un cubo para explorar.
         </p>
         <button className="multiverse-close" onClick={onClose} title="Cerrar">
           ✕
@@ -327,26 +385,26 @@ export default function MultiverseMap({
         <ForceGraph3D
           ref={fgRef}
           graphData={graphData}
-          backgroundColor="#050508"
+          backgroundColor="rgba(0,0,0,0)"
           nodeThreeObject={nodeThreeObject}
           nodeThreeObjectExtend={false}
           linkColor={linkColor}
           linkWidth={linkWidth}
           linkOpacity={1}
-          linkCurvature={0.15}
+          linkCurvature={0.2}
           linkDirectionalParticles={linkDirectionalParticles}
-          linkDirectionalParticleWidth={2}
-          linkDirectionalParticleSpeed={0.006}
-          linkDirectionalParticleColor={() => '#5AC8FA'}
+          linkDirectionalParticleWidth={2.5}
+          linkDirectionalParticleSpeed={0.005}
+          linkDirectionalParticleColor={() => '#00E0FF'}
           onNodeClick={handleNodeClick}
           onNodeHover={handleNodeHover}
           onLinkHover={handleLinkHover}
-          linkHoverPrecision={8}
+          linkHoverPrecision={10}
           enableNodeDrag={true}
-          d3AlphaDecay={0.02}
-          d3VelocityDecay={0.3}
-          warmupTicks={150}
-          cooldownTicks={100}
+          d3AlphaDecay={0.015}
+          d3VelocityDecay={0.25}
+          warmupTicks={180}
+          cooldownTicks={120}
         />
       </div>
       
@@ -360,29 +418,34 @@ export default function MultiverseMap({
           </div>
           <div className="multiverse-bridge-label">Temas compartidos:</div>
           <div className="multiverse-bridge-themes">
-            {linkTooltip.themes.map((theme, i) => (
+            {linkTooltip.themes.slice(0, 5).map((theme, i) => (
               <span key={i} className="multiverse-theme-chip">{theme}</span>
             ))}
+            {linkTooltip.themes.length > 5 && (
+              <span className="multiverse-theme-chip multiverse-theme-more">
+                +{linkTooltip.themes.length - 5} más
+              </span>
+            )}
           </div>
           <div className="multiverse-bridge-strength">
-            Afinidad: {Math.round(linkTooltip.weight * 33)}%
+            Afinidad: {Math.round(Math.min(100, linkTooltip.weight * 30))}%
           </div>
         </div>
       )}
       
       <div className="multiverse-legend">
         <div className="multiverse-legend-item">
-          <span className="multiverse-legend-cube" style={{ background: '#5AC8FA' }} />
+          <span className="multiverse-legend-cube" />
           <span>Dimensión</span>
         </div>
         <div className="multiverse-legend-item">
           <span className="multiverse-legend-line" />
-          <span>Puente (afinidad)</span>
+          <span>Puente (conexión cross-dominio)</span>
         </div>
         {currentSection && (
           <div className="multiverse-legend-item">
             <span className="multiverse-legend-ring" />
-            <span>Actual: {currentSection}</span>
+            <span>Sección actual: {currentSection}</span>
           </div>
         )}
       </div>
