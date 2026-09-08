@@ -1,31 +1,47 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import ForceGraph3D from 'react-force-graph-3d';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 /* ══════════════════════════════════════════════════════════════════════════
-   MULTIVERSE — Vista Espacial de Dimensiones con Previews Reales
+   MULTIVERSO — Tesseract 3D con Cubos de Vidrio
    
-   Cada dimensión muestra un preview REAL de su grafo de conocimiento.
-   El usuario puede VER lo que hay adentro antes de entrar.
+   Estructura de cubos anidados estilo hipercubo/tesseract.
+   Cada cubo = una dimensión/sección con su grafo visible adentro.
+   Navegación: orbit + click cubo para enfocar → click para entrar.
    ══════════════════════════════════════════════════════════════════════════ */
 
-const DIMENSION_COLORS = [
-  '#00D4FF', '#2FE0C8', '#7B68EE', '#FF6B9D', '#FFB84D', '#A78BFA',
+const CUBE_COLORS = [
+  0x00D4FF, // cyan
+  0x2FE0C8, // turquoise
+  0x7B68EE, // purple
+  0xFF6B9D, // pink
+  0xFFB84D, // orange
+  0xA78BFA, // lavender
 ];
 
-export default function MultiverseMap({ 
-  sections, 
-  onSelectSection, 
+export default function MultiverseMap({
+  sections,
+  onSelectSection,
   onClose,
-  currentSection 
+  currentSection
 }) {
-  const [dimensionData, setDimensionData] = useState({});
+  const containerRef = useRef(null);
+  const sceneRef = useRef(null);
+  const rendererRef = useRef(null);
+  const cameraRef = useRef(null);
+  const controlsRef = useRef(null);
+  const cubesRef = useRef([]);
+  const graphNodesRef = useRef({});
+  const rafRef = useRef(null);
+  
   const [loading, setLoading] = useState(true);
-  const [hoveredDim, setHoveredDim] = useState(null);
+  const [focusedCube, setFocusedCube] = useState(null);
+  const [sectionData, setSectionData] = useState({});
+  const [hintText, setHintText] = useState('Orbita para explorar · Click en un cubo para enfocar');
 
-  // Cargar datos REALES del grafo de cada sección
+  // Cargar datos del grafo de cada sección
   useEffect(() => {
-    const loadAllDimensions = async () => {
+    const loadData = async () => {
       setLoading(true);
       const data = {};
       
@@ -33,289 +49,512 @@ export default function MultiverseMap({
         try {
           const r = await fetch(`/api/graph?seccion=${encodeURIComponent(section.nombre)}`);
           const json = await r.json();
-          const nodes = (json.nodos || []).map(n => ({
+          const nodes = (json.nodos || []).slice(0, 100).map(n => ({
             id: n.id,
-            label: n.label || n.nombre || 'Sin nombre',
-            tipo: n.tipo || 'documento',
-            group: n.group_label || 'general',
-            x: n.x3d ?? (Math.random() - 0.5) * 100,
-            y: n.y3d ?? (Math.random() - 0.5) * 100,
-            z: n.z3d ?? (Math.random() - 0.5) * 100,
+            x: (n.x3d ?? Math.random() - 0.5) * 0.8,
+            y: (n.y3d ?? Math.random() - 0.5) * 0.8,
+            z: (n.z3d ?? Math.random() - 0.5) * 0.8,
           }));
-          const links = (json.relaciones || []).map(r => ({
-            source: r.origen,
-            target: r.destino,
-          }));
-          
-          // Documentos recientes (últimos 5 por label)
-          const recentDocs = nodes
-            .filter(n => n.tipo === 'documento' || n.tipo === 'Documento')
-            .slice(0, 6);
-
-          data[section.nombre] = {
-            nodes,
-            links,
-            recentDocs,
-            nodeCount: nodes.length,
-            linkCount: links.length,
-          };
+          const links = (json.relaciones || []).slice(0, 150);
+          data[section.nombre] = { nodes, links, count: json.nodos?.length || 0 };
         } catch {
-          data[section.nombre] = {
-            nodes: [],
-            links: [],
-            recentDocs: [],
-            nodeCount: section.count || 0,
-            linkCount: 0,
-          };
+          data[section.nombre] = { nodes: [], links: [], count: section.count || 0 };
         }
       }
       
-      setDimensionData(data);
+      setSectionData(data);
       setLoading(false);
     };
-
-    loadAllDimensions();
+    
+    loadData();
   }, [sections]);
 
-  const handleEnterDimension = useCallback((nombre) => {
-    if (onSelectSection) {
-      onSelectSection(nombre);
-    }
-  }, [onSelectSection]);
+  // Crear escena Three.js
+  useEffect(() => {
+    if (!containerRef.current || loading) return;
 
-  // Calcular layout de dimensiones
-  const dimensionLayout = useMemo(() => {
-    const count = sections.length;
-    if (count === 0) return [];
-    
-    // Para 2 secciones: lado a lado
-    // Para 3+: grid o layout espacial
-    const layouts = [];
-    const spacing = count <= 2 ? 50 : 40;
-    
-    sections.forEach((s, i) => {
-      let x, y;
-      if (count <= 2) {
-        x = (i - (count - 1) / 2) * spacing;
-        y = 0;
-      } else if (count <= 4) {
-        x = (i % 2 - 0.5) * spacing;
-        y = (Math.floor(i / 2) - 0.5) * spacing;
-      } else {
-        const angle = (2 * Math.PI * i) / count;
-        x = Math.cos(angle) * spacing;
-        y = Math.sin(angle) * spacing;
+    const container = containerRef.current;
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+
+    // Scene
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x030508);
+    sceneRef.current = scene;
+
+    // Camera
+    const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 1000);
+    camera.position.set(8, 6, 12);
+    camera.lookAt(0, 0, 0);
+    cameraRef.current = camera;
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    container.appendChild(renderer.domElement);
+    rendererRef.current = renderer;
+
+    // Controls
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.minDistance = 5;
+    controls.maxDistance = 30;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.3;
+    controlsRef.current = controls;
+
+    // Ambient light
+    const ambientLight = new THREE.AmbientLight(0x404060, 0.5);
+    scene.add(ambientLight);
+
+    // Point lights for glow effect
+    const light1 = new THREE.PointLight(0x00D4FF, 2, 50);
+    light1.position.set(10, 10, 10);
+    scene.add(light1);
+
+    const light2 = new THREE.PointLight(0x7B68EE, 1.5, 50);
+    light2.position.set(-10, -5, -10);
+    scene.add(light2);
+
+    // Create tesseract structure
+    createTesseract(scene, sections, sectionData);
+
+    // Raycaster for interaction
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    const handleClick = (event) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(cubesRef.current, true);
+
+      if (intersects.length > 0) {
+        let obj = intersects[0].object;
+        while (obj && !obj.userData.sectionName) {
+          obj = obj.parent;
+        }
+        if (obj?.userData.sectionName) {
+          handleCubeClick(obj.userData.sectionName);
+        }
       }
+    };
+
+    renderer.domElement.addEventListener('click', handleClick);
+
+    // Animation loop
+    const animate = () => {
+      rafRef.current = requestAnimationFrame(animate);
+      controls.update();
       
-      layouts.push({
-        ...s,
-        x,
-        y,
-        color: DIMENSION_COLORS[i % DIMENSION_COLORS.length],
-        isCurrent: s.nombre === currentSection,
-        data: dimensionData[s.nombre],
+      // Animate graph nodes inside cubes
+      const time = Date.now() * 0.001;
+      Object.values(graphNodesRef.current).forEach(group => {
+        if (group.children) {
+          group.children.forEach((node, i) => {
+            if (node.material) {
+              node.material.opacity = 0.6 + Math.sin(time + i * 0.5) * 0.3;
+            }
+          });
+        }
       });
-    });
+
+      // Animate cube edges glow
+      cubesRef.current.forEach(cube => {
+        if (cube.userData.edgeMesh) {
+          cube.userData.edgeMesh.material.opacity = 0.7 + Math.sin(time * 2) * 0.2;
+        }
+      });
+
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    // Resize handler
+    const handleResize = () => {
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    };
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      renderer.domElement.removeEventListener('click', handleClick);
+      cancelAnimationFrame(rafRef.current);
+      controls.dispose();
+      renderer.dispose();
+      if (container.contains(renderer.domElement)) {
+        container.removeChild(renderer.domElement);
+      }
+    };
+  }, [loading, sections, sectionData]);
+
+  // Create tesseract/hypercube structure
+  const createTesseract = useCallback((scene, sections, data) => {
+    cubesRef.current = [];
+    graphNodesRef.current = {};
+
+    const count = sections.length;
     
-    return layouts;
-  }, [sections, currentSection, dimensionData]);
+    // Calculate positions for cubes in a tesseract-like arrangement
+    const positions = getTesseractPositions(count);
+    
+    sections.forEach((section, i) => {
+      const pos = positions[i];
+      const color = new THREE.Color(CUBE_COLORS[i % CUBE_COLORS.length]);
+      const isCurrent = section.nombre === currentSection;
+      
+      // Create glass cube
+      const cubeGroup = createGlassCube(
+        pos,
+        2.5, // size
+        color,
+        section.nombre,
+        isCurrent,
+        data[section.nombre]
+      );
+      
+      scene.add(cubeGroup);
+      cubesRef.current.push(cubeGroup);
+    });
+
+    // Create connecting edges between cubes (tesseract structure)
+    if (count > 1) {
+      createTesseractEdges(scene, positions);
+    }
+  }, [currentSection]);
+
+  // Get positions for tesseract arrangement
+  const getTesseractPositions = (count) => {
+    const positions = [];
+    const spacing = 5;
+
+    if (count === 1) {
+      positions.push(new THREE.Vector3(0, 0, 0));
+    } else if (count === 2) {
+      positions.push(new THREE.Vector3(-spacing/2, 0, 0));
+      positions.push(new THREE.Vector3(spacing/2, 0, 0));
+    } else if (count <= 4) {
+      // Square arrangement
+      const offsets = [
+        [-1, 0, -1], [1, 0, -1],
+        [-1, 0, 1], [1, 0, 1]
+      ];
+      for (let i = 0; i < count; i++) {
+        const [x, y, z] = offsets[i];
+        positions.push(new THREE.Vector3(x * spacing/2, y, z * spacing/2));
+      }
+    } else if (count <= 8) {
+      // Cube arrangement (vertices of a cube)
+      const offsets = [
+        [-1, -1, -1], [1, -1, -1], [-1, 1, -1], [1, 1, -1],
+        [-1, -1, 1], [1, -1, 1], [-1, 1, 1], [1, 1, 1]
+      ];
+      for (let i = 0; i < count; i++) {
+        const [x, y, z] = offsets[i];
+        positions.push(new THREE.Vector3(x * spacing/2, y * spacing/2, z * spacing/2));
+      }
+    } else {
+      // Spherical distribution for many cubes
+      for (let i = 0; i < count; i++) {
+        const phi = Math.acos(-1 + (2 * i) / count);
+        const theta = Math.sqrt(count * Math.PI) * phi;
+        positions.push(new THREE.Vector3(
+          spacing * Math.cos(theta) * Math.sin(phi),
+          spacing * Math.sin(theta) * Math.sin(phi),
+          spacing * Math.cos(phi)
+        ));
+      }
+    }
+
+    return positions;
+  };
+
+  // Create a glass cube with neon edges and graph inside
+  const createGlassCube = (position, size, color, sectionName, isCurrent, graphData) => {
+    const group = new THREE.Group();
+    group.position.copy(position);
+    group.userData.sectionName = sectionName;
+    group.userData.isCurrent = isCurrent;
+
+    // Glass faces (semi-transparent)
+    const glassGeometry = new THREE.BoxGeometry(size, size, size);
+    const glassMaterial = new THREE.MeshPhysicalMaterial({
+      color: 0x101520,
+      transparent: true,
+      opacity: 0.15,
+      roughness: 0.1,
+      metalness: 0.1,
+      transmission: 0.9,
+      thickness: 0.5,
+      side: THREE.DoubleSide,
+    });
+    const glassCube = new THREE.Mesh(glassGeometry, glassMaterial);
+    group.add(glassCube);
+
+    // Neon edges (wireframe)
+    const edgeGeometry = new THREE.EdgesGeometry(glassGeometry);
+    const edgeMaterial = new THREE.LineBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: 0.9,
+      linewidth: 2,
+    });
+    const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+    group.add(edges);
+    group.userData.edgeMesh = edges;
+
+    // Outer glow (slightly larger wireframe)
+    const glowGeometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(size * 1.02, size * 1.02, size * 1.02));
+    const glowMaterial = new THREE.LineBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: 0.3,
+    });
+    const glowEdges = new THREE.LineSegments(glowGeometry, glowMaterial);
+    group.add(glowEdges);
+
+    // Inner cube (nested tesseract effect)
+    const innerSize = size * 0.4;
+    const innerGlassGeometry = new THREE.BoxGeometry(innerSize, innerSize, innerSize);
+    const innerGlassMaterial = new THREE.MeshPhysicalMaterial({
+      color: 0x101520,
+      transparent: true,
+      opacity: 0.1,
+      roughness: 0.1,
+      transmission: 0.95,
+      side: THREE.DoubleSide,
+    });
+    const innerGlass = new THREE.Mesh(innerGlassGeometry, innerGlassMaterial);
+    group.add(innerGlass);
+
+    const innerEdgeGeometry = new THREE.EdgesGeometry(innerGlassGeometry);
+    const innerEdgeMaterial = new THREE.LineBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: 0.6,
+    });
+    const innerEdges = new THREE.LineSegments(innerEdgeGeometry, innerEdgeMaterial);
+    group.add(innerEdges);
+
+    // Connecting lines between inner and outer cube (tesseract diagonals)
+    const vertices = [
+      [-1, -1, -1], [1, -1, -1], [-1, 1, -1], [1, 1, -1],
+      [-1, -1, 1], [1, -1, 1], [-1, 1, 1], [1, 1, 1]
+    ];
+    const diagonalGeometry = new THREE.BufferGeometry();
+    const diagonalPositions = [];
+    vertices.forEach(([x, y, z]) => {
+      diagonalPositions.push(x * size/2, y * size/2, z * size/2);
+      diagonalPositions.push(x * innerSize/2, y * innerSize/2, z * innerSize/2);
+    });
+    diagonalGeometry.setAttribute('position', new THREE.Float32BufferAttribute(diagonalPositions, 3));
+    const diagonalMaterial = new THREE.LineBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: 0.25,
+    });
+    const diagonals = new THREE.LineSegments(diagonalGeometry, diagonalMaterial);
+    group.add(diagonals);
+
+    // Graph nodes inside the cube
+    if (graphData?.nodes?.length > 0) {
+      const nodesGroup = new THREE.Group();
+      
+      // Normalize node positions to fit inside inner cube
+      const nodePositions = graphData.nodes.map(n => {
+        return new THREE.Vector3(
+          n.x * innerSize * 0.9,
+          n.y * innerSize * 0.9,
+          n.z * innerSize * 0.9
+        );
+      });
+
+      // Create node spheres
+      const nodeGeometry = new THREE.SphereGeometry(0.06, 8, 8);
+      nodePositions.forEach((pos, i) => {
+        const nodeMaterial = new THREE.MeshBasicMaterial({
+          color: color,
+          transparent: true,
+          opacity: 0.8,
+        });
+        const nodeMesh = new THREE.Mesh(nodeGeometry, nodeMaterial);
+        nodeMesh.position.copy(pos);
+        nodesGroup.add(nodeMesh);
+      });
+
+      // Create edge lines
+      if (graphData.links?.length > 0) {
+        const nodeMap = new Map(graphData.nodes.map((n, i) => [n.id, i]));
+        const linkGeometry = new THREE.BufferGeometry();
+        const linkPositions = [];
+        
+        graphData.links.slice(0, 100).forEach(link => {
+          const sourceIdx = nodeMap.get(link.source ?? link.origen);
+          const targetIdx = nodeMap.get(link.target ?? link.destino);
+          if (sourceIdx !== undefined && targetIdx !== undefined) {
+            const sp = nodePositions[sourceIdx];
+            const tp = nodePositions[targetIdx];
+            if (sp && tp) {
+              linkPositions.push(sp.x, sp.y, sp.z, tp.x, tp.y, tp.z);
+            }
+          }
+        });
+
+        if (linkPositions.length > 0) {
+          linkGeometry.setAttribute('position', new THREE.Float32BufferAttribute(linkPositions, 3));
+          const linkMaterial = new THREE.LineBasicMaterial({
+            color: color,
+            transparent: true,
+            opacity: 0.2,
+          });
+          const links = new THREE.LineSegments(linkGeometry, linkMaterial);
+          nodesGroup.add(links);
+        }
+      }
+
+      group.add(nodesGroup);
+      graphNodesRef.current[sectionName] = nodesGroup;
+    }
+
+    // Current section indicator (ring)
+    if (isCurrent) {
+      const ringGeometry = new THREE.RingGeometry(size * 0.7, size * 0.75, 32);
+      const ringMaterial = new THREE.MeshBasicMaterial({
+        color: 0x00FFFF,
+        transparent: true,
+        opacity: 0.8,
+        side: THREE.DoubleSide,
+      });
+      const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = -size / 2 - 0.2;
+      group.add(ring);
+    }
+
+    // Label
+    createLabel(group, sectionName, size, graphData?.count || 0);
+
+    return group;
+  };
+
+  // Create text label for cube
+  const createLabel = (group, text, cubeSize, count) => {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = 256;
+    canvas.height = 64;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.font = 'bold 28px Inter, system-ui, sans-serif';
+    ctx.fillStyle = '#FFFFFF';
+    ctx.textAlign = 'center';
+    ctx.fillText(text.charAt(0).toUpperCase() + text.slice(1), canvas.width / 2, 32);
+    
+    ctx.font = '18px Inter, system-ui, sans-serif';
+    ctx.fillStyle = '#00D4FF';
+    ctx.fillText(`${count} nodos`, canvas.width / 2, 54);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    const spriteMaterial = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+    });
+    const sprite = new THREE.Sprite(spriteMaterial);
+    sprite.scale.set(2.5, 0.6, 1);
+    sprite.position.y = cubeSize / 2 + 0.8;
+    group.add(sprite);
+  };
+
+  // Create connecting edges between cubes
+  const createTesseractEdges = (scene, positions) => {
+    const geometry = new THREE.BufferGeometry();
+    const posArray = [];
+
+    // Connect adjacent cubes
+    for (let i = 0; i < positions.length; i++) {
+      for (let j = i + 1; j < positions.length; j++) {
+        const dist = positions[i].distanceTo(positions[j]);
+        if (dist < 8) { // Only connect nearby cubes
+          posArray.push(
+            positions[i].x, positions[i].y, positions[i].z,
+            positions[j].x, positions[j].y, positions[j].z
+          );
+        }
+      }
+    }
+
+    if (posArray.length > 0) {
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(posArray, 3));
+      const material = new THREE.LineBasicMaterial({
+        color: 0x00D4FF,
+        transparent: true,
+        opacity: 0.15,
+      });
+      const lines = new THREE.LineSegments(geometry, material);
+      scene.add(lines);
+    }
+  };
+
+  // Handle cube click
+  const handleCubeClick = useCallback((sectionName) => {
+    if (focusedCube === sectionName) {
+      // Second click: enter the section
+      if (onSelectSection) {
+        onSelectSection(sectionName);
+      }
+    } else {
+      // First click: focus on cube
+      setFocusedCube(sectionName);
+      setHintText(`${sectionName.charAt(0).toUpperCase() + sectionName.slice(1)} · Click de nuevo para entrar`);
+      
+      // Animate camera to focus on cube
+      const cube = cubesRef.current.find(c => c.userData.sectionName === sectionName);
+      if (cube && cameraRef.current && controlsRef.current) {
+        const targetPos = cube.position.clone();
+        controlsRef.current.target.copy(targetPos);
+        controlsRef.current.autoRotate = false;
+      }
+    }
+  }, [focusedCube, onSelectSection]);
 
   return (
-    <div className="mv-spatial">
-      {/* Header minimalista */}
-      <header className="mv-spatial-header">
-        <div className="mv-spatial-title">
-          <span className="mv-spatial-icon">◈</span>
+    <div className="mv-tesseract">
+      {/* Header */}
+      <header className="mv-tesseract-header">
+        <div className="mv-tesseract-title">
+          <span className="mv-tesseract-icon">◈</span>
           <span>Multiverso</span>
-          <span className="mv-spatial-subtitle">· {sections.length} dimensiones</span>
+          <span className="mv-tesseract-count">{sections.length} dimensiones</span>
         </div>
-        <button className="mv-spatial-close" onClick={onClose}>✕</button>
+        <button className="mv-tesseract-close" onClick={onClose}>✕</button>
       </header>
 
-      {/* Contenedor principal */}
-      <div className="mv-spatial-container">
-        {loading ? (
-          <div className="mv-spatial-loading">
-            <div className="mv-spatial-spinner" />
-            <span>Cargando dimensiones...</span>
-          </div>
-        ) : (
-          <div className="mv-dimensions-grid">
-            {dimensionLayout.map((dim, i) => (
-              <DimensionPortal
-                key={dim.nombre}
-                dimension={dim}
-                isHovered={hoveredDim === dim.nombre}
-                onHover={() => setHoveredDim(dim.nombre)}
-                onLeave={() => setHoveredDim(null)}
-                onEnter={() => handleEnterDimension(dim.nombre)}
-              />
-            ))}
+      {/* 3D Scene */}
+      <div className="mv-tesseract-scene" ref={containerRef}>
+        {loading && (
+          <div className="mv-tesseract-loading">
+            <div className="mv-tesseract-spinner" />
+            <span>Construyendo Multiverso...</span>
           </div>
         )}
       </div>
 
-      {/* Footer con hint */}
-      <footer className="mv-spatial-footer">
-        <span>Click en una dimensión para explorar su grafo de conocimiento</span>
+      {/* Footer hint */}
+      <footer className="mv-tesseract-footer">
+        <span>{hintText}</span>
       </footer>
     </div>
   );
-}
-
-/* ══════════════════════════════════════════════════════════════════════════
-   DIMENSION PORTAL — Preview real del grafo de una sección
-   ══════════════════════════════════════════════════════════════════════════ */
-function DimensionPortal({ dimension, isHovered, onHover, onLeave, onEnter }) {
-  const graphRef = useRef();
-  const containerRef = useRef();
-  const { nombre, color, isCurrent, data } = dimension;
-  
-  const hasData = data && data.nodes && data.nodes.length > 0;
-
-  // Configurar cámara del mini-grafo
-  useEffect(() => {
-    if (!graphRef.current || !hasData) return;
-    const timer = setTimeout(() => {
-      graphRef.current?.zoomToFit(300, 30);
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [hasData]);
-
-  // Crear nodos simplificados para el mini-grafo
-  const nodeThreeObject = useCallback((node) => {
-    const size = 2;
-    const geometry = new THREE.SphereGeometry(size, 8, 8);
-    const material = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(color),
-      transparent: true,
-      opacity: 0.85,
-    });
-    const sphere = new THREE.Mesh(geometry, material);
-    
-    // Glow sutil
-    const glowGeo = new THREE.SphereGeometry(size * 1.5, 8, 8);
-    const glowMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(color),
-      transparent: true,
-      opacity: 0.2,
-      side: THREE.BackSide,
-    });
-    const glow = new THREE.Mesh(glowGeo, glowMat);
-    sphere.add(glow);
-    
-    return sphere;
-  }, [color]);
-
-  // GraphData para el mini-preview
-  const graphData = useMemo(() => {
-    if (!hasData) return { nodes: [], links: [] };
-    
-    // Limitar nodos para performance
-    const maxNodes = 50;
-    const nodes = data.nodes.slice(0, maxNodes);
-    const nodeIds = new Set(nodes.map(n => n.id));
-    const links = data.links.filter(l => nodeIds.has(l.source) && nodeIds.has(l.target));
-    
-    return { nodes, links };
-  }, [data, hasData]);
-
-  return (
-    <div 
-      className={`mv-portal ${isCurrent ? 'mv-portal--current' : ''} ${isHovered ? 'mv-portal--hover' : ''}`}
-      style={{ '--portal-color': color }}
-      onMouseEnter={onHover}
-      onMouseLeave={onLeave}
-      onClick={onEnter}
-      ref={containerRef}
-    >
-      {/* Marco del portal */}
-      <div className="mv-portal-frame">
-        {/* Preview del grafo REAL */}
-        <div className="mv-portal-graph">
-          {hasData ? (
-            <ForceGraph3D
-              ref={graphRef}
-              graphData={graphData}
-              width={280}
-              height={200}
-              backgroundColor="rgba(0,0,0,0)"
-              nodeThreeObject={nodeThreeObject}
-              nodeThreeObjectExtend={false}
-              linkColor={() => `rgba(${parseInt(color.slice(1,3),16)}, ${parseInt(color.slice(3,5),16)}, ${parseInt(color.slice(5,7),16)}, 0.3)`}
-              linkWidth={0.5}
-              linkOpacity={0.4}
-              enableNodeDrag={false}
-              enableNavigationControls={false}
-              enablePointerInteraction={false}
-              showNavInfo={false}
-              d3AlphaDecay={0.1}
-              d3VelocityDecay={0.5}
-              warmupTicks={50}
-              cooldownTicks={0}
-            />
-          ) : (
-            <div className="mv-portal-empty">
-              <span className="mv-portal-empty-icon">○</span>
-              <span>Vacía</span>
-            </div>
-          )}
-        </div>
-
-        {/* Overlay con info */}
-        <div className="mv-portal-overlay">
-          {/* Header del portal */}
-          <div className="mv-portal-header">
-            <span className="mv-portal-name">
-              {nombre.charAt(0).toUpperCase() + nombre.slice(1)}
-            </span>
-            {isCurrent && <span className="mv-portal-badge">Actual</span>}
-          </div>
-
-          {/* Métricas */}
-          <div className="mv-portal-metrics">
-            <span className="mv-portal-metric">
-              <strong>{data?.nodeCount || 0}</strong> nodos
-            </span>
-            <span className="mv-portal-metric">
-              <strong>{data?.linkCount || 0}</strong> conexiones
-            </span>
-          </div>
-        </div>
-
-        {/* Documentos recientes (chips) */}
-        {data?.recentDocs?.length > 0 && (
-          <div className="mv-portal-docs">
-            {data.recentDocs.slice(0, 4).map((doc, i) => (
-              <span key={doc.id || i} className="mv-doc-chip" title={doc.label}>
-                {truncate(doc.label, 20)}
-              </span>
-            ))}
-            {data.recentDocs.length > 4 && (
-              <span className="mv-doc-chip mv-doc-more">
-                +{data.nodeCount - 4}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* CTA al hover */}
-        <div className="mv-portal-cta">
-          <span>Explorar →</span>
-        </div>
-
-        {/* Indicador de sección actual */}
-        {isCurrent && <div className="mv-portal-current-indicator" />}
-      </div>
-
-      {/* Glow exterior */}
-      <div className="mv-portal-glow" />
-    </div>
-  );
-}
-
-function truncate(str, len) {
-  if (!str) return '';
-  if (str.length <= len) return str;
-  return str.slice(0, len - 1) + '…';
 }
