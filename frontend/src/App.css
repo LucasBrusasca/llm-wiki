@@ -5100,7 +5100,7 @@ body::before {
   justify-content: center;
   gap: 16px;
   color: var(--text-dim);
-  background: rgba(3, 5, 8, 0.95);
+  background: rgba(0, 0, 0, 0.98);
   z-index: 5;
 }
 
@@ -5115,6 +5115,45 @@ body::before {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* HTML Labels - outside Three.js bloom */
+.mv-tesseract-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+  transition: opacity 0.15s;
+}
+
+.mv-tesseract-label-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #FFFFFF;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,1);
+  letter-spacing: 0.5px;
+  text-transform: capitalize;
+}
+
+.mv-tesseract-label-count {
+  font-size: 12px;
+  font-weight: 500;
+  color: #88DDFF;
+  text-shadow: 0 1px 6px rgba(0,0,0,0.9);
+}
+
+.mv-tesseract-label--current .mv-tesseract-label-name {
+  color: #00FFFF;
+}
+
+.mv-tesseract-label--current .mv-tesseract-label-count {
+  color: #00FFFF;
 }
 
 /* ═══ TESSERACT FOOTER ═══ */

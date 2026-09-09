@@ -7,21 +7,26 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 /* ══════════════════════════════════════════════════════════════════════════
-   MULTIVERSO — Glass Tesseract Art Installation
+   MULTIVERSO — Glass Tesseract (Final Version)
    
-   Visual target: Dense glowing glass hypercube with neon edges.
-   Each dimension = a cell/volume within a cohesive tesseract structure.
-   Graph nodes visible inside as glowing particles.
+   HARD CAPS:
+   - Bloom strength ≤ 0.25 (using 0.2)
+   - Colors: WHITE / CYAN ONLY — no rainbow
+   - Sharp readable edges — not blobs
+   - Visible graph inside each cube
+   - Labels in HTML overlay
    ══════════════════════════════════════════════════════════════════════════ */
 
-const DIMENSION_COLORS = [
-  new THREE.Color(0x00FFFF), // cyan
-  new THREE.Color(0x00FF88), // green
-  new THREE.Color(0xFF00FF), // magenta
-  new THREE.Color(0xFFAA00), // orange
-  new THREE.Color(0x8888FF), // blue
-  new THREE.Color(0xFF88AA), // pink
-];
+// HARD CAP: Only white/cyan palette
+const EDGE_COLOR = new THREE.Color(0xFFFFFF);      // Pure white
+const EDGE_COLOR_INNER = new THREE.Color(0x88DDFF); // Light cyan
+const GLOW_COLOR = new THREE.Color(0x00CCFF);       // Cyan glow
+const GRAPH_NODE_COLOR = new THREE.Color(0x00EEFF); // Cyan nodes
+
+// HARD CAP: Bloom strength
+const BLOOM_STRENGTH = 0.2;  // MAX 0.25, using 0.2 for subtle glow
+const BLOOM_RADIUS = 0.3;
+const BLOOM_THRESHOLD = 0.5;
 
 export default function MultiverseMap({
   sections,
@@ -31,16 +36,18 @@ export default function MultiverseMap({
 }) {
   const containerRef = useRef(null);
   const sceneRef = useRef(null);
-  const composerRef = useRef(null);
+  const cameraRef = useRef(null);
+  const controlsRef = useRef(null);
   const cubeGroupsRef = useRef([]);
   const rafRef = useRef(null);
   
   const [loading, setLoading] = useState(true);
   const [focusedCube, setFocusedCube] = useState(null);
   const [sectionData, setSectionData] = useState({});
+  const [labels, setLabels] = useState([]);
   const [hintText, setHintText] = useState('Orbita para explorar · Click en un cubo para enfocar');
 
-  // Load graph data for each section
+  // Load graph data
   useEffect(() => {
     const loadData = async () => {
       setLoading(true);
@@ -50,13 +57,13 @@ export default function MultiverseMap({
         try {
           const r = await fetch(`/api/graph?seccion=${encodeURIComponent(section.nombre)}`);
           const json = await r.json();
-          const nodes = (json.nodos || []).slice(0, 80).map(n => ({
+          const nodes = (json.nodos || []).slice(0, 60).map(n => ({
             id: n.id,
             x: (n.x3d ?? (Math.random() - 0.5)) * 2,
             y: (n.y3d ?? (Math.random() - 0.5)) * 2,
             z: (n.z3d ?? (Math.random() - 0.5)) * 2,
           }));
-          const links = (json.relaciones || []).slice(0, 120);
+          const links = (json.relaciones || []).slice(0, 80);
           data[section.nombre] = { nodes, links, count: json.nodos?.length || 0 };
         } catch {
           data[section.nombre] = { nodes: [], links: [], count: section.count || 0 };
@@ -70,7 +77,7 @@ export default function MultiverseMap({
     loadData();
   }, [sections]);
 
-  // Main Three.js scene
+  // Three.js scene
   useEffect(() => {
     if (!containerRef.current || loading) return;
 
@@ -78,73 +85,69 @@ export default function MultiverseMap({
     const width = container.clientWidth;
     const height = container.clientHeight;
 
-    // Scene with black background
+    // Scene
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
     sceneRef.current = scene;
 
     // Camera
     const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
-    camera.position.set(12, 8, 14);
+    camera.position.set(10, 7, 12);
     camera.lookAt(0, 0, 0);
+    cameraRef.current = camera;
 
-    // Renderer with high quality
+    // Renderer
     const renderer = new THREE.WebGLRenderer({ 
       antialias: true, 
       alpha: false,
-      powerPreference: 'high-performance'
     });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.5;
+    renderer.toneMappingExposure = 1.2;
     container.appendChild(renderer.domElement);
 
-    // Post-processing with BLOOM for neon glow
+    // Post-processing with CAPPED bloom
     const composer = new EffectComposer(renderer);
-    const renderPass = new RenderPass(scene, camera);
-    composer.addPass(renderPass);
+    composer.addPass(new RenderPass(scene, camera));
     
     const bloomPass = new UnrealBloomPass(
       new THREE.Vector2(width, height),
-      1.5,   // strength - STRONG bloom
-      0.4,   // radius
-      0.1    // threshold - low to catch all glowing materials
+      BLOOM_STRENGTH,  // HARD CAP: 0.2
+      BLOOM_RADIUS,
+      BLOOM_THRESHOLD
     );
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
-    composerRef.current = composer;
 
     // Controls
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
-    controls.minDistance = 6;
-    controls.maxDistance = 40;
+    controls.minDistance = 5;
+    controls.maxDistance = 35;
     controls.autoRotate = true;
-    controls.autoRotateSpeed = 0.5;
+    controls.autoRotateSpeed = 0.4;
+    controlsRef.current = controls;
 
-    // Lighting for glass materials
-    const ambientLight = new THREE.AmbientLight(0x404060, 0.3);
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0x404050, 0.4);
     scene.add(ambientLight);
 
-    const light1 = new THREE.PointLight(0x00FFFF, 3, 100);
-    light1.position.set(15, 15, 15);
+    const light1 = new THREE.DirectionalLight(0xFFFFFF, 0.8);
+    light1.position.set(10, 15, 10);
     scene.add(light1);
 
-    const light2 = new THREE.PointLight(0xFF00FF, 2, 100);
-    light2.position.set(-15, -10, -15);
+    const light2 = new THREE.DirectionalLight(0x88CCFF, 0.5);
+    light2.position.set(-10, -5, -10);
     scene.add(light2);
 
-    const light3 = new THREE.PointLight(0xFFFFFF, 1.5, 100);
-    light3.position.set(0, 20, 0);
-    scene.add(light3);
-
-    // Create the tesseract structure
+    // Create tesseract structure
     cubeGroupsRef.current = [];
-    createTesseractStructure(scene, sections, sectionData, currentSection);
+    const labelData = createTesseractStructure(scene, sections, sectionData, currentSection);
+    setLabels(labelData);
 
-    // Raycaster for interaction
+    // Raycaster
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
 
@@ -162,7 +165,7 @@ export default function MultiverseMap({
           obj = obj.parent;
         }
         if (obj?.userData.sectionName) {
-          handleCubeClick(obj.userData.sectionName, controls);
+          handleCubeClick(obj.userData.sectionName);
         }
       }
     };
@@ -177,19 +180,13 @@ export default function MultiverseMap({
       
       controls.update();
       
-      // Animate glowing elements
+      // Update HTML labels position
+      updateLabelsPosition(camera, cubeGroupsRef.current, container);
+      
+      // Subtle animation
       cubeGroupsRef.current.forEach((group, i) => {
-        if (group.userData.glowMeshes) {
-          group.userData.glowMeshes.forEach((mesh, j) => {
-            if (mesh.material.emissiveIntensity !== undefined) {
-              mesh.material.emissiveIntensity = 0.8 + Math.sin(time * 2 + i + j * 0.5) * 0.4;
-            }
-          });
-        }
-        // Subtle rotation for each cube
         if (group.userData.innerGroup) {
-          group.userData.innerGroup.rotation.y = time * 0.1 + i * 0.5;
-          group.userData.innerGroup.rotation.x = Math.sin(time * 0.15 + i) * 0.1;
+          group.userData.innerGroup.rotation.y = time * 0.08 + i * 0.5;
         }
       });
 
@@ -197,7 +194,7 @@ export default function MultiverseMap({
     };
     animate();
 
-    // Resize handler
+    // Resize
     const handleResize = () => {
       const w = container.clientWidth;
       const h = container.clientHeight;
@@ -221,13 +218,14 @@ export default function MultiverseMap({
     };
   }, [loading, sections, sectionData, currentSection]);
 
-  // Create the main tesseract structure
+  // Create tesseract structure
   const createTesseractStructure = useCallback((scene, sections, data, currentSection) => {
     const count = sections.length;
+    const labelData = [];
     
-    // Position cubes in a tesseract-like arrangement
+    // Positions in tesseract arrangement
+    const spacing = 5;
     const positions = [];
-    const spacing = 6;
     
     if (count === 1) {
       positions.push(new THREE.Vector3(0, 0, 0));
@@ -251,213 +249,147 @@ export default function MultiverseMap({
       }
     }
 
-    // Create each dimension cube
+    // Create each cube
     sections.forEach((section, i) => {
       const pos = positions[i];
-      const color = DIMENSION_COLORS[i % DIMENSION_COLORS.length];
       const isCurrent = section.nombre === currentSection;
       const graphData = data[section.nombre];
       
-      const cubeGroup = createGlassTesseractCube(
-        pos,
-        3.5,
-        color,
-        section.nombre,
-        isCurrent,
-        graphData
-      );
-      
+      const cubeGroup = createGlassCube(pos, 3, section.nombre, isCurrent, graphData);
       scene.add(cubeGroup);
       cubeGroupsRef.current.push(cubeGroup);
+      
+      labelData.push({
+        name: section.nombre,
+        count: graphData?.count || 0,
+        position: pos.clone(),
+        isCurrent,
+      });
     });
 
-    // Create connecting beams between cubes (tesseract edges)
-    createInterCubeConnections(scene, positions);
+    // Connect cubes with subtle beams
+    createConnections(scene, positions);
+    
+    return labelData;
   }, []);
 
-  // Create a single glass tesseract cube with nested structure
-  const createGlassTesseractCube = (position, size, color, sectionName, isCurrent, graphData) => {
+  // Create a single glass tesseract cube
+  const createGlassCube = (position, size, sectionName, isCurrent, graphData) => {
     const group = new THREE.Group();
     group.position.copy(position);
     group.userData.sectionName = sectionName;
-    group.userData.glowMeshes = [];
     
     const innerGroup = new THREE.Group();
     group.userData.innerGroup = innerGroup;
 
-    // === OUTER CUBE (Glass + Neon Edges) ===
+    // === OUTER CUBE ===
     
-    // Glass faces - MeshPhysicalMaterial for realistic glass
+    // Glass faces
     const glassGeometry = new THREE.BoxGeometry(size, size, size);
     const glassMaterial = new THREE.MeshPhysicalMaterial({
-      color: 0x111122,
+      color: 0x112233,
       transparent: true,
-      opacity: 0.15,
-      roughness: 0.05,
-      metalness: 0.1,
-      transmission: 0.95,
-      thickness: 0.5,
-      envMapIntensity: 1,
-      clearcoat: 1,
-      clearcoatRoughness: 0.1,
+      opacity: 0.08,
+      roughness: 0.1,
+      metalness: 0.0,
+      transmission: 0.92,
+      thickness: 0.3,
+      ior: 1.1,
       side: THREE.DoubleSide,
     });
     const glassCube = new THREE.Mesh(glassGeometry, glassMaterial);
     innerGroup.add(glassCube);
 
-    // NEON EDGES - Thick glowing tubes
-    const edgeRadius = 0.08;
-    const edgeMaterial = new THREE.MeshBasicMaterial({
-      color: color,
+    // Sharp white edges (EdgesGeometry for crisp lines)
+    const edgesGeometry = new THREE.EdgesGeometry(glassGeometry);
+    const edgesMaterial = new THREE.LineBasicMaterial({
+      color: EDGE_COLOR,
       transparent: true,
-      opacity: 1,
+      opacity: 0.95,
     });
-    
-    // Create tube edges for outer cube
-    const outerEdges = createCubeEdgeTubes(size, edgeRadius, edgeMaterial);
-    outerEdges.forEach(edge => innerGroup.add(edge));
-    group.userData.glowMeshes.push(...outerEdges);
+    const edges = new THREE.LineSegments(edgesGeometry, edgesMaterial);
+    innerGroup.add(edges);
 
-    // === INNER CUBE (Nested tesseract) ===
-    const innerSize = size * 0.35;
+    // === INNER CUBE ===
+    const innerSize = size * 0.4;
     
     const innerGlassGeometry = new THREE.BoxGeometry(innerSize, innerSize, innerSize);
     const innerGlassMaterial = new THREE.MeshPhysicalMaterial({
-      color: 0x222244,
+      color: 0x223344,
       transparent: true,
-      opacity: 0.2,
-      roughness: 0.05,
+      opacity: 0.1,
       transmission: 0.9,
-      thickness: 0.3,
       side: THREE.DoubleSide,
     });
     const innerGlass = new THREE.Mesh(innerGlassGeometry, innerGlassMaterial);
     innerGroup.add(innerGlass);
 
-    // Inner cube neon edges
-    const innerEdgeMaterial = new THREE.MeshBasicMaterial({
-      color: new THREE.Color().copy(color).multiplyScalar(0.8),
+    // Inner cube edges (cyan)
+    const innerEdgesGeometry = new THREE.EdgesGeometry(innerGlassGeometry);
+    const innerEdgesMaterial = new THREE.LineBasicMaterial({
+      color: EDGE_COLOR_INNER,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.85,
     });
-    const innerEdges = createCubeEdgeTubes(innerSize, edgeRadius * 0.7, innerEdgeMaterial);
-    innerEdges.forEach(edge => innerGroup.add(edge));
-    group.userData.glowMeshes.push(...innerEdges);
+    const innerEdges = new THREE.LineSegments(innerEdgesGeometry, innerEdgesMaterial);
+    innerGroup.add(innerEdges);
 
-    // === DIAGONAL CONNECTORS (Tesseract vertex connections) ===
-    const diagonalMaterial = new THREE.MeshBasicMaterial({
-      color: color,
-      transparent: true,
-      opacity: 0.6,
-    });
-    
+    // === DIAGONAL VERTEX CONNECTORS ===
     const vertices = [
       [-1, -1, -1], [1, -1, -1], [-1, 1, -1], [1, 1, -1],
       [-1, -1, 1], [1, -1, 1], [-1, 1, 1], [1, 1, 1]
     ];
     
+    const diagonalPositions = [];
     vertices.forEach(([x, y, z]) => {
-      const outerPoint = new THREE.Vector3(x * size/2, y * size/2, z * size/2);
-      const innerPoint = new THREE.Vector3(x * innerSize/2, y * innerSize/2, z * innerSize/2);
-      
-      const tube = createTubeBetweenPoints(outerPoint, innerPoint, edgeRadius * 0.5, diagonalMaterial);
-      innerGroup.add(tube);
-      group.userData.glowMeshes.push(tube);
+      diagonalPositions.push(
+        x * size/2, y * size/2, z * size/2,
+        x * innerSize/2, y * innerSize/2, z * innerSize/2
+      );
     });
+    
+    const diagonalGeometry = new THREE.BufferGeometry();
+    diagonalGeometry.setAttribute('position', new THREE.Float32BufferAttribute(diagonalPositions, 3));
+    const diagonalMaterial = new THREE.LineBasicMaterial({
+      color: EDGE_COLOR_INNER,
+      transparent: true,
+      opacity: 0.5,
+    });
+    const diagonals = new THREE.LineSegments(diagonalGeometry, diagonalMaterial);
+    innerGroup.add(diagonals);
 
     // === GRAPH NODES INSIDE ===
     if (graphData?.nodes?.length > 0) {
-      const graphGroup = createGraphVisualization(graphData, innerSize * 0.85, color);
+      const graphGroup = createGraphInside(graphData, innerSize * 0.8);
       innerGroup.add(graphGroup);
-      group.userData.glowMeshes.push(...graphGroup.children);
     }
 
     group.add(innerGroup);
 
-    // === CURRENT SECTION INDICATOR ===
+    // Current section ring
     if (isCurrent) {
-      const ringGeometry = new THREE.TorusGeometry(size * 0.6, 0.1, 8, 32);
+      const ringGeometry = new THREE.TorusGeometry(size * 0.55, 0.06, 8, 32);
       const ringMaterial = new THREE.MeshBasicMaterial({
-        color: 0x00FFFF,
+        color: GLOW_COLOR,
         transparent: true,
-        opacity: 0.9,
+        opacity: 0.8,
       });
       const ring = new THREE.Mesh(ringGeometry, ringMaterial);
       ring.rotation.x = Math.PI / 2;
-      ring.position.y = -size / 2 - 0.3;
+      ring.position.y = -size / 2 - 0.2;
       group.add(ring);
-      group.userData.glowMeshes.push(ring);
     }
-
-    // === LABEL ===
-    createLabel(group, sectionName, size, graphData?.count || 0, color);
 
     return group;
   };
 
-  // Create tube edges for a cube
-  const createCubeEdgeTubes = (size, radius, material) => {
-    const edges = [];
-    const half = size / 2;
-    
-    // Define all 12 edges of a cube
-    const edgeDefinitions = [
-      // Bottom face
-      [[-half, -half, -half], [half, -half, -half]],
-      [[half, -half, -half], [half, -half, half]],
-      [[half, -half, half], [-half, -half, half]],
-      [[-half, -half, half], [-half, -half, -half]],
-      // Top face
-      [[-half, half, -half], [half, half, -half]],
-      [[half, half, -half], [half, half, half]],
-      [[half, half, half], [-half, half, half]],
-      [[-half, half, half], [-half, half, -half]],
-      // Vertical edges
-      [[-half, -half, -half], [-half, half, -half]],
-      [[half, -half, -half], [half, half, -half]],
-      [[half, -half, half], [half, half, half]],
-      [[-half, -half, half], [-half, half, half]],
-    ];
-
-    edgeDefinitions.forEach(([start, end]) => {
-      const tube = createTubeBetweenPoints(
-        new THREE.Vector3(...start),
-        new THREE.Vector3(...end),
-        radius,
-        material.clone()
-      );
-      edges.push(tube);
-    });
-
-    return edges;
-  };
-
-  // Create a tube between two points
-  const createTubeBetweenPoints = (start, end, radius, material) => {
-    const direction = new THREE.Vector3().subVectors(end, start);
-    const length = direction.length();
-    
-    const geometry = new THREE.CylinderGeometry(radius, radius, length, 8, 1);
-    const mesh = new THREE.Mesh(geometry, material);
-    
-    mesh.position.copy(start).add(direction.multiplyScalar(0.5));
-    mesh.quaternion.setFromUnitVectors(
-      new THREE.Vector3(0, 1, 0),
-      direction.clone().normalize()
-    );
-    
-    return mesh;
-  };
-
-  // Create graph visualization inside cube
-  const createGraphVisualization = (graphData, size, color) => {
+  // Create visible graph inside cube
+  const createGraphInside = (graphData, size) => {
     const graphGroup = new THREE.Group();
-    
-    // Normalize positions to fit inside
     const nodes = graphData.nodes;
     if (nodes.length === 0) return graphGroup;
     
-    // Find bounds
+    // Normalize positions
     let minX = Infinity, maxX = -Infinity;
     let minY = Infinity, maxY = -Infinity;
     let minZ = Infinity, maxZ = -Infinity;
@@ -473,16 +405,16 @@ export default function MultiverseMap({
     const rangeZ = maxZ - minZ || 1;
     const maxRange = Math.max(rangeX, rangeY, rangeZ);
     
-    // Create node spheres - BIGGER and BRIGHTER
+    // Node spheres - visible size
     const nodePositions = [];
-    const nodeSphereGeometry = new THREE.SphereGeometry(0.12, 12, 12);
+    const nodeSphereGeometry = new THREE.SphereGeometry(0.08, 8, 8);
     const nodeMaterial = new THREE.MeshBasicMaterial({
-      color: color,
+      color: GRAPH_NODE_COLOR,
       transparent: true,
-      opacity: 0.95,
+      opacity: 0.9,
     });
 
-    nodes.forEach((node, i) => {
+    nodes.forEach((node) => {
       const pos = new THREE.Vector3(
         ((node.x - minX) / maxRange - 0.5) * size,
         ((node.y - minY) / maxRange - 0.5) * size,
@@ -495,112 +427,110 @@ export default function MultiverseMap({
       graphGroup.add(sphere);
     });
 
-    // Create edges as lines
+    // Edges
     if (graphData.links?.length > 0) {
       const nodeMap = new Map(nodePositions.map(n => [n.id, n.pos]));
-      const lineMaterial = new THREE.LineBasicMaterial({
-        color: color,
-        transparent: true,
-        opacity: 0.4,
-      });
+      const edgePositions = [];
 
-      graphData.links.slice(0, 80).forEach(link => {
+      graphData.links.slice(0, 60).forEach(link => {
         const sourceId = link.source ?? link.origen;
         const targetId = link.target ?? link.destino;
         const sourcePos = nodeMap.get(sourceId);
         const targetPos = nodeMap.get(targetId);
         
         if (sourcePos && targetPos) {
-          const geometry = new THREE.BufferGeometry().setFromPoints([sourcePos, targetPos]);
-          const line = new THREE.Line(geometry, lineMaterial);
-          graphGroup.add(line);
+          edgePositions.push(sourcePos.x, sourcePos.y, sourcePos.z);
+          edgePositions.push(targetPos.x, targetPos.y, targetPos.z);
         }
       });
+
+      if (edgePositions.length > 0) {
+        const edgeGeometry = new THREE.BufferGeometry();
+        edgeGeometry.setAttribute('position', new THREE.Float32BufferAttribute(edgePositions, 3));
+        const edgeMaterial = new THREE.LineBasicMaterial({
+          color: GRAPH_NODE_COLOR,
+          transparent: true,
+          opacity: 0.35,
+        });
+        const edgeLines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+        graphGroup.add(edgeLines);
+      }
     }
 
     return graphGroup;
   };
 
   // Create connections between cubes
-  const createInterCubeConnections = (scene, positions) => {
+  const createConnections = (scene, positions) => {
     if (positions.length < 2) return;
 
-    const lineMaterial = new THREE.MeshBasicMaterial({
-      color: 0x00AAFF,
-      transparent: true,
-      opacity: 0.3,
-    });
-
-    // Connect adjacent cubes
+    const connectionPositions = [];
+    
     for (let i = 0; i < positions.length; i++) {
       for (let j = i + 1; j < positions.length; j++) {
         const dist = positions[i].distanceTo(positions[j]);
-        if (dist < 10) {
-          const tube = createTubeBetweenPoints(
-            positions[i],
-            positions[j],
-            0.04,
-            lineMaterial.clone()
+        if (dist < 8) {
+          connectionPositions.push(
+            positions[i].x, positions[i].y, positions[i].z,
+            positions[j].x, positions[j].y, positions[j].z
           );
-          scene.add(tube);
         }
       }
     }
+
+    if (connectionPositions.length > 0) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(connectionPositions, 3));
+      const material = new THREE.LineBasicMaterial({
+        color: EDGE_COLOR_INNER,
+        transparent: true,
+        opacity: 0.25,
+      });
+      const lines = new THREE.LineSegments(geometry, material);
+      scene.add(lines);
+    }
   };
 
-  // Create text label
-  const createLabel = (group, text, cubeSize, count, color) => {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    canvas.width = 512;
-    canvas.height = 128;
-
-    // Background
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.roundRect(0, 0, canvas.width, canvas.height, 16);
-    ctx.fill();
-
-    // Text
-    ctx.font = 'bold 48px Inter, system-ui, sans-serif';
-    ctx.fillStyle = '#FFFFFF';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text.charAt(0).toUpperCase() + text.slice(1), canvas.width / 2, 50);
+  // Update HTML label positions
+  const updateLabelsPosition = (camera, cubes, container) => {
+    if (!camera || !container) return;
     
-    ctx.font = '32px Inter, system-ui, sans-serif';
-    ctx.fillStyle = `rgb(${Math.round(color.r * 255)}, ${Math.round(color.g * 255)}, ${Math.round(color.b * 255)})`;
-    ctx.fillText(`${count} nodos`, canvas.width / 2, 95);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.minFilter = THREE.LinearFilter;
+    const rect = container.getBoundingClientRect();
     
-    const spriteMaterial = new THREE.SpriteMaterial({
-      map: texture,
-      transparent: true,
+    cubes.forEach((cube, i) => {
+      const labelEl = document.getElementById(`mv-label-${i}`);
+      if (!labelEl) return;
+      
+      const pos = cube.position.clone();
+      pos.y += 2.2;
+      pos.project(camera);
+      
+      const x = (pos.x * 0.5 + 0.5) * rect.width;
+      const y = (-pos.y * 0.5 + 0.5) * rect.height;
+      
+      if (pos.z < 1) {
+        labelEl.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px)`;
+        labelEl.style.opacity = '1';
+      } else {
+        labelEl.style.opacity = '0';
+      }
     });
-    const sprite = new THREE.Sprite(spriteMaterial);
-    sprite.scale.set(4, 1, 1);
-    sprite.position.y = cubeSize / 2 + 1.2;
-    group.add(sprite);
   };
 
   // Handle cube click
-  const handleCubeClick = useCallback((sectionName, controls) => {
+  const handleCubeClick = useCallback((sectionName) => {
     if (focusedCube === sectionName) {
-      // Second click: enter the section
       if (onSelectSection) {
         onSelectSection(sectionName);
       }
     } else {
-      // First click: focus on cube
       setFocusedCube(sectionName);
       setHintText(`${sectionName.charAt(0).toUpperCase() + sectionName.slice(1)} · Click de nuevo para entrar`);
       
-      // Find and focus on cube
       const cube = cubeGroupsRef.current.find(c => c.userData.sectionName === sectionName);
-      if (cube && controls) {
-        controls.target.copy(cube.position);
-        controls.autoRotate = false;
+      if (cube && controlsRef.current) {
+        controlsRef.current.target.copy(cube.position);
+        controlsRef.current.autoRotate = false;
       }
     }
   }, [focusedCube, onSelectSection]);
@@ -623,6 +553,18 @@ export default function MultiverseMap({
             <span>Construyendo Multiverso...</span>
           </div>
         )}
+        
+        {/* HTML Labels - outside Three.js to avoid bloom */}
+        {!loading && labels.map((label, i) => (
+          <div
+            key={label.name}
+            id={`mv-label-${i}`}
+            className={`mv-tesseract-label ${label.isCurrent ? 'mv-tesseract-label--current' : ''}`}
+          >
+            <span className="mv-tesseract-label-name">{label.name}</span>
+            <span className="mv-tesseract-label-count">{label.count} nodos</span>
+          </div>
+        ))}
       </div>
 
       <footer className="mv-tesseract-footer">
