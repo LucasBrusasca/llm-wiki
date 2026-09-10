@@ -28,27 +28,11 @@ import { pedirClave, avisarClaveIncorrecta } from './security.js';
 //
 // Cada uno conserva al menos un canal RGB bajo, que es lo que mantiene la
 // identidad del matiz y evita el aspecto lavado.
-export const CLUSTER_PALETTE = [
-  '#FF5A5F', // rojo coral
-  '#3B82F6', // azul
-  '#10B981', // verde esmeralda (único verde)
-  '#F59E0B', // ámbar/naranja
-  '#8B5CF6', // violeta
-  '#EC4899', // rosa/magenta
-  '#06B6D4', // cian
-  '#EF4444', // rojo intenso
-  '#6366F1', // índigo
-  '#D97706', // naranja oscuro
-];
-
-// Reservado: sólo para lo excepcional (issues, alertas). Si aparece, significa algo.
-export const ALERT_COLOR = '#FFB44D';
-
-export function clusterColor(cluster) {
-  // Sin grupo: gris frío y apagado, para que el ruido retroceda en vez de competir.
-  if (cluster === undefined || cluster === null || cluster < 0) return '#565A78';
-  return CLUSTER_PALETTE[cluster % CLUSTER_PALETTE.length];
-}
+// La paleta y el color de nodo viven en ./nodeColor.js, que no importa nada:
+// Graph3D y MultiverseMap tienen que pintar el mismo nodo del mismo color, y
+// dejarlos acá creaba un ciclo de módulos. Se re-exportan para no romper a los
+// componentes que ya los importaban desde App.jsx.
+export { CLUSTER_PALETTE, ALERT_COLOR, clusterColor } from './nodeColor.js';
 
 export function ytId(url) {
   const m = url?.match(/(?:youtu\.be\/|v=|embed\/)([a-zA-Z0-9_-]{11})/);

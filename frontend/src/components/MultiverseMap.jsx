@@ -1,263 +1,176 @@
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { Reflector } from 'three/examples/jsm/objects/Reflector.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
-import { VignetteShader } from 'three/examples/jsm/shaders/VignetteShader.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
-import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
-import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import { nodeDotColor, aclarar, groupKey, BG_COLOR, NO_GROUP_COLOR } from '../nodeColor.js';
 
 /* ══════════════════════════════════════════════════════════════════════════
-   MULTIVERSO — bloques de vidrio tallado
+   MULTIVERSO — campo profundo isoclínico
 
-   Cada sección es un bloque de cristal con estructura de tesseract (cubo
-   exterior + cubo interior + 8 diagonales vértice a vértice) y el grafo real
-   de esa sección tallado adentro.
+   No hay contenedores. No hay cubos, ni vidrio, ni una sola malla en la
+   escena: lo único que existe son puntos y líneas de 1 px. Cada sección es su
+   propia nube de nodos REALES —mismos colores, mismos tamaños, mismas aristas
+   grises que el grafo de la app— suspendida en un sitio de una retícula de
+   hipercubo que rota isoclínicamente en 4D.
 
-   La escena está armada como una FOTO de producto, no como un diagrama. Lo que
-   separa "render de wireframes" de "objeto real":
+   Cuatro decisiones cargan todo el peso:
 
-   1. Profundidad de campo. Es la señal de realismo más fuerte que hay y la que
-      faltaba: sin ella todo está igual de nítido y el ojo lee CGI. El BokehPass
-      enfoca el bloque del frente; el resto se cae en bokeh.
-   2. Biseles. Un cubo de aristas vivas nunca parece vidrio. RoundedBoxGeometry
-      con radio chico da el chaflán que atrapa la luz y dibuja el borde
-      brillante solo, sin necesidad de trazarlo.
-   3. Piso espejado. Un objeto flotando en negro no tiene escala ni peso; el
-      reflejo lo apoya en algún lado.
-   4. Un solo protagonista. Seis cubos parejos en fila son un dashboard. Uno
-      grande al frente y el resto cayéndose en el desenfoque es un retrato.
+   1. La cámara arranca DENTRO de la retícula, no afuera mirándola. Un
+      hipercubo centrado con negro alrededor es un modelo matemático sobre una
+      mesa; el tesseract de Interstellar es arquitectura que sigue más allá de
+      los cuatro bordes del cuadro. Además la retícula se repite en tres
+      cáscaras a escala φ, así que alejarse revela más estructura en vez de
+      revelar el vacío.
 
-   Paleta cerrada a blanco + cyan frío, y bloom con tope duro 0.18: por encima
-   de eso el bisel y el tallado se funden en una mancha.
+   2. La rotación 4D es isoclínica pura, por multiplicación de cuaternión a
+      izquierda. Bajo esa rotación |p′−p| = 2|p|·sin(θ/2) para todo punto, y
+      los 16 vértices tienen |p| idéntico: todos se mueven a la misma velocidad
+      en todo instante, ninguno frena. Eso es exactamente lo que el ojo lee
+      como "la estructura se da vuelta sobre sí misma" en vez de "un objeto
+      gira". Con tres ángulos tipo Euler unos sitios frenan y otros aceleran, y
+      se lee como gimbal de visor 3D.
+
+   3. Las secciones NO se normalizan al mismo tamaño. Una de 400 nodos es
+      genuinamente enorme y una de 22 genuinamente diminuta. Normalizar para
+      comparar es una convención de diagrama, y sin jerarquía de escala no hay
+      sensación de lugar.
+
+   4. Todo el trabajo por frame vive en el vertex shader. La CPU sube dos
+      arrays de uniformes y nada más: cero uploads de buffers, cero objetos por
+      sección, 4 draw calls en total. La versión de los cubos hacía 18 renders
+      de escena por frame (transmission + Reflector + profundidad del bokeh) y
+      medía 29 ms; acá hay 1 render.
+
+   La profundidad de campo sale del vertex shader por el círculo de confusión
+   de una lente delgada, no de un BokehPass — su pase de profundidad es un
+   segundo render de escena completo, o sea medio presupuesto.
    ══════════════════════════════════════════════════════════════════════════ */
 
-const C = {
-  etchInner: 0xd6f2ff,  // cubo interior tallado
-  etchActive: 0xffffff, // idem, en la sección activa
-  etchDiag: 0x7fc6de,   // diagonales
-  node: 0xf2fdff,
-  graphEdge: 0x5fa8c4,
-  glassTint: 0x3fd2f5,
-};
+// ── Retícula ────────────────────────────────────────────────────────────────
+const PHI = 1.6180339887;
+const SHELLS = [1, PHI];                   // la misma retícula, repetida hacia afuera
+const SHELL_ALPHA = [1.0, 0.5];
+const D4 = 3.4;                            // punto de vista 4D: s = D/(D−w)
+const K4 = 96;                             // unidades de mundo por unidad 4D
+const MAX_SITES = 16;                      // los 16 vértices; el shader nunca recompila
 
-// TOPE DURO. Por encima de ~0.25 la geometría se convierte en mancha.
-const BLOOM_STRENGTH = 0.18;
-const BLOOM_RADIUS = 0.5;
-const BLOOM_THRESHOLD = 0.86;
+// ── Nubes ───────────────────────────────────────────────────────────────────
+// R = A·count^B con B < 0.5: crece de verdad con el tamaño de la sección, pero
+// sublinealmente, así que una sección 20× más grande no tapa a todas las demás.
+const R_A = 24;
+const R_B = 0.38;
+const R_MIN = 55;
+const R_MAX = 250;
+const GRAPH3D_SCALE = 30;                  // el fx = x3d·30 del layout 'components'
 
-const CUBE = 3.0;
-const INNER_RATIO = 0.34;
-const FLOOR_Y = -CUBE * 0.5 - 0.02;
-const MAX_NODES = 34;
-const MAX_LINKS = 55;
+// ── Presupuesto ─────────────────────────────────────────────────────────────
+const MAX_PTS = 20000;
+const MAX_SEGS = 24000;
+const PER_SECTION_NODES = 620;
+const PER_SECTION_LINKS = 780;
+const DUST_COUNT = 30;
 
-const CUBE_V = [
-  [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
-  [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
-];
-const CUBE_E = [
-  [0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6],
-  [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7],
-];
+// ── Cámara / entrada ────────────────────────────────────────────────────────
+const FOV = 50;                            // el fov de Graph3D: el corte no cambia de lente
+const ENTER_FAR = 3.2;                     // × radio de nube: empieza la aproximación
+const ENTER_NEAR = 1.15;                   // × radio: umbral de commit (ya estás adentro)
+const ENTER_REWIND = 1.8;                  // × radio: histéresis de cancelación
+const ZOOM_INTENT_MS = 600;                // hay que estar acercándose a propósito
 
 const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
-const easeIn = (t) => t * t * t;
+const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+const smoothstep = (a, b, x) => {
+  const t = clamp01((x - a) / (b - a || 1e-6));
+  return t * t * (3 - 2 * t);
+};
+const popcount = (v) => { let c = 0, t = v; while (t) { c += t & 1; t >>= 1; } return c; };
 
-/* ── Estudio: los reflejos que convierten una caja en vidrio ────────────────
-   Paneles chicos a propósito. Uno grande inunda las caras y el bloque pasa de
-   cristal a plástico esmerilado; chicos dejan franjas de luz, como en la foto. */
-function buildEnvironment(renderer) {
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  const envScene = new THREE.Scene();
-  envScene.background = new THREE.Color(0x03060a);
+/* ── Los 16 vértices del 4-cubo y sus 32 aristas ──────────────────────────── */
+const V4 = [];
+for (let i = 0; i < 16; i++) {
+  V4.push([(i & 1) ? 1 : -1, (i & 2) ? 1 : -1, (i & 4) ? 1 : -1, (i & 8) ? 1 : -1]);
+}
+const E4 = [];
+for (let i = 0; i < 16; i++) {
+  for (let k = 0; k < 4; k++) {
+    const j = i ^ (1 << k);
+    if (j > i) E4.push([i, j]);
+  }
+}
 
-  const panel = (hex, gain, w, h, pos) => {
-    const mat = new THREE.MeshBasicMaterial({ color: hex, side: THREE.DoubleSide });
-    mat.color.multiplyScalar(gain);            // > 1 = HDR; el PMREM es half-float
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
-    mesh.position.set(pos[0], pos[1], pos[2]);
-    mesh.lookAt(0, 0, 0);
-    envScene.add(mesh);
+/* Orden de sitios por inserción de punto más lejano, con chequeo de rango afín.
+
+   El chequeo no es adorno: {0000,1111,0011,1100} son coplanares en R⁴ y
+   proyectan a una cruz plana, o sea que la cuarta dimensión desaparece justo
+   cuando hay cuatro secciones. Rechazar al candidato que no sube el rango
+   garantiza que a partir de cinco secciones el 4D sea visible. */
+function affineRank(idx) {
+  const basis = [];
+  for (let n = 1; n < idx.length; n++) {
+    const v = V4[idx[n]].map((x, k) => x - V4[idx[0]][k]);
+    for (const b of basis) {
+      const d = v.reduce((s, x, k) => s + x * b[k], 0);
+      for (let k = 0; k < 4; k++) v[k] -= d * b[k];
+    }
+    const norm = Math.hypot(v[0], v[1], v[2], v[3]);
+    if (norm > 1e-6) basis.push(v.map((x) => x / norm));
+  }
+  return basis.length;
+}
+
+function siteOrder() {
+  const chosen = [0];
+  const dist2 = (a, b) => {
+    let s = 0;
+    for (let k = 0; k < 4; k++) { const d = V4[a][k] - V4[b][k]; s += d * d; }
+    return s;
   };
-
-  panel(0xffffff, 9.0, 4, 10, [10, 9, 5]);      // key: franja blanca dura
-  panel(0x8fe9ff, 4.0, 2.5, 15, [-11, 4, -4]);  // rim cyan, vertical
-  panel(0xffffff, 4.0, 14, 5, [-3, 13, -6]);    // cenital
-  panel(0x163f55, 0.8, 40, 26, [-6, 2, 14]);    // ambiente ancho: el degradé
-  panel(0x2b6d8a, 0.8, 30, 10, [0, -9, 10]);    // rebote del piso
-
-  const rt = pmrem.fromScene(envScene, 0.02);
-  pmrem.dispose();
-  envScene.traverse((o) => {
-    if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
-  });
-  return rt;
-}
-
-/* ── Telón ──────────────────────────────────────────────────────────────────
-   Opaco a propósito: entra en el transmission pass, así el vidrio tiene algo
-   que refractar en vez de negro plano. */
-function buildBackdrop() {
-  const mat = new THREE.ShaderMaterial({
-    side: THREE.BackSide,
-    depthWrite: false,
-    uniforms: {
-      top: { value: new THREE.Color(0x070e18) },
-      bottom: { value: new THREE.Color(0x010306) },
-      haze: { value: new THREE.Color(0x113c52) },
-    },
-    vertexShader: [
-      'varying vec3 vDir;',
-      'void main() {',
-      '  vDir = normalize(position);',
-      '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
-      '}',
-    ].join('\n'),
-    fragmentShader: [
-      'uniform vec3 top; uniform vec3 bottom; uniform vec3 haze;',
-      'varying vec3 vDir;',
-      'void main() {',
-      '  float h = vDir.y * 0.5 + 0.5;',
-      '  vec3 c = mix(bottom, top, smoothstep(0.0, 1.0, h));',
-      '  c += haze * (1.0 - smoothstep(0.0, 0.30, abs(vDir.y))) * 0.6;',
-      '  gl_FragColor = vec4(c, 1.0);',
-      '}',
-    ].join('\n'),
-  });
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(260, 32, 24), mat);
-  mesh.frustumCulled = false;
-  mesh.renderOrder = -100;
-  return mesh;
-}
-
-/* ── Piso espejado ──────────────────────────────────────────────────────────
-   Reflector con shader propio: el de fábrica devuelve un espejo duro de borde
-   a borde. Éste apaga el reflejo con la distancia, que es lo que hace una
-   superficie pulida real bajo luz dura. */
-function buildFloor() {
-  const floor = new Reflector(new THREE.PlaneGeometry(300, 300), {
-    textureWidth: 512,
-    textureHeight: 512,
-    multisample: 2,
-    clipBias: 0.003,
-    shader: {
-      uniforms: {
-        color: { value: new THREE.Color(0xffffff) },
-        tDiffuse: { value: null },
-        textureMatrix: { value: new THREE.Matrix4() },
-      },
-      vertexShader: [
-        'uniform mat4 textureMatrix;',
-        'varying vec4 vUv;',
-        'varying vec2 vLocal;',
-        'void main() {',
-        '  vLocal = position.xy;',
-        '  vUv = textureMatrix * vec4(position, 1.0);',
-        '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
-        '}',
-      ].join('\n'),
-      fragmentShader: [
-        'uniform sampler2D tDiffuse;',
-        'varying vec4 vUv;',
-        'varying vec2 vLocal;',
-        // Un espejo nítido devuelve las aristas del bloque como dos patas
-        // verticales. Cinco muestras lo vuelven un reflejo pulido, que es lo
-        // que hace una superficie real.
-        'vec3 tap(vec2 o) { return texture2DProj(tDiffuse, vUv + vec4(o, 0.0, 0.0)).rgb; }',
-        'void main() {',
-        '  float k = 0.012 * vUv.w;',
-        '  vec3 refl = tap(vec2(0.0)) * 0.36',
-        '    + tap(vec2(k, 0.0)) * 0.16 + tap(vec2(-k, 0.0)) * 0.16',
-        '    + tap(vec2(0.0, k)) * 0.16 + tap(vec2(0.0, -k)) * 0.16;',
-        '  float fade = 1.0 - smoothstep(10.0, 60.0, length(vLocal));',
-        '  gl_FragColor = vec4(refl * 0.3 * fade, 1.0);',
-        '}',
-      ].join('\n'),
-    },
-  });
-  floor.rotation.x = -Math.PI / 2;
-  floor.position.y = FLOOR_Y;
-  return floor;
-}
-
-/* ── Bokeh de fondo: los círculos desenfocados de la referencia ───────────── */
-function buildBokehLights() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 64;
-  canvas.height = 64;
-  const ctx = canvas.getContext('2d');
-  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-  g.addColorStop(0, 'rgba(255,255,255,1)');
-  g.addColorStop(0.55, 'rgba(150,225,255,0.5)');
-  g.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 64, 64);
-  const tex = new THREE.CanvasTexture(canvas);
-
-  const group = new THREE.Group();
-  let s = 20250909;
-  const rnd = () => ((s = (s * 1664525 + 1013904223) % 4294967296) / 4294967296);
-  for (let i = 0; i < 16; i++) {
-    const mat = new THREE.SpriteMaterial({
-      map: tex,
-      color: rnd() < 0.35 ? 0xffffff : 0x63d6ff,
-      blending: THREE.AdditiveBlending,
-      transparent: true,
-      opacity: 0.1 + rnd() * 0.18,
-      depthWrite: false,
-    });
-    const sp = new THREE.Sprite(mat);
-    const a = rnd() * Math.PI * 2;
-    const r = 55 + rnd() * 35;
-    sp.position.set(Math.cos(a) * r, -6 + rnd() * 30, Math.sin(a) * r);
-    const k = 4 + rnd() * 9;
-    sp.scale.set(k, k, 1);
-    group.add(sp);
+  while (chosen.length < 16) {
+    const rest = [];
+    for (let c = 0; c < 16; c++) {
+      if (chosen.includes(c)) continue;
+      let min = Infinity;
+      let sum = 0;
+      for (const s of chosen) { const d = dist2(c, s); min = Math.min(min, d); sum += d; }
+      rest.push({ c, min, sum });
+    }
+    rest.sort((a, b) => b.min - a.min || b.sum - a.sum || a.c - b.c);
+    const wantRank = Math.min(4, chosen.length);
+    const better = rest.find((r) => affineRank([...chosen, r.c]) >= wantRank);
+    chosen.push((better || rest[0]).c);
   }
-  group.userData.texture = tex;
-  return group;
+  return chosen;
 }
+const SITE_ORDER = siteOrder();
 
-/* ── Line2 helper ─────────────────────────────────────────────────────────── */
-function makeLines(flatPositions, color, widthPx, registry) {
-  const geo = new LineSegmentsGeometry();
-  geo.setPositions(flatPositions);
-  const mat = new LineMaterial({
-    color,
-    linewidth: widthPx,
-    worldUnits: false,
-    // Opaco: lo transparente no entra en el transmission pass y desaparecería
-    // detrás del vidrio. El atenuado va por color, no por alpha.
-    transparent: false,
-    depthTest: true,
-  });
-  registry.push(mat);
-  const seg = new LineSegments2(geo, mat);
-  seg.frustumCulled = false;
-  return seg;
-}
-
-function boxEdgePositions(half) {
-  const out = [];
-  for (const [a, b] of CUBE_E) {
-    out.push(CUBE_V[a][0] * half, CUBE_V[a][1] * half, CUBE_V[a][2] * half);
-    out.push(CUBE_V[b][0] * half, CUBE_V[b][1] * half, CUBE_V[b][2] * half);
-  }
+/* ── Rotación isoclínica: p′ = q ⊗ p ──────────────────────────────────────── */
+function qmul(a, b, out) {
+  out[0] = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3];
+  out[1] = a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2];
+  out[2] = a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1];
+  out[3] = a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0];
   return out;
 }
+/* q0 genérico. Sin él la rotación pasa por la orientación canónica, y ahí las
+   32 aristas proyectan a cuadrados alineados con los ejes: literalmente "un
+   cubo dentro de otro", que es lo que hay que evitar. Con q0 la retícula queda
+   siempre oblicua y lo que se ve son hebras, no cajas. */
+const Q0 = (() => {
+  const ax = [0.31, 0.72, 0.62];
+  const nrm = Math.hypot(ax[0], ax[1], ax[2]);
+  const ang = 0.41 * Math.PI;
+  const s = Math.sin(ang / 2);
+  return new Float32Array([Math.cos(ang / 2), (ax[0] / nrm) * s, (ax[1] / nrm) * s, (ax[2] / nrm) * s]);
+})();
+const U_HAT = 1 / Math.sqrt(3);
 
-/* ── Datos ──────────────────────────────────────────────────────────────────
+/* ── Muestreo del grafo ─────────────────────────────────────────────────────
    Se quedan los nodos de mayor grado y sólo las aristas entre ellos: un
-   muestreo al azar produce polvo desconectado; esto produce algo que se lee
-   como grafo. */
+   muestreo al azar produce polvo desconectado; esto conserva los hubs, o sea
+   la silueta reconocible de la sección. */
 function sampleGraph(json) {
   const nodes = (json.nodos || []).filter((n) => !n.is_issue && !n.is_centroid);
   const rels = json.relaciones || [];
@@ -266,158 +179,54 @@ function sampleGraph(json) {
     deg.set(r.source, (deg.get(r.source) || 0) + 1);
     deg.set(r.target, (deg.get(r.target) || 0) + 1);
   }
-  const picked = [...nodes]
-    .sort((a, b) => (deg.get(b.id) || 0) - (deg.get(a.id) || 0))
-    .slice(0, MAX_NODES);
+  const picked = nodes.length <= PER_SECTION_NODES
+    ? nodes
+    : [...nodes].sort((a, b) => (deg.get(b.id) || 0) - (deg.get(a.id) || 0)).slice(0, PER_SECTION_NODES);
   const ids = new Set(picked.map((n) => n.id));
-  const links = rels
-    .filter((r) => ids.has(r.source) && ids.has(r.target))
-    .slice(0, MAX_LINKS);
-  return {
-    total: nodes.length,
-    totalLinks: rels.length,
-    nodes: picked.map((n) => ({
-      id: n.id,
-      p: new THREE.Vector3(n.x3d ?? 0, n.y3d ?? 0, n.z3d ?? 0),
-      deg: deg.get(n.id) || 0,
-    })),
-    links,
-  };
+  const links = rels.filter((r) => ids.has(r.source) && ids.has(r.target)).slice(0, PER_SECTION_LINKS);
+  let maxDeg = 0;
+  picked.forEach((n) => { maxDeg = Math.max(maxDeg, deg.get(n.id) || 0); });
+  return { total: nodes.length, totalLinks: rels.length, nodes: picked, links, deg, maxDeg };
 }
 
-/* Cáscara entre el cubo interior y las caras: ni apelmazado en el núcleo ni
-   atravesando el vidrio. */
-function layoutNodes(nodes) {
-  const centroid = new THREE.Vector3();
-  nodes.forEach((n) => centroid.add(n.p));
-  centroid.divideScalar(Math.max(1, nodes.length));
+/* Posiciones locales: se PRESERVA la forma real del grafo. Re-esferizar (lo que
+   hacía la versión de los cubos) destruye la estructura de clusters, que es
+   justo lo único que hay para ver desde lejos. */
+function layoutCloud(g) {
+  const n = g.nodes.length || 1;
+  let cx = 0, cy = 0, cz = 0;
+  g.nodes.forEach((nd) => { cx += nd.x3d ?? 0; cy += nd.y3d ?? 0; cz += nd.z3d ?? 0; });
+  cx /= n; cy /= n; cz /= n;
 
-  let maxR = 1e-6;
-  const rel = nodes.map((n) => {
-    const v = n.p.clone().sub(centroid);
-    maxR = Math.max(maxR, v.length());
-    return v;
-  });
+  const rel = g.nodes.map((nd) => [(nd.x3d ?? 0) - cx, (nd.y3d ?? 0) - cy, (nd.z3d ?? 0) - cz]);
+  // rms, no max: un solo outlier no tiene que encoger la nube entera.
+  let sum = 0;
+  rel.forEach((v) => { sum += v[0] * v[0] + v[1] * v[1] + v[2] * v[2]; });
+  const rms = Math.sqrt(sum / n) || 1;
 
-  const rIn = CUBE * 0.24;
-  const rOut = CUBE * 0.43;
-  return rel.map((v, i) => {
-    const dir = v.lengthSq() > 1e-9
-      ? v.clone().normalize()
-      : new THREE.Vector3(Math.sin(i * 2.4), Math.cos(i * 1.7), Math.sin(i * 3.1)).normalize();
-    return dir.multiplyScalar(rIn + (rOut - rIn) * Math.pow(v.length() / maxR, 0.7));
-  });
-}
-
-/* ── Un bloque ────────────────────────────────────────────────────────────── */
-function buildCell({ name, position, graph, isCurrent, lineMats, disposables, lineObjects }) {
-  const group = new THREE.Group();
-  group.position.copy(position);
-  group.userData.sectionName = name;
-
-  const half = CUBE / 2;
-  const innerHalf = (CUBE * INNER_RATIO) / 2;
-
-  // Bloque de cristal biselado. El chaflán es lo que dibuja el borde brillante.
-  const glassGeo = new RoundedBoxGeometry(CUBE, CUBE, CUBE, 6, CUBE * 0.075);
-  const glassMat = new THREE.MeshPhysicalMaterial({
-    color: 0xffffff,
-    metalness: 0,
-    roughness: 0.0,
-    transmission: 0.94,
-    thickness: 5.5,
-    ior: 1.5,
-    attenuationColor: new THREE.Color(C.glassTint),
-    attenuationDistance: 14.0,
-    clearcoat: 1,
-    clearcoatRoughness: 0.03,
-    reflectivity: 0.7,
-    iridescence: 0,               // explícito: nada de rainbow
-    envMapIntensity: 1.5,
-    side: THREE.FrontSide,
-  });
-  const glass = new THREE.Mesh(glassGeo, glassMat);
-  glass.renderOrder = 20;
-  group.add(glass);
-  group.userData.glassMat = glassMat;
-  disposables.push(glassGeo, glassMat);
-
-  // El filo NO se traza. El chaflán de la geometría atrapa la luz del panel key
-  // y dibuja la arista brillante solo; una línea encima la convertiría otra vez
-  // en un wireframe dibujado sobre una caja.
-
-  // Tallado interno: cubo interior + 8 diagonales. La firma del tesseract.
-  // La sección activa se distingue por un tallado más brillante, no por una
-  // chapita de UI: dentro de la foto, todo tiene que ser materia.
-  const etched = new THREE.Group();
-  const innerCube = makeLines(
-    boxEdgePositions(innerHalf),
-    isCurrent ? C.etchActive : C.etchInner,
-    isCurrent ? 1.8 : 1.5,
-    lineMats,
-  );
-  etched.add(innerCube);
-  lineObjects.push(innerCube);
-
-  const diagPts = [];
-  for (const v of CUBE_V) {
-    diagPts.push(v[0] * half, v[1] * half, v[2] * half);
-    diagPts.push(v[0] * innerHalf, v[1] * innerHalf, v[2] * innerHalf);
-  }
-  const diags = makeLines(diagPts, C.etchDiag, 1.1, lineMats);
-  etched.add(diags);
-  lineObjects.push(diags);
-
-  // Grafo real de la sección, tallado adentro.
-  if (graph && graph.nodes.length > 0) {
-    const pts = layoutNodes(graph.nodes);
-    const byId = new Map(graph.nodes.map((n, i) => [n.id, pts[i]]));
-
-    const edgePts = [];
-    for (const l of graph.links) {
-      const a = byId.get(l.source);
-      const b = byId.get(l.target);
-      if (a && b) edgePts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  const R = Math.min(R_MAX, Math.max(R_MIN, R_A * Math.pow(Math.max(1, g.total), R_B)));
+  const k = R / rms;
+  const soft = 2.6 * R;
+  const pos = rel.map((v) => {
+    let x = v[0] * k, y = v[1] * k, z = v[2] * k;
+    const r = Math.hypot(x, y, z);
+    if (r > 1e-6) {
+      const s = (soft * Math.tanh(r / soft)) / r;   // clamp suave del outlier
+      x *= s; y *= s; z *= s;
     }
-    if (edgePts.length) {
-      const ge = makeLines(edgePts, C.graphEdge, 1.2, lineMats);
-      etched.add(ge);
-      lineObjects.push(ge);
-    }
-
-    const nodeGeo = new THREE.SphereGeometry(CUBE * 0.0125, 10, 8);
-    const nodeMat = new THREE.MeshBasicMaterial({ color: C.node });
-    const mesh = new THREE.InstancedMesh(nodeGeo, nodeMat, pts.length);
-    const m = new THREE.Matrix4();
-    pts.forEach((p, i) => {
-      // Techo bajo a propósito: por encima de ~2x los clusters densos se funden
-      // en una mancha blanca.
-      const s = 0.8 + Math.min(1.0, (graph.nodes[i].deg || 0) * 0.1);
-      m.makeScale(s, s, s);
-      m.setPosition(p);
-      mesh.setMatrixAt(i, m);
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.frustumCulled = false;
-    etched.add(mesh);
-    disposables.push(nodeGeo, nodeMat);
-  }
-
-  group.add(etched);
-  group.userData.etched = etched;
-
-  // Blanco de picking: no dibuja nada, pero sigue en el raycast.
-  const pickGeo = new THREE.BoxGeometry(CUBE * 1.06, CUBE * 1.06, CUBE * 1.06);
-  const pickMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
-  const pick = new THREE.Mesh(pickGeo, pickMat);
-  pick.renderOrder = -50;
-  pick.userData.sectionName = name;
-  group.add(pick);
-  disposables.push(pickGeo, pickMat);
-
-  group.userData.pick = pick;
-  return group;
+    return [x, y, z];
+  });
+  // La escala del morph al entrar: en w=1 la nube tiene que ser byte-idéntica
+  // al layout 'components' de Graph3D, que fija fx = x3d · 30.
+  return { pos, R, toGraph3D: GRAPH3D_SCALE / k };
 }
+
+const hexToRgb = (hex) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return [0.5, 0.5, 0.5];
+  const v = parseInt(m[1], 16);
+  return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
+};
 
 /* ══════════════════════════════════════════════════════════════════════════ */
 
@@ -431,348 +240,749 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
-  const [graphs, setGraphs] = useState(null);
-  const [hero, setHero] = useState(currentSection);
+  const [ready, setReady] = useState(0);
+  const [candidate, setCandidate] = useState(null);
+  const [approach, setApproach] = useState(0);
   const [entering, setEntering] = useState(false);
 
   const key = sections.map((s) => s.nombre).join('|');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const names = useMemo(() => key.split('|').filter(Boolean), [key]);
 
-  /* ── Datos: se reutiliza /api/graph?seccion=… tal cual ──────────────────── */
-  useEffect(() => {
-    let alive = true;
-    setGraphs(null);
-
-    (async () => {
-      const out = {};
-      // De a 4: el payload de /api/graph incluye embeddings, y disparar todas
-      // las secciones en paralelo ahoga al backend.
-      for (let i = 0; i < names.length; i += 4) {
-        const batch = names.slice(i, i + 4);
-        // eslint-disable-next-line no-await-in-loop
-        await Promise.all(batch.map(async (n) => {
-          try {
-            const r = await fetch(`/api/graph?seccion=${encodeURIComponent(n)}`);
-            out[n] = sampleGraph(await r.json());
-          } catch {
-            out[n] = { total: 0, totalLinks: 0, nodes: [], links: [] };
-          }
-        }));
-        if (!alive) return;
-      }
-      if (alive) setGraphs(out);
-    })();
-
-    return () => { alive = false; };
-  }, [names]);
-
-  /* ── Escena ─────────────────────────────────────────────────────────────── */
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || !graphs || names.length === 0) return undefined;
+    if (!container || names.length === 0) return undefined;
 
+    let alive = true;
     let w = container.clientWidth || 1;
     let h = container.clientHeight || 1;
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(38, w / h, 0.1, 700);
+    // El fondo va en la ESCENA, no en setClearColor. setClearColor fija el valor
+    // convertido al espacio de salida vigente en ese momento —sRGB, porque
+    // todavía no hay render target—, y después el clear() del RenderPass lo
+    // escribe crudo en el buffer lineal del composer: OutputPass lo vuelve a
+    // codificar y el negro #030508 sale gris #1c2632. scene.background se
+    // resuelve por frame con el target ya activo, así que da el color correcto.
+    scene.background = new THREE.Color(BG_COLOR);
+    const camera = new THREE.PerspectiveCamera(FOV, w / h, 1, 12000);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    // pixelRatio 1 igual que Graph3D: si el Multiverso rindiera a 2 habría un
+    // salto de nitidez justo en el corte hacia el grafo.
+    renderer.setPixelRatio(1);
     renderer.setSize(w, h);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.12;
+    renderer.toneMapping = THREE.NoToneMapping;      // Graph3D tampoco tonemapea
     container.appendChild(renderer.domElement);
 
-    const envRT = buildEnvironment(renderer);
-    scene.environment = envRT.texture;
-
-    const backdrop = buildBackdrop();
-    scene.add(backdrop);
-    const bokehLights = buildBokehLights();
-    scene.add(bokehLights);
-    const floor = buildFloor();
-    scene.add(floor);
-
-    scene.add(new THREE.AmbientLight(0x1a2a38, 1.0));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.6);
-    keyLight.position.set(10, 11, 6);
-    scene.add(keyLight);
-    const rimLight = new THREE.DirectionalLight(0x7ae0ff, 1.0);
-    rimLight.position.set(-11, 2, -7);
-    scene.add(rimLight);
-
-    // ── Bloques en anillo ───────────────────────────────────────────────────
-    const lineMats = [];
-    const disposables = [];
-    const lineObjects = [];
-    const cells = [];
-    const picks = [];
-
-    const n = names.length;
-    const ringRadius = n <= 1 ? 0 : Math.max(CUBE * 2.0, (n * CUBE * 3.6) / (2 * Math.PI));
-    const positions = n <= 1
-      ? [new THREE.Vector3(0, 0, 0)]
-      : Array.from({ length: n }, (_, i) => {
-        const a = (i / n) * Math.PI * 2;
-        return new THREE.Vector3(Math.cos(a) * ringRadius, 0, Math.sin(a) * ringRadius);
-      });
-
-    names.forEach((name, i) => {
-      const cell = buildCell({
-        name,
-        position: positions[i],
-        graph: graphs[name],
-        isCurrent: name === currentSection,
-        lineMats,
-        disposables,
-        lineObjects,
-      });
-      scene.add(cell);
-      cells.push(cell);
-      picks.push(cell.userData.pick);
-    });
-
-    // Sin cables entre bloques: una poligonal en el piso devuelve la escena al
-    // territorio del diagrama. La continuidad la cuentan el carrusel y el
-    // reflejo, no una línea dibujada.
-
-    // ── Composer: DOF antes que bloom, como en una lente real ───────────────
+    // Único post-proceso, con los parámetros exactos de Graph3D: bloom a media
+    // resolución, strength 0.05. Casi gratis, y evita que los núcleos cambien
+    // de brillo al cruzar a la otra vista.
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
-
-    const bokeh = new BokehPass(scene, camera, {
-      focus: CUBE * 3.0, aperture: 0.0046, maxblur: 0.012,
-    });
-    // El pase de profundidad pisa todos los materiales con MeshDepthMaterial y
-    // Line2 no sobrevive a eso (su geometría es instanciada: el `position` es
-    // el quad plantilla, no la línea en mundo) — escupiría basura en el origen.
-    // Se ocultan: dentro del bloque el vidrio ya aporta la profundidad correcta
-    // para esos píxeles.
-    const bokehRender = bokeh.render.bind(bokeh);
-    bokeh.render = (r, write, read, dt, mask) => {
-      lineObjects.forEach((o) => { o.visible = false; });
-      bokehRender(r, write, read, dt, mask);
-      lineObjects.forEach((o) => { o.visible = true; });
-    };
-    composer.addPass(bokeh);
-
-    composer.addPass(new UnrealBloomPass(
-      new THREE.Vector2(w, h), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD,
-    ));
-
-    const vignette = new ShaderPass(VignetteShader);
-    // Ojo: el shader mezcla hacia vec3(1.0 - darkness). Con darkness > 1 el
-    // color se va a negativo y la conversión a sRGB devuelve NaN: la pantalla
-    // entera se tiñe de sepia. 1.0 = negro puro, que es el máximo útil.
-    vignette.uniforms.offset.value = 1.15;
-    vignette.uniforms.darkness.value = 1.0;
-    composer.addPass(vignette);
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(Math.max(2, Math.round(w / 2)), Math.max(2, Math.round(h / 2))),
+      0.05, 0.3, 0.92,
+    );
+    composer.addPass(bloom);
     composer.addPass(new OutputPass());
 
-    // El Reflector no trae guarda de recursión: su onBeforeRender también se
-    // dispara dentro del transmission pass y del pase de profundidad, o sea
-    // tres re-renders de escena por frame. Se resuelve una sola vez por frame.
-    let frameId = 0;
-    let reflectedFrame = -1;
-    const floorOBR = floor.onBeforeRender;
-    floor.onBeforeRender = function reflectOnce(r, s, cam) {
-      if (frameId - reflectedFrame < 2) return;
-      reflectedFrame = frameId;
-      floorOBR.call(this, r, s, cam);
-    };
-
-    // ── Controles ───────────────────────────────────────────────────────────
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.06;
+    controls.dampingFactor = 0.14;
+    controls.rotateSpeed = 0.6;
+    controls.zoomSpeed = 1.05;
     controls.enablePan = false;
-    controls.minDistance = CUBE * 1.55;
-    controls.maxDistance = CUBE * 5.5 + ringRadius;
-    controls.minPolarAngle = 0.35;
-    controls.maxPolarAngle = Math.PI * 0.5;    // no bajar del piso
-    controls.autoRotate = false;
+    controls.minDistance = 30;
+    controls.maxDistance = 950;
 
-    // ── Cámara: retrato del bloque del frente ───────────────────────────────
-    let heroIndex = Math.max(0, names.indexOf(currentSection));
+    // ── Uniformes compartidos ─────────────────────────────────────────────
+    const uSite = new Float32Array(MAX_SITES * 4);      // xyz = posición, w = escala interna
+    const uSiteMod = new Float32Array(MAX_SITES * 4);   // x = alfa, y = distancia a cámara
+    const uV4 = new Float32Array(16 * 3);               // vértices ya proyectados
 
-    const heroCamPos = (idx) => {
-      const p = positions[idx];
-      // Desde afuera del anillo mirando hacia adentro: los demás bloques quedan
-      // detrás del héroe, cayéndose en el bokeh.
-      const outward = ringRadius > 0
-        ? new THREE.Vector3(p.x, 0, p.z).normalize()
-        : new THREE.Vector3(0.72, 0, 0.69);
-      const tangent = new THREE.Vector3(-outward.z, 0, outward.x);
-      return p.clone()
-        .addScaledVector(outward, CUBE * 2.9)
-        .addScaledVector(tangent, CUBE * 0.55)
-        .add(new THREE.Vector3(0, CUBE * 0.85, 0));
+    const common = {
+      uSite: { value: uSite },
+      uSiteMod: { value: uSiteMod },
+      uH: { value: h },
+      uTanHalfFov: { value: Math.tan((FOV * Math.PI) / 360) },
+      uFog: { value: 0.00115 },
+      uFocus: { value: 500 },
+      uCocK: { value: 1.4 },
+      uLightDir: { value: new THREE.Vector3(0.48, 0.62, 0.62).normalize() },
+      uTime: { value: 0 },
     };
 
-    camera.position.copy(heroCamPos(heroIndex));
-    controls.target.copy(positions[heroIndex]);
-    setHero(names[heroIndex]);
+    const SITE_DECL = `
+      uniform vec4 uSite[${MAX_SITES}];
+      uniform vec4 uSiteMod[${MAX_SITES}];
+      uniform float uH, uTanHalfFov, uFog, uFocus, uCocK;
+      uniform vec3 uLightDir;
+    `;
 
-    // Progreso contra reloj absoluto, no contra dt acumulado: con la pestaña
-    // en segundo plano o en una máquina lenta, rAF entrega frames espaciados y
-    // una animación por dt se arrastra durante segundos.
-    const anim = {
-      on: false, start: 0, dur: 1000,
+    // ── OBJETO 1: puntos (nodos de todas las secciones + chispas de junta) ──
+    const ptGeo = new THREE.BufferGeometry();
+    const ptPos = new Float32Array(MAX_PTS * 3);        // offset LOCAL dentro de la nube
+    const ptCol = new Float32Array(MAX_PTS * 3);
+    const ptSite = new Float32Array(MAX_PTS);
+    const ptSize = new Float32Array(MAX_PTS);
+    ptGeo.setAttribute('position', new THREE.BufferAttribute(ptPos, 3));
+    ptGeo.setAttribute('aColor', new THREE.BufferAttribute(ptCol, 3));
+    ptGeo.setAttribute('aSite', new THREE.BufferAttribute(ptSite, 1));
+    ptGeo.setAttribute('aSize', new THREE.BufferAttribute(ptSize, 1));
+    ptGeo.setDrawRange(0, 0);
+
+    const ptMat = new THREE.ShaderMaterial({
+      uniforms: common,
+      transparent: true,
+      // Oclusión real. Las versiones anteriores tenían depthWrite:false en todo,
+      // así que nada tapaba nada nunca: ése es el tell inconfundible de
+      // holograma. Escribiendo profundidad, una nube cercana se come las hebras
+      // que pasan por detrás, y esa es la señal que convierte un scatter en un
+      // lugar. El descarte por alfa bajo evita que la cola del halo escriba.
+      depthWrite: true,
+      depthTest: true,
+      blending: THREE.NormalBlending,
+      vertexShader: `
+        ${SITE_DECL}
+        attribute vec3 aColor;
+        attribute float aSite;
+        attribute float aSize;
+        varying vec3 vColor;
+        varying float vAlpha;
+        varying float vSharp;
+        void main() {
+          int i = int(aSite + 0.5);
+          vec4 st = uSite[i];
+          vec4 md = uSiteMod[i];
+          vec4 mv = modelViewMatrix * vec4(st.xyz + st.w * position, 1.0);
+          float z = max(1.0, -mv.z);
+          gl_Position = projectionMatrix * mv;
+
+          // Tamaño en pantalla: la fórmula literal del far-LOD de Graph3D
+          // (dotScale = clamp(d*0.02, 2.5, 7)). Copiarla es lo que hace que el
+          // punto no cambie de tamaño en el corte.
+          float S = min(7.0, max(2.5, md.y * 0.02)) * (0.5 + 0.5 * aSize);
+          float want = S * (uH * 0.5) / (z * uTanHalfFov);
+
+          // Círculo de confusión de lente delgada: crece más rápido hacia la
+          // cámara que hacia el fondo, igual que una lente real. Es la
+          // profundidad de campo, y sale gratis acá en lugar de costar un pase.
+          float coc = uCocK * abs(uFocus / z - 1.0);
+          float px = want * (1.0 + coc);
+
+          // Piso sub-píxel. Por debajo de ~1.5 px un punto titila entre frames
+          // y el conjunto se lee como polvo sucio; lo que se le saca al tamaño
+          // se le devuelve al alfa para no falsear la densidad.
+          float sub = min(1.0, (px / 1.5) * (px / 1.5));
+          gl_PointSize = max(px, 1.5);
+
+          // Conservación de energía del desenfoque: disco más grande, más tenue.
+          float aCoc = 1.0 / (1.0 + coc * coc * 1.7);
+
+          // Dirección de luz. Todo lo demás es emisivo y simétrico; un solo
+          // producto punto le da volumen a la nube y la saca de scatter plano.
+          float lam = 0.60 + 0.40 * dot(normalize(position + vec3(1e-4)), uLightDir);
+
+          float fz = uFog * z;
+          vColor = aColor * mix(0.80, 1.08, lam);
+          vAlpha = 0.88 * md.x * sub * aCoc * exp(-fz * fz);
+          vSharp = 1.0 - min(1.0, coc * 0.75);
+        }`,
+      fragmentShader: `
+        varying vec3 vColor;
+        varying float vAlpha;
+        varying float vSharp;
+        void main() {
+          float u = length(gl_PointCoord - 0.5) * 2.0;
+          // Reproduce analíticamente los dos gradientes del DOT_TEX de Graph3D
+          // (núcleo duro + anillo tenue) sin costar un fetch de textura.
+          float core = 1.0 - smoothstep(0.39, 0.56, u);
+          float ring = max(0.0, 0.08 * (1.0 - abs(u - 0.76) / 0.20));
+          float soft = pow(max(0.0, 1.0 - u), 1.7);
+          float a = mix(soft, core + ring, vSharp) * vAlpha;
+          if (a < 0.08) discard;   // la cola del halo no escribe profundidad
+          gl_FragColor = vec4(vColor, a);
+        }`,
+    });
+    const points = new THREE.Points(ptGeo, ptMat);
+    points.frustumCulled = false;
+    points.renderOrder = 0;
+    scene.add(points);
+
+    // ── OBJETO 2: aristas intra-nube ───────────────────────────────────────
+    const lnGeo = new THREE.BufferGeometry();
+    const lnPos = new Float32Array(MAX_SEGS * 2 * 3);
+    const lnSite = new Float32Array(MAX_SEGS * 2);
+    const lnAlpha = new Float32Array(MAX_SEGS * 2);
+    lnGeo.setAttribute('position', new THREE.BufferAttribute(lnPos, 3));
+    lnGeo.setAttribute('aSite', new THREE.BufferAttribute(lnSite, 1));
+    lnGeo.setAttribute('aAlpha', new THREE.BufferAttribute(lnAlpha, 1));
+    lnGeo.setDrawRange(0, 0);
+
+    const lnMat = new THREE.ShaderMaterial({
+      uniforms: common,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,     // las nubes tapan sus propias aristas: eso es volumen
+      blending: THREE.NormalBlending,
+      vertexShader: `
+        ${SITE_DECL}
+        attribute float aSite;
+        attribute float aAlpha;
+        varying float vAlpha;
+        void main() {
+          int i = int(aSite + 0.5);
+          vec4 st = uSite[i];
+          vec4 md = uSiteMod[i];
+          vec4 mv = modelViewMatrix * vec4(st.xyz + st.w * position, 1.0);
+          float z = max(1.0, -mv.z);
+          gl_Position = projectionMatrix * mv;
+          float fz = uFog * z;
+          // LINK_ALPHA_MULT de Graph3D: las aristas casi desaparecen de lejos y
+          // sólo recuperan presencia cuando ya estás encima de la nube.
+          float far = md.y > 900.0 ? 0.25 : (md.y > 420.0 ? 0.5 : 1.0);
+          vAlpha = aAlpha * md.x * far * exp(-fz * fz);
+        }`,
+      fragmentShader: `
+        varying float vAlpha;
+        void main() {
+          if (vAlpha < 0.004) discard;
+          gl_FragColor = vec4(0.470, 0.529, 0.627, vAlpha);
+        }`,
+    });
+    const links = new THREE.LineSegments(lnGeo, lnMat);
+    links.frustumCulled = false;
+    links.renderOrder = 1;
+    scene.add(links);
+
+    // ── OBJETO 3: hebras de la retícula, en tres cáscaras φ ────────────────
+    const SUB = 14;
+    const segTotal = E4.length * SUB * SHELLS.length;
+    const stGeo = new THREE.BufferGeometry();
+    const stPos = new Float32Array(segTotal * 2 * 3);     // placeholder: no se usa
+    const stA = new Float32Array(segTotal * 2);
+    const stB = new Float32Array(segTotal * 2);
+    const stT = new Float32Array(segTotal * 2);
+    const stPhase = new Float32Array(segTotal * 2);
+    const stShell = new Float32Array(segTotal * 2);
+    const stRel = new Float32Array(segTotal * 2);
+    {
+      let o = 0;
+      for (let sh = 0; sh < SHELLS.length; sh++) {
+        for (let e = 0; e < E4.length; e++) {
+          const [a, b] = E4[e];
+          const phase = ((a * 37 + b * 91 + sh * 13) % 100) / 100;
+          for (let s = 0; s < SUB; s++) {
+            for (const t of [s / SUB, (s + 1) / SUB]) {
+              stA[o] = a; stB[o] = b; stT[o] = t; stPhase[o] = phase; stShell[o] = sh;
+              o++;
+            }
+          }
+        }
+      }
+    }
+    stGeo.setAttribute('position', new THREE.BufferAttribute(stPos, 3));
+    stGeo.setAttribute('aA', new THREE.BufferAttribute(stA, 1));
+    stGeo.setAttribute('aB', new THREE.BufferAttribute(stB, 1));
+    stGeo.setAttribute('aT', new THREE.BufferAttribute(stT, 1));
+    stGeo.setAttribute('aPhase', new THREE.BufferAttribute(stPhase, 1));
+    stGeo.setAttribute('aShell', new THREE.BufferAttribute(stShell, 1));
+    stGeo.setAttribute('aRel', new THREE.BufferAttribute(stRel, 1));
+
+    const stUniforms = {
+      uV4: { value: uV4 },
+      uShellScale: { value: new Float32Array(SHELLS) },
+      uShellAlpha: { value: new Float32Array(SHELL_ALPHA) },
+      uStrand: { value: 1 },
+      uTime: common.uTime,
+      uFog: common.uFog,
+    };
+    const stMat = new THREE.ShaderMaterial({
+      uniforms: stUniforms,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      blending: THREE.NormalBlending,
+      vertexShader: `
+        uniform vec3 uV4[16];
+        uniform float uShellScale[${SHELLS.length}];
+        uniform float uShellAlpha[${SHELLS.length}];
+        uniform float uTime, uFog, uStrand;
+        attribute float aA;
+        attribute float aB;
+        attribute float aT;
+        attribute float aPhase;
+        attribute float aShell;
+        attribute float aRel;
+        varying float vAlpha;
+        void main() {
+          int ia = int(aA + 0.5);
+          int ib = int(aB + 0.5);
+          int ish = int(aShell + 0.5);
+          vec3 p = mix(uV4[ia], uV4[ib], aT) * uShellScale[ish];
+          vec4 mv = modelViewMatrix * vec4(p, 1.0);
+          float z = max(1.0, -mv.z);
+          gl_Position = projectionMatrix * mv;
+
+          // Un pulso que recorre la hebra. Es lo que mantiene la retícula viva
+          // con dos secciones, sin subir el brillo base y volverla un wireframe.
+          float head = fract(uTime * 0.055 + aPhase);
+          float d = abs(aT - head);
+          d = min(d, 1.0 - d);
+          float pulse = exp(-d * d * 260.0);
+
+          float fz = uFog * z * 0.5;
+          vAlpha = (0.022 + 0.16 * aRel + 0.40 * pulse * aRel)
+                 * uShellAlpha[ish] * uStrand * exp(-fz * fz);
+        }`,
+      fragmentShader: `
+        varying float vAlpha;
+        void main() {
+          if (vAlpha < 0.004) discard;
+          gl_FragColor = vec4(0.478, 0.588, 0.698, vAlpha);
+        }`,
+    });
+    const strands = new THREE.LineSegments(stGeo, stMat);
+    strands.frustumCulled = false;
+    strands.renderOrder = 2;
+    scene.add(strands);
+
+    // ── OBJETO 4: polvo de campo cercano ───────────────────────────────────
+    // Sin nada en el primer plano el cuadro se lee como render. Estas motas
+    // viven cerca de la cámara, muy desenfocadas y cortadas por los bordes: es
+    // el movimiento que más rápido dice "hay algo más allá del borde".
+    const duGeo = new THREE.BufferGeometry();
+    const duPos = new Float32Array(DUST_COUNT * 3);
+    {
+      let s = 991;
+      const rnd = () => ((s = (s * 1664525 + 1013904223) % 4294967296) / 4294967296);
+      for (let i = 0; i < DUST_COUNT; i++) {
+        const r = 40 + rnd() * 200;
+        const th = rnd() * Math.PI * 2;
+        const ph = Math.acos(2 * rnd() - 1);
+        duPos[i * 3] = r * Math.sin(ph) * Math.cos(th);
+        duPos[i * 3 + 1] = r * Math.sin(ph) * Math.sin(th);
+        duPos[i * 3 + 2] = r * Math.cos(ph);
+      }
+    }
+    duGeo.setAttribute('position', new THREE.BufferAttribute(duPos, 3));
+    const duMat = new THREE.ShaderMaterial({
+      uniforms: { uDust: { value: 1 } },
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      blending: THREE.NormalBlending,
+      vertexShader: `
+        varying float vAlpha;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          float z = max(1.0, -mv.z);
+          gl_Position = projectionMatrix * mv;
+          gl_PointSize = clamp(2400.0 / z, 8.0, 56.0);
+          vAlpha = 0.016 * smoothstep(420.0, 80.0, z);
+        }`,
+      fragmentShader: `
+        uniform float uDust;
+        varying float vAlpha;
+        void main() {
+          float u = length(gl_PointCoord - 0.5) * 2.0;
+          float a = pow(max(0.0, 1.0 - u), 2.2) * vAlpha * uDust;
+          if (a < 0.002) discard;
+          gl_FragColor = vec4(0.62, 0.74, 0.86, a);
+        }`,
+    });
+    const dust = new THREE.Points(duGeo, duMat);
+    dust.frustumCulled = false;
+    dust.renderOrder = 3;
+    scene.add(dust);
+    const dustAnchor = new THREE.Vector3(1e9, 0, 0);
+
+    // ── Asignación de sitios ───────────────────────────────────────────────
+    const siteOfSection = new Map();
+    names.forEach((nm, i) => siteOfSection.set(nm, SITE_ORDER[i % 16]));
+    const sectionOfSite = new Map();
+    siteOfSection.forEach((si, nm) => sectionOfSite.set(si, nm));
+    const occupied = new Set(siteOfSection.values());
+
+    // Relevancia de cada arista: brilla si conecta dos sitios ocupados, se apaga
+    // —pero no desaparece— si no. La retícula existe siempre; lo que cambia es
+    // cuánta luz corre por ella. Con dos secciones antipodales se ilumina la
+    // geodésica que las une, en vez de dejar el andamio muerto.
+    {
+      const occ = [...occupied];
+      let o = 0;
+      for (let sh = 0; sh < SHELLS.length; sh++) {
+        for (let e = 0; e < E4.length; e++) {
+          const [a, b] = E4[e];
+          const both = occupied.has(a) && occupied.has(b);
+          const one = occupied.has(a) || occupied.has(b);
+          let geo = false;
+          if (!both && occ.length > 1) {
+            for (let x = 0; x < occ.length && !geo; x++) {
+              for (let y = 0; y < occ.length && !geo; y++) {
+                if (x === y) continue;
+                if (popcount(occ[x] ^ a) + 1 + popcount(b ^ occ[y]) === popcount(occ[x] ^ occ[y])) geo = true;
+              }
+            }
+          }
+          const rel = both ? 1.0 : geo ? 0.55 : one ? 0.30 : 0.055;
+          for (let s = 0; s < SUB * 2; s++) stRel[o++] = rel;
+        }
+      }
+      stGeo.getAttribute('aRel').needsUpdate = true;
+    }
+
+    const siteData = new Array(MAX_SITES).fill(null);
+    const sitePos = Array.from({ length: MAX_SITES }, () => new THREE.Vector3());
+    const siteScale4D = new Float32Array(MAX_SITES).fill(1);
+    const siteRadius = new Float32Array(MAX_SITES).fill(55);
+    const siteToG3D = new Float32Array(MAX_SITES).fill(1);
+    let ptUsed = 0;
+    let lnUsed = 0;
+
+    // Chispa de junta en cada vértice desocupado: la retícula tiene esquinas
+    // sin que exista ninguna caja.
+    const sparkOf = new Int32Array(MAX_SITES).fill(-1);
+    {
+      const c = hexToRgb(aclarar(NO_GROUP_COLOR, 0.14));
+      for (let v = 0; v < 16; v++) {
+        ptCol[ptUsed * 3] = c[0]; ptCol[ptUsed * 3 + 1] = c[1]; ptCol[ptUsed * 3 + 2] = c[2];
+        ptSite[ptUsed] = v;
+        ptSize[ptUsed] = occupied.has(v) ? 0.0 : 0.32;
+        sparkOf[v] = ptUsed;
+        ptUsed++;
+      }
+    }
+    const pushPoints = () => {
+      ptGeo.setDrawRange(0, ptUsed);
+      ['position', 'aColor', 'aSite', 'aSize'].forEach((a) => { ptGeo.getAttribute(a).needsUpdate = true; });
+    };
+    pushPoints();
+
+    /* Carga progresiva. La retícula aparece en el primer frame y cada nube se
+       materializa cuando llega su fetch: el usuario nunca mira una pantalla en
+       blanco, que era la otra mitad de "es re lento". */
+    const ingest = (name, json) => {
+      if (!alive) return;
+      const si = siteOfSection.get(name);
+      if (si === undefined) return;
+      const g = sampleGraph(json);
+      setReady((r) => r + 1);
+      if (!g.nodes.length) { siteData[si] = g; return; }
+
+      const lay = layoutCloud(g);
+      const idxOf = new Map();
+      const kindOf = new Map();
+
+      for (let i = 0; i < g.nodes.length && ptUsed < MAX_PTS; i++) {
+        const nd = g.nodes[i];
+        const p = lay.pos[i];
+        const col = hexToRgb(aclarar(nodeDotColor(nd), 0.14));
+        // Canal de centralidad de Graph3D: (deg/maxDeg)^0.7.
+        const dn = g.maxDeg > 0 ? Math.pow((g.deg.get(nd.id) || 0) / g.maxDeg, 0.7) : 0;
+        ptPos[ptUsed * 3] = p[0]; ptPos[ptUsed * 3 + 1] = p[1]; ptPos[ptUsed * 3 + 2] = p[2];
+        ptCol[ptUsed * 3] = col[0]; ptCol[ptUsed * 3 + 1] = col[1]; ptCol[ptUsed * 3 + 2] = col[2];
+        ptSite[ptUsed] = si;
+        ptSize[ptUsed] = dn;
+        idxOf.set(nd.id, ptUsed);
+        kindOf.set(nd.id, groupKey(nd));
+        ptUsed++;
+      }
+
+      for (const l of g.links) {
+        if (lnUsed >= MAX_SEGS) break;
+        const a = idxOf.get(l.source);
+        const b = idxOf.get(l.target);
+        if (a === undefined || b === undefined) continue;
+        // Alfa exacta de Graph3D: mismo grupo 0.28, grupos distintos 0.18.
+        const ka = kindOf.get(l.source);
+        const al = ka && ka === kindOf.get(l.target) ? 0.28 : 0.18;
+        [a, b].forEach((src, j) => {
+          const o = lnUsed * 2 + j;
+          lnPos[o * 3] = ptPos[src * 3];
+          lnPos[o * 3 + 1] = ptPos[src * 3 + 1];
+          lnPos[o * 3 + 2] = ptPos[src * 3 + 2];
+          lnSite[o] = si;
+          lnAlpha[o] = al;
+        });
+        lnUsed++;
+      }
+
+      siteData[si] = g;
+      siteRadius[si] = lay.R;
+      siteToG3D[si] = lay.toGraph3D;
+      if (sparkOf[si] >= 0) ptSize[sparkOf[si]] = 0;
+
+      pushPoints();
+      lnGeo.setDrawRange(0, lnUsed * 2);
+      ['position', 'aSite', 'aAlpha'].forEach((a) => { lnGeo.getAttribute(a).needsUpdate = true; });
+    };
+
+    (async () => {
+      // Concurrencia 2: el payload de /api/graph incluye embeddings y viene
+      // pesado. De a dos, el hilo principal respira entre JSON.parse en vez de
+      // congelarse con todas a la vez.
+      const queue = [...names];
+      const worker = async () => {
+        while (queue.length && alive) {
+          const nm = queue.shift();
+          try {
+            const r = await fetch(`/api/graph?seccion=${encodeURIComponent(nm)}`);
+            ingest(nm, await r.json());
+          } catch {
+            ingest(nm, { nodos: [], relaciones: [] });
+          }
+        }
+      };
+      await Promise.all([worker(), worker()]);
+    })();
+
+    // ── Cámara: arranca DENTRO de la retícula ──────────────────────────────
+    camera.position.set(140, 110, 400);
+    controls.target.set(0, 0, 0);
+
+    // ── Estado de navegación ───────────────────────────────────────────────
+    let theta = 0;
+    let thetaAuto = true;
+    let lastThetaInput = -1e9;
+    let lastZoomIn = -1e9;
+    let dragging = false;
+    let candIdx = -1;
+    let wRamp = 0;
+    let prevDist = Infinity;
+    let committed = false;
+    const qp = new Float32Array(4);
+    const qt = new Float32Array(4);
+    const rotq = new Float32Array(4);
+    const qout = new Float32Array(4);
+    const tmp = new THREE.Vector3();
+
+    const camAnim = {
+      on: false, start: 0, dur: 900,
       fromP: new THREE.Vector3(), toP: new THREE.Vector3(),
       fromT: new THREE.Vector3(), toT: new THREE.Vector3(),
     };
-    const flyTo = (toPos, toTarget, durMs = 1000) => {
-      anim.fromP.copy(camera.position);
-      anim.fromT.copy(controls.target);
-      anim.toP.copy(toPos);
-      anim.toT.copy(toTarget);
-      anim.start = performance.now();
-      anim.dur = durMs;
-      anim.on = true;
+    const flyTo = (p, t, dur = 900) => {
+      camAnim.fromP.copy(camera.position); camAnim.fromT.copy(controls.target);
+      camAnim.toP.copy(p); camAnim.toT.copy(t);
+      camAnim.start = performance.now(); camAnim.dur = dur; camAnim.on = true;
+    };
+    const goToSite = (si) => {
+      if (si === undefined || si < 0) return;
+      const dir = tmp.copy(camera.position).sub(controls.target);
+      if (dir.lengthSq() < 1e-6) dir.set(0.4, 0.3, 1);
+      dir.normalize();
+      flyTo(sitePos[si].clone().addScaledVector(dir, siteRadius[si] * 5.5), sitePos[si].clone(), 1000);
     };
 
-    const setHeroIndex = (idx) => {
-      heroIndex = ((idx % n) + n) % n;
-      setHero(names[heroIndex]);
-      flyTo(heroCamPos(heroIndex), positions[heroIndex], 1150);
-    };
-
-    // ── Entrar: atravesar el vidrio y quedar dentro del grafo ───────────────
-    const dive = { on: false, start: 0, dur: 1300, cell: null, name: null };
-    const enterCell = (idx) => {
-      if (dive.on) return;
-      dive.on = true;
-      dive.start = performance.now();
-      dive.cell = cells[idx];
-      dive.name = names[idx];
-      controls.enabled = false;
-      anim.on = false;
-      setEntering(true);
-    };
-
-    // ── Picking ─────────────────────────────────────────────────────────────
-    const raycaster = new THREE.Raycaster();
-    const ndc = new THREE.Vector2();
-    const pickAt = (clientX, clientY) => {
-      const rect = renderer.domElement.getBoundingClientRect();
-      ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-      ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(ndc, camera);
-      const hits = raycaster.intersectObjects(picks, false);
-      return hits.length ? hits[0].object.userData.sectionName : null;
-    };
-
-    let down = null;
-    const onPointerDown = (e) => { down = { x: e.clientX, y: e.clientY }; };
-    const onPointerUp = (e) => {
-      if (!down || dive.on) return;
-      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
-      down = null;
-      if (moved > 5) return;                     // fue un drag de órbita
-      const name = pickAt(e.clientX, e.clientY);
-      if (!name) return;
-      const idx = names.indexOf(name);
-      // Click en el bloque del frente = entrar. Click en otro = traerlo al frente.
-      if (idx === heroIndex) enterCell(idx);
-      else setHeroIndex(idx);
-    };
-    const onPointerMove = (e) => {
-      if (dive.on) return;
-      renderer.domElement.style.cursor = pickAt(e.clientX, e.clientY) ? 'pointer' : 'grab';
-    };
-
-    const el = renderer.domElement;
-    el.addEventListener('pointerdown', onPointerDown);
-    el.addEventListener('pointerup', onPointerUp);
-    el.addEventListener('pointermove', onPointerMove);
-
-    apiRef.current = {
-      prev: () => setHeroIndex(heroIndex - 1),
-      next: () => setHeroIndex(heroIndex + 1),
-      enter: () => enterCell(heroIndex),
-    };
-
-    // ── Labels ──────────────────────────────────────────────────────────────
-    const projected = new THREE.Vector3();
-    const updateLabels = () => {
-      const rect = container.getBoundingClientRect();
-      cells.forEach((cell, i) => {
-        const node = labelRefs.current[cell.userData.sectionName];
-        if (!node) return;
-        if (dive.on) { node.style.opacity = '0'; return; }
-        projected.copy(cell.position);
-        projected.y += CUBE * 0.72;
-        projected.project(camera);
-        if (projected.z >= 1) { node.style.opacity = '0'; return; }
-        const x = (projected.x * 0.5 + 0.5) * rect.width;
-        const y = (-projected.y * 0.5 + 0.5) * rect.height;
-        node.style.transform = `translate(-50%, -100%) translate(${x}px, ${y}px)`;
-        // Los bloques fuera de foco se apagan con el bokeh: el texto también.
-        const isHero = i === heroIndex;
-        node.style.opacity = isHero ? '1' : '0.3';
-        node.style.filter = isHero ? 'none' : 'blur(1.6px)';
-      });
-    };
-
-    // ── Loop ────────────────────────────────────────────────────────────────
-    const clock = new THREE.Clock();
+    // ── Loop ───────────────────────────────────────────────────────────────
+    const t0 = performance.now();
     let raf = 0;
+    let lastUi = 0;
+
+    let framed = false;
     const tick = () => {
       raf = requestAnimationFrame(tick);
-      frameId++;
       const now = performance.now();
-      const dt = Math.min(clock.getDelta(), 0.05);
+      const time = (now - t0) / 1000;
 
-      if (dive.on) {
-        const p = Math.min(1, (now - dive.start) / dive.dur);
-        const k = easeIn(p);
-        const center = dive.cell.position;
+      // 1) Rotación isoclínica: 16 productos de cuaternión, una vez por frame.
+      if (thetaAuto && now - lastThetaInput > 3000) theta += 0.075 / 60;
+      const ct = Math.cos(theta);
+      const st = Math.sin(theta);
+      qt[0] = ct; qt[1] = st * U_HAT; qt[2] = st * U_HAT; qt[3] = st * U_HAT;
+      qmul(Q0, qt, rotq);
 
-        // La cámara cae al centro del bloque y lo atraviesa.
-        camera.position.lerp(center, 1 - Math.pow(1 - k, 1.7));
-        controls.target.copy(center);
-        camera.lookAt(center);
-
-        // El vidrio se desvanece y el tallado crece hasta envolver a la cámara:
-        // la sensación es de entrar, no de cambiar de pantalla.
-        const gm = dive.cell.userData.glassMat;
-        gm.transparent = true;
-        gm.opacity = 1 - k;
-        dive.cell.userData.etched.scale.setScalar(1 + 9 * k);
-
-        if (veilRef.current) {
-          veilRef.current.style.opacity = String(
-            THREE.MathUtils.clamp((p - 0.62) / 0.38, 0, 1),
-          );
-        }
-        if (p >= 1) {
-          dive.on = false;
-          selectRef.current?.(dive.name);
-        }
-      } else {
-        controls.update();
-        if (anim.on) {
-          const p = Math.min(1, (now - anim.start) / anim.dur);
-          const k = easeInOut(p);
-          camera.position.lerpVectors(anim.fromP, anim.toP, k);
-          controls.target.lerpVectors(anim.fromT, anim.toT, k);
-          camera.lookAt(controls.target);
-          if (p >= 1) anim.on = false;
-        }
-        cells.forEach((c) => { c.rotation.y += dt * 0.055; });
-        // El foco persigue al héroe: es lo que mantiene la foto viva al orbitar.
-        const d = camera.position.distanceTo(positions[heroIndex]);
-        bokeh.uniforms.focus.value += (d - bokeh.uniforms.focus.value) * Math.min(1, dt * 5);
+      for (let v = 0; v < 16; v++) {
+        const p = V4[v];
+        qp[0] = p[0]; qp[1] = p[1]; qp[2] = p[2]; qp[3] = p[3];
+        qmul(rotq, qp, qout);
+        // Proyección central 4D→3D desde w = D. Al ser proyectiva las rectas van
+        // a rectas: las aristas del 4-cubo siguen siendo segmentos, no curvas.
+        const s = D4 / (D4 - qout[3]);
+        uV4[v * 3] = K4 * s * qout[0];
+        uV4[v * 3 + 1] = K4 * s * qout[1];
+        uV4[v * 3 + 2] = K4 * s * qout[2];
+        sitePos[v].set(uV4[v * 3], uV4[v * 3 + 1], uV4[v * 3 + 2]);
+        // Exponente 0.85: la nube se infla al venir hacia vos por la cuarta
+        // dimensión, pero conserva estructura interna legible en vez de
+        // aplastarse cuando se va al fondo.
+        siteScale4D[v] = Math.pow(s, 0.85);
       }
 
-      updateLabels();
+      // Encuadre inicial: la sección activa al frente. Se hace en el primer
+      // frame porque las posiciones dependen de la rotación 4D.
+      if (!framed) {
+        framed = true;
+        const hs = siteOfSection.get(currentSection);
+        if (hs !== undefined) {
+          controls.target.copy(sitePos[hs]);
+          camera.position.copy(sitePos[hs]).add(new THREE.Vector3(180, 130, 330));
+        }
+      }
+
+      // 2) Candidato: el más cercano, penalizado por estar fuera del centro.
+      let best = -1;
+      let bestScore = Infinity;
+      for (let v = 0; v < 16; v++) {
+        if (!sectionOfSite.has(v)) continue;
+        const d = camera.position.distanceTo(sitePos[v]);
+        tmp.copy(sitePos[v]).project(camera);
+        const score = d * (1 + 3 * Math.hypot(tmp.x, tmp.y));
+        if (score < bestScore) { bestScore = score; best = v; }
+      }
+      let dCand = Infinity;
+      if (best >= 0) {
+        dCand = camera.position.distanceTo(sitePos[best]);
+        const R = siteRadius[best];
+        if (best !== candIdx) { candIdx = best; wRamp = 0; }
+        const target = smoothstep(ENTER_FAR * R, ENTER_NEAR * R, dCand);
+        // Histéresis: pasado el radio de rebobinado la rampa vuelve a cero, así
+        // que orbitar cerca no deja la interfaz a medio camino de entrar.
+        wRamp += ((dCand > ENTER_REWIND * R ? 0 : target) - wRamp) * 0.12;
+      }
+
+      // 3) Uniformes por sitio.
+      for (let v = 0; v < 16; v++) {
+        const isCand = v === candIdx;
+        const morph = isCand ? wRamp : 0;
+        // Al aproximarse, la nube candidata deja de ser arrastrada por la
+        // rotación 4D y su escala interna converge al ×30 exacto de Graph3D: en
+        // w = 1 la nube ya ES el layout de destino, así que no hay salto.
+        const scale = siteScale4D[v] * (1 - morph) + morph * siteToG3D[v];
+        uSite[v * 4] = sitePos[v].x;
+        uSite[v * 4 + 1] = sitePos[v].y;
+        uSite[v * 4 + 2] = sitePos[v].z;
+        uSite[v * 4 + 3] = scale;
+        uSiteMod[v * 4] = isCand ? 1 : 1 - 0.85 * wRamp;
+        uSiteMod[v * 4 + 1] = camera.position.distanceTo(sitePos[v]);
+      }
+
+      // 4) El andamio se retira mientras entrás y la niebla se abre: el último
+      //    frame del Multiverso tiene que ser ya el primero del grafo.
+      stUniforms.uStrand.value = 1 - wRamp;
+      duMat.uniforms.uDust.value = 1 - wRamp;
+      common.uFog.value = 0.00115 * (1 - wRamp);
+      common.uFocus.value += ((best >= 0 ? dCand : 500) - common.uFocus.value) * 0.08;
+      common.uCocK.value = 1.4 * (1 - 0.85 * wRamp);
+      common.uTime.value = time;
+
+      // 5) Cámara. Sin esto, acercarse con la rueda te lleva al centro del
+      //    anillo y nunca llegás a ninguna nube: el centro de órbita migra
+      //    hacia la dimensión candidata a medida que te acercás, así que
+      //    seguir acercándote te mete adentro. Es la "gravedad" de la
+      //    dimensión, y es lo que hace que el ingreso sea continuo en vez de
+      //    un botón disfrazado.
+      if (candIdx >= 0 && !camAnim.on) {
+        const R = siteRadius[candIdx];
+        const pull = smoothstep(ENTER_FAR * R * 1.5, ENTER_NEAR * R, dCand);
+        if (pull > 0.001) controls.target.lerp(sitePos[candIdx], pull * 0.07);
+      }
+      if (camAnim.on) {
+        const p = Math.min(1, (now - camAnim.start) / camAnim.dur);
+        camera.position.lerpVectors(camAnim.fromP, camAnim.toP, easeInOut(p));
+        controls.target.lerpVectors(camAnim.fromT, camAnim.toT, easeInOut(p));
+        if (p >= 1) camAnim.on = false;
+      }
+      controls.update();
+
+      // El polvo se re-ancla cuando la cámara se aleja: siempre hay primer
+      // plano, pero dentro de un movimiento hay paralaje real.
+      if (camera.position.distanceTo(dustAnchor) > 240) {
+        dustAnchor.copy(camera.position);
+        dust.position.copy(dustAnchor);
+      }
+
+      // 6) Commit. Cuatro condiciones: estás dentro de la nube, te seguís
+      //    acercando, la rampa está llena, y hubo un gesto de zoom-in reciente.
+      //    Sin la última, orbitar cerca te chupa adentro por accidente.
+      if (!committed && candIdx >= 0 && siteData[candIdx]) {
+        const R = siteRadius[candIdx];
+        const closing = dCand < prevDist - 0.01;
+        const intent = now - lastZoomIn < ZOOM_INTENT_MS;
+        if (dCand <= ENTER_NEAR * R && closing && wRamp >= 0.92 && intent && !dragging) {
+          committed = true;
+          setEntering(true);
+          const nm = sectionOfSite.get(candIdx);
+          if (veilRef.current) veilRef.current.style.opacity = '1';
+          window.setTimeout(() => { if (alive) selectRef.current?.(nm); }, 260);
+        }
+      }
+      prevDist = dCand;
+
+      // 7) Etiquetas a ~20 Hz: no hace falta tocar el DOM en cada frame.
+      if (now - lastUi > 50) {
+        lastUi = now;
+        const rect = container.getBoundingClientRect();
+        siteOfSection.forEach((si, nm) => {
+          const el = labelRefs.current[nm];
+          if (!el) return;
+          tmp.copy(sitePos[si]);
+          tmp.y += siteRadius[si] * 1.2;
+          tmp.project(camera);
+          if (tmp.z >= 1) { el.style.opacity = '0'; return; }
+          const x = (tmp.x * 0.5 + 0.5) * rect.width;
+          const y = (-tmp.y * 0.5 + 0.5) * rect.height;
+          el.style.transform = `translate(-50%,-100%) translate(${x}px,${y}px)`;
+          el.style.opacity = String(si === candIdx ? 1 : 0.34 * (1 - wRamp));
+        });
+        setCandidate(candIdx >= 0 ? (sectionOfSite.get(candIdx) ?? null) : null);
+        setApproach(wRamp);
+      }
+
       composer.render();
     };
     tick();
 
-    // ── Resize ──────────────────────────────────────────────────────────────
+    // ── Entrada ────────────────────────────────────────────────────────────
+    const el = renderer.domElement;
+    const onWheel = (e) => { if (e.deltaY < 0) lastZoomIn = performance.now(); };
+    const onDown = () => { dragging = true; };
+    const onUp = () => { dragging = false; };
+    const onTouch = (e) => { if (e.touches && e.touches.length === 2) lastZoomIn = performance.now(); };
+    el.addEventListener('wheel', onWheel, { passive: true });
+    el.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointerup', onUp);
+    el.addEventListener('touchmove', onTouch, { passive: true });
+
+    // Shift + arrastre horizontal = manejar la cuarta dimensión a mano.
+    let shiftX = null;
+    const onMove = (e) => {
+      if (e.shiftKey && e.buttons === 1) {
+        if (shiftX !== null) {
+          theta += (e.clientX - shiftX) * 0.004;
+          lastThetaInput = performance.now();
+        }
+        shiftX = e.clientX;
+        controls.enabled = false;
+      } else if (shiftX !== null) {
+        shiftX = null;
+        controls.enabled = true;
+      }
+    };
+    el.addEventListener('pointermove', onMove);
+
+    const occList = () => [...siteOfSection.values()];
+    const step = (d) => {
+      const occ = occList();
+      if (!occ.length) return;
+      const cur = occ.indexOf(candIdx);
+      goToSite(occ[((cur + d) % occ.length + occ.length) % occ.length]);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { closeRef.current?.(); }
+      else if (e.key === '[') { theta -= 0.06; lastThetaInput = performance.now(); }
+      else if (e.key === ']') { theta += 0.06; lastThetaInput = performance.now(); }
+      else if (e.key === ' ') { thetaAuto = !thetaAuto; e.preventDefault(); }
+      else if (e.key === 'ArrowRight') step(1);
+      else if (e.key === 'ArrowLeft') step(-1);
+    };
+    window.addEventListener('keydown', onKey);
+
+    apiRef.current = { next: () => step(1), prev: () => step(-1) };
+
+    // ── Resize ─────────────────────────────────────────────────────────────
     const onResize = () => {
       w = container.clientWidth || 1;
       h = container.clientHeight || 1;
@@ -780,125 +990,90 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
       composer.setSize(w, h);
-      bokeh.uniforms.aspect.value = camera.aspect;
-      lineMats.forEach((m) => m.resolution.set(w, h));
+      bloom.setSize(Math.max(2, Math.round(w / 2)), Math.max(2, Math.round(h / 2)));
+      common.uH.value = h;
     };
     window.addEventListener('resize', onResize);
     onResize();
 
-    const onKey = (e) => {
-      if (dive.on) return;
-      if (e.key === 'Escape') closeRef.current?.();
-      else if (e.key === 'Enter') enterCell(heroIndex);
-      else if (e.key === 'ArrowLeft') setHeroIndex(heroIndex - 1);
-      else if (e.key === 'ArrowRight') setHeroIndex(heroIndex + 1);
-    };
-    window.addEventListener('keydown', onKey);
-
-    // ── Cleanup ─────────────────────────────────────────────────────────────
     return () => {
+      alive = false;
       cancelAnimationFrame(raf);
       window.removeEventListener('resize', onResize);
       window.removeEventListener('keydown', onKey);
-      el.removeEventListener('pointerdown', onPointerDown);
-      el.removeEventListener('pointerup', onPointerUp);
-      el.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onUp);
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('touchmove', onTouch);
       apiRef.current = null;
-
       controls.dispose();
-      scene.traverse((o) => {
-        if (o.isLineSegments2 && o.geometry) o.geometry.dispose();
-      });
-      lineMats.forEach((m) => m.dispose());
-      disposables.forEach((d) => d.dispose());
-      bokehLights.traverse((o) => { if (o.isSprite) o.material.dispose(); });
-      bokehLights.userData.texture.dispose();
-      floor.dispose?.();
-      floor.geometry.dispose();
-      floor.material.dispose();
-      backdrop.geometry.dispose();
-      backdrop.material.dispose();
-      envRT.dispose();
+      [ptGeo, lnGeo, stGeo, duGeo].forEach((g) => g.dispose());
+      [ptMat, lnMat, stMat, duMat].forEach((m) => m.dispose());
       composer.dispose();
       renderer.dispose();
       if (el.parentNode === container) container.removeChild(el);
     };
-  }, [graphs, names, currentSection]);
+  }, [names, currentSection]);
 
-  const heroGraph = hero ? graphs?.[hero] : null;
+  const meta = sections.find((s) => s.nombre === candidate);
+  const pct = Math.round(approach * 100);
 
   return (
-    <div className="mv-tesseract">
-      <header className="mv-tesseract-header">
-        <div className="mv-tesseract-title">
-          <span className="mv-tesseract-icon">◈</span>
+    <div className="mv-field">
+      <header className="mv-field-header">
+        <div className="mv-field-title">
+          <span className="mv-field-icon">◈</span>
           <span>Multiverso</span>
-          <span className="mv-tesseract-count">
+          <span className="mv-field-count">
             {sections.length} {sections.length === 1 ? 'dimensión' : 'dimensiones'}
           </span>
         </div>
-        <button className="mv-tesseract-close" onClick={onClose} title="Cerrar (Esc)">✕</button>
+        <button className="mv-field-close" onClick={onClose} title="Cerrar (Esc)">✕</button>
       </header>
 
-      <div className="mv-tesseract-scene" ref={containerRef}>
-        {!graphs && (
-          <div className="mv-tesseract-loading">
-            <div className="mv-tesseract-spinner" />
-            <span>Tallando el multiverso…</span>
-          </div>
-        )}
-
-        {graphs && sections.map((s) => (
+      <div className="mv-field-scene" ref={containerRef}>
+        {sections.map((s) => (
           <div
             key={s.nombre}
             ref={(node) => { labelRefs.current[s.nombre] = node; }}
             className={
-              'mv-tesseract-label'
-              + (s.nombre === currentSection ? ' mv-tesseract-label--current' : '')
+              'mv-field-label'
+              + (s.nombre === currentSection ? ' mv-field-label--current' : '')
+              + (s.nombre === candidate ? ' mv-field-label--cand' : '')
             }
           >
-            <span className="mv-tesseract-label-name">{s.nombre}</span>
+            <span className="mv-field-label-name">{s.nombre}</span>
           </div>
         ))}
 
-        {graphs && sections.length > 1 && !entering && (
-          <>
-            <button
-              className="mv-nav mv-nav--prev"
-              onClick={() => apiRef.current?.prev()}
-              title="Dimensión anterior (←)"
-            >‹</button>
-            <button
-              className="mv-nav mv-nav--next"
-              onClick={() => apiRef.current?.next()}
-              title="Dimensión siguiente (→)"
-            >›</button>
-          </>
-        )}
-
-        {graphs && hero && !entering && (
-          <div className="mv-hero">
-            <div className="mv-hero-meta">
-              {heroGraph
-                ? `${heroGraph.total} nodos · ${heroGraph.totalLinks} relaciones`
-                : 'sin datos'}
-              {hero === currentSection ? ' · sección activa' : ''}
-            </div>
-            <button className="mv-hero-enter" onClick={() => apiRef.current?.enter()}>
-              Entrar a {hero} →
-            </button>
+        {ready < sections.length && (
+          <div className="mv-field-loading">
+            Materializando dimensiones · {ready}/{sections.length}
           </div>
         )}
 
-        {/* Velo del clavado: tapa el corte contra la vista de grafo real */}
+        {candidate && approach > 0.10 && !entering && (
+          <div className="mv-field-approach">
+            <div className="mv-field-approach-bar">
+              <div className="mv-field-approach-fill" style={{ width: `${pct}%` }} />
+            </div>
+            <div className="mv-field-approach-text">
+              {approach > 0.9 ? 'entrando a ' : 'seguí acercándote a '}
+              <strong>{candidate}</strong>
+              {meta ? ` · ${meta.count} nodos` : ''}
+            </div>
+          </div>
+        )}
+
         <div className="mv-veil" ref={veilRef} />
       </div>
 
-      <footer className="mv-tesseract-footer">
+      <footer className="mv-field-footer">
         <span>
           {entering
             ? 'Entrando…'
-            : 'Arrastrá para orbitar · ← → para cambiar de dimensión · click en el bloque del frente para entrar'}
+            : 'Arrastrá para orbitar · rueda para acercarte y entrar · ← → saltar de dimensión · [ ] girar la 4ª'}
         </span>
       </footer>
     </div>

@@ -3,7 +3,7 @@ import ForceGraph3D from 'react-force-graph-3d';
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { clusterColor, CLUSTER_PALETTE } from '../App.jsx';
+import { clusterColor, CLUSTER_PALETTE, aclarar, groupKey, groupColor, nodeDotColor, ISSUE_COLOR } from '../nodeColor.js';
 
 /* ── PERF: throttle genérico para reducir recálculos en eventos de alta frecuencia ── */
 function throttle(fn, ms) {
@@ -22,7 +22,7 @@ const NODE = {
   border:  'rgba(130,180,220,0.45)', // borde más visible
   label:   'rgba(230,242,255,0.95)',  // texto de etiqueta más brillante
   line:    '100,210,255',             // conexiones: cian más vibrante
-  issue:   '#FFBA55',                // ámbar: reservado para lo excepcional
+  issue:   ISSUE_COLOR,              // ámbar: reservado para lo excepcional
   sel:     '#FFFFFF',                // retícula de selección
   glow:    'rgba(90,200,250,0.15)',  // glow sutil para hover (sin bloom)
 };
@@ -37,14 +37,8 @@ let _linkColorCacheKey = '';
    dominaran la pantalla y los nodos desaparecieran. Aclarar solo el nodo mantiene
    la paleta oscura del conjunto y devuelve al nodo la jerarquia que le corresponde:
    el documento es la entidad, la arista es la relacion. */
-function aclarar(hex, k = 0.14) {
-  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
-  if (!m) return hex;
-  const n = parseInt(m[1], 16);
-  const mez = c => Math.round(c + (255 - c) * k);
-  const r = mez((n >> 16) & 255), g = mez((n >> 8) & 255), b = mez(n & 255);
-  return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
-}
+// aclarar() vive ahora en ../nodeColor.js: el Multiverso pinta los mismos
+// nodos y las dos vistas tienen que calcular el color igual.
 
 /* La ARISTA se pinta mas oscura que el nodo, con el mismo matiz. Al subir el
    brillo de la paleta, las aristas heredaron ese brillo — y son un orden de
@@ -390,29 +384,7 @@ function setNodeLOD(ud, far, isHovered = false) {
 // Clave de agrupamiento del grafo: el TEMA (taxonomía asignada por LLM) manda; si un
 // nodo no tiene tema, cae al cluster HDBSCAN; si tampoco, queda sin grupo (gris neutro).
 // Así el "grupo" (color/etiqueta/empaquetado) refleja la taxonomía, no la densidad.
-function groupKey(node) {
-  const t = node.tema;
-  if (t && t !== 'Sin clasificar') return 't:' + t;
-  if (node.cluster != null && node.cluster >= 0) return 'c:' + node.cluster;
-  return null;
-}
-
-function groupColor(key) {
-  if (key == null) return '#565A78';              // sin grupo → gris frío: retrocede
-  if (key.startsWith('c:')) return clusterColor(parseInt(key.slice(2), 10));
-  let h = 0;                                       // tema (string) → color estable
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
-  return CLUSTER_PALETTE[h % CLUSTER_PALETTE.length];
-}
-
-function nodeDotColor(node) {
-  if (node.is_issue) return NODE.issue;
-  // El HUB se sobreexpone a blanco. Es lo que produce los nucleos brillantes de las
-  // referencias: no es un color mas de la paleta, es luz saturada en el centro de la
-  // estrella. El color del tema lo siguen aportando los fragmentos que lo rodean.
-  if (node.is_hub) return '#FFFFFF';
-  return groupColor(groupKey(node));
-}
+// groupKey/groupColor/nodeDotColor viven ahora en ../nodeColor.js.
 
 // Un fragmento es un punto y nada mas: sin tarjeta, sin etiqueta, sin halo.
 // Con 4.397 fragmentos, cinco sprites por nodo serian 22.000 objetos y el

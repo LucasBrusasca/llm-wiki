@@ -4997,11 +4997,13 @@ body::before {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   MULTIVERSO TESSERACT — Cubos 3D de Vidrio con Grafos Visibles
-   Estructura de hipercubo/tesseract interactivo con navegación orbital.
+   MULTIVERSO — campo profundo isoclínico
+   Nubes de nodos reales colgando de una retícula de hipercubo. La escena es
+   WebGL entero; acá sólo vive el cromo: header, etiquetas, barra de
+   aproximación y el velo del corte hacia el grafo.
    ══════════════════════════════════════════════════════════════════════════ */
 
-.mv-tesseract {
+.mv-field {
   position: fixed;
   inset: 0;
   z-index: 200;
@@ -5010,270 +5012,202 @@ body::before {
   background: #030508;
 }
 
-/* ═══ TESSERACT HEADER ═══ */
-.mv-tesseract-header {
+.mv-field-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 14px 24px;
-  background: linear-gradient(180deg, rgba(3,5,8,0.98) 0%, rgba(3,5,8,0.9) 100%);
-  border-bottom: 1px solid rgba(0, 212, 255, 0.1);
+  /* Degradé, no barra sólida: el campo tiene que seguir por detrás del cromo
+     en vez de quedar recortado por una franja opaca. */
+  background: linear-gradient(180deg, rgba(3,5,8,0.92) 0%, rgba(3,5,8,0) 100%);
   z-index: 10;
 }
 
-.mv-tesseract-title {
+.mv-field-title {
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 17px;
+  font-weight: 600;
   color: var(--text);
   letter-spacing: 1px;
 }
 
-.mv-tesseract-icon {
-  font-size: 22px;
-  color: #00D4FF;
-  filter: drop-shadow(0 0 12px rgba(0, 212, 255, 0.6));
-  animation: tesseractPulse 3s ease-in-out infinite;
+.mv-field-icon {
+  font-size: 20px;
+  color: #7FD8F5;
+  filter: drop-shadow(0 0 10px rgba(90, 200, 250, 0.45));
 }
 
-@keyframes tesseractPulse {
-  0%, 100% { filter: drop-shadow(0 0 12px rgba(0, 212, 255, 0.6)); transform: rotate(0deg); }
-  50% { filter: drop-shadow(0 0 20px rgba(0, 212, 255, 0.9)); transform: rotate(180deg); }
-}
-
-.mv-tesseract-count {
-  font-size: 12px;
+.mv-field-count {
+  font-size: 11px;
   font-weight: 400;
   color: var(--text-dim);
-  padding: 4px 12px;
-  background: rgba(0, 212, 255, 0.1);
-  border: 1px solid rgba(0, 212, 255, 0.2);
+  padding: 3px 11px;
+  border: 1px solid rgba(120, 200, 235, 0.16);
   border-radius: 10px;
 }
 
-.mv-tesseract-close {
-  width: 36px;
-  height: 36px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+.mv-field-close {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.02);
   color: var(--text-mid);
-  font-size: 16px;
+  font-size: 15px;
   cursor: pointer;
   transition: all 0.2s;
   display: grid;
   place-items: center;
 }
 
-.mv-tesseract-close:hover {
+.mv-field-close:hover {
   background: rgba(255, 80, 100, 0.12);
-  border-color: rgba(255, 80, 100, 0.35);
+  border-color: rgba(255, 80, 100, 0.3);
   color: #FF6B6B;
 }
 
-/* ═══ TESSERACT 3D SCENE ═══ */
-.mv-tesseract-scene {
+.mv-field-scene {
   flex: 1;
   position: relative;
   overflow: hidden;
   cursor: grab;
+  /* El header y el footer flotan encima del canvas, no le roban alto. */
+  margin-top: -62px;
+  margin-bottom: -46px;
 }
 
-.mv-tesseract-scene:active {
-  cursor: grabbing;
-}
+.mv-field-scene:active { cursor: grabbing; }
 
-.mv-tesseract-scene canvas {
+.mv-field-scene canvas {
   display: block;
   width: 100% !important;
   height: 100% !important;
 }
 
-.mv-tesseract-loading {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  color: var(--text-dim);
-  background: rgba(0, 0, 0, 0.98);
-  z-index: 5;
-}
-
-.mv-tesseract-spinner {
-  width: 48px;
-  height: 48px;
-  border: 3px solid rgba(0, 212, 255, 0.15);
-  border-top-color: #00D4FF;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-/* Labels HTML — fuera del composer, así el bloom nunca los lava */
-.mv-tesseract-label {
+/* Etiquetas: proyectadas a mano desde el loop, fuera del composer */
+.mv-field-label {
   position: absolute;
   top: 0;
   left: 0;
   pointer-events: none;
   z-index: 10;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  text-align: center;
   white-space: nowrap;
-  transition: opacity 0.15s;
+  opacity: 0;
+  transition: opacity 0.25s;
 }
 
-.mv-tesseract-label-name {
-  font-size: 11px;
+.mv-field-label-name {
+  font-size: 10px;
   font-weight: 500;
-  color: #DCEEF8;
-  text-shadow: 0 2px 12px rgba(0,0,0,0.95), 0 0 4px rgba(0,0,0,1);
-  letter-spacing: 3.4px;
+  color: #CFE6F2;
+  letter-spacing: 3.6px;
   text-transform: uppercase;
+  text-shadow: 0 2px 14px rgba(0,0,0,0.95), 0 0 4px rgba(0,0,0,1);
 }
 
-.mv-tesseract-label--current .mv-tesseract-label-name {
+.mv-field-label--current .mv-field-label-name { color: #FFFFFF; }
+
+.mv-field-label--cand .mv-field-label-name {
   color: #FFFFFF;
+  font-size: 12px;
+  letter-spacing: 4.2px;
 }
 
-/* Flechas de dimensión: navegación explícita entre bloques */
-.mv-nav {
-  position: absolute;
-  top: 50%;
-  z-index: 20;
-  width: 46px;
-  height: 78px;
-  margin-top: -39px;
-  border: none;
-  border-radius: 10px;
-  background: transparent;
-  color: rgba(190, 226, 240, 0.42);
-  font-size: 40px;
-  line-height: 1;
-  cursor: pointer;
-  transition: color 0.2s, background 0.2s, transform 0.2s;
-}
-
-.mv-nav--prev { left: 18px; }
-.mv-nav--next { right: 18px; }
-
-.mv-nav:hover {
-  color: #FFFFFF;
-  background: rgba(120, 220, 255, 0.07);
-}
-
-.mv-nav--prev:hover { transform: translateX(-3px); }
-.mv-nav--next:hover { transform: translateX(3px); }
-
-/* Ficha del bloque del frente + acción para entrar */
-.mv-hero {
+.mv-field-loading {
   position: absolute;
   left: 50%;
-  bottom: 26px;
+  top: 22px;
+  transform: translateX(-50%);
+  z-index: 12;
+  font-size: 11px;
+  letter-spacing: 1.4px;
+  color: rgba(150, 190, 210, 0.7);
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+/* Barra de aproximación: hace visible el umbral ANTES de cruzarlo, así
+   "automático" no termina significando "sorpresivo". */
+.mv-field-approach {
+  position: absolute;
+  left: 50%;
+  bottom: 62px;
   transform: translateX(-50%);
   z-index: 20;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 9px;
   pointer-events: none;
+  width: min(340px, 72vw);
 }
 
-.mv-hero-meta {
+.mv-field-approach-bar {
+  width: 100%;
+  height: 2px;
+  background: rgba(140, 200, 225, 0.13);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.mv-field-approach-fill {
+  height: 100%;
+  background: linear-gradient(90deg, rgba(120, 210, 245, 0.5), #9BE8FF);
+  box-shadow: 0 0 12px rgba(120, 210, 245, 0.5);
+  transition: width 0.09s linear;
+}
+
+.mv-field-approach-text {
   font-size: 11px;
-  color: rgba(140, 195, 215, 0.85);
   letter-spacing: 1.1px;
+  color: rgba(160, 205, 225, 0.85);
   text-shadow: 0 2px 10px rgba(0,0,0,0.9);
 }
 
-.mv-hero-enter {
-  pointer-events: auto;
-  padding: 11px 26px;
-  border: 1px solid rgba(140, 230, 255, 0.32);
-  border-radius: 999px;
-  background: rgba(8, 20, 28, 0.5);
-  backdrop-filter: blur(10px);
-  color: #DFF6FF;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 1.4px;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.mv-hero-enter:hover {
-  border-color: rgba(140, 230, 255, 0.75);
-  background: rgba(0, 175, 225, 0.2);
+.mv-field-approach-text strong {
   color: #FFFFFF;
-  box-shadow: 0 0 28px rgba(0, 190, 240, 0.3);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 2px;
 }
 
-/* Velo del clavado: cubre el corte hacia la vista de grafo real */
+.mv-field-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 24px;
+  background: linear-gradient(0deg, rgba(3,5,8,0.92) 0%, rgba(3,5,8,0) 100%);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: rgba(140, 175, 195, 0.65);
+  z-index: 10;
+  pointer-events: none;
+}
+
+/* Velo del corte: base sólida + destello. Con un solo gradiente el centro
+   quedaba translúcido y el salto a la vista de grafo se veía igual. */
 .mv-veil {
   position: absolute;
   inset: 0;
   z-index: 30;
   pointer-events: none;
   opacity: 0;
-  /* Base sólida + destello: con un solo gradiente el centro quedaba
-     translúcido y el corte hacia la vista de grafo se veía igual. */
+  transition: opacity 0.26s ease-in;
   background-color: #030508;
   background-image: radial-gradient(circle at 50% 50%,
-    rgba(130, 225, 255, 0.26) 0%,
-    rgba(130, 225, 255, 0.06) 45%,
+    rgba(130, 225, 255, 0.22) 0%,
+    rgba(130, 225, 255, 0.05) 45%,
     rgba(130, 225, 255, 0) 70%);
 }
 
-/* ═══ TESSERACT FOOTER ═══ */
-.mv-tesseract-footer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 12px 24px;
-  background: rgba(3, 5, 8, 0.95);
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
-/* ═══ RESPONSIVE ═══ */
 @media (max-width: 600px) {
-  .mv-tesseract-header {
-    padding: 10px 16px;
-  }
-  
-  .mv-tesseract-title {
-    font-size: 14px;
-  }
-  
-  .mv-tesseract-footer {
-    padding: 10px 16px;
-    font-size: 11px;
-  }
-
-  .mv-hero {
-    bottom: 14px;
-    gap: 8px;
-  }
-
-  .mv-nav {
-    width: 38px;
-    font-size: 32px;
-  }
-
-  .mv-nav--prev { left: 4px; }
-  .mv-nav--next { right: 4px; }
+  .mv-field-header { padding: 10px 14px; }
+  .mv-field-title { font-size: 14px; }
+  .mv-field-scene { margin-top: -54px; margin-bottom: -42px; }
+  .mv-field-footer { padding: 10px 14px; font-size: 10px; }
+  .mv-field-approach { bottom: 54px; }
 }
 
 /* Botón Multiverse en HomeView */
