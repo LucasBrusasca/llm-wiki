@@ -292,8 +292,29 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
     controls.dampingFactor = 0.14;
     controls.rotateSpeed = 0.6;
     controls.zoomSpeed = 1.05;
-    controls.enablePan = false;
+    controls.enablePan = true;
+    controls.screenSpacePanning = true;
     controls.minDistance = 30;
+    /* El tope de alejamiento lo fija el CONTENIDO, no la retícula. Con un tope
+       fijo y una sola sección, alejarse mostraba una jaula enorme y vacía con
+       una manchita de puntos adentro: el anti-ejemplo del wireframe flojo,
+       exacto. Atado al contenido, con una sección el tope es ~1.5 radios de esa
+       nube (la nube llena el cuadro y la retícula se sale por los bordes), y
+       con seis se abre solo hasta ver todo el anillo.
+       Se calcula sobre la proyección 4D MÁXIMA, no la del frame: si dependiera
+       de la rotación, el tope latiría 4× y el zoom daría tirones. */
+    const S_MAX = D4 / (D4 - 2);
+    const recomputeMaxDistance = () => {
+      let contentR = 0;
+      occupied.forEach((v) => {
+        const p = V4[v];
+        const spread = occupied.size > 1
+          ? Math.hypot(p[0], p[1], p[2]) * K4 * S_MAX
+          : 0;
+        contentR = Math.max(contentR, spread + siteRadius[v]);
+      });
+      controls.maxDistance = Math.max(200, contentR * 1.5);
+    };
     controls.maxDistance = 950;
 
     // ── Uniformes compartidos ─────────────────────────────────────────────
@@ -533,7 +554,7 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
           float pulse = exp(-d * d * 260.0);
 
           float fz = uFog * z * 0.5;
-          vAlpha = (0.022 + 0.16 * aRel + 0.40 * pulse * aRel)
+          vAlpha = (0.010 + 0.17 * aRel + 0.40 * pulse * aRel)
                  * uShellAlpha[ish] * uStrand * exp(-fz * fz);
         }`,
       fragmentShader: `
@@ -626,7 +647,7 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
               }
             }
           }
-          const rel = both ? 1.0 : geo ? 0.55 : one ? 0.30 : 0.055;
+          const rel = both ? 1.0 : geo ? 0.55 : one ? 0.30 : 0.02;
           for (let s = 0; s < SUB * 2; s++) stRel[o++] = rel;
         }
       }
@@ -654,6 +675,8 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
         ptUsed++;
       }
     }
+    recomputeMaxDistance();
+
     const pushPoints = () => {
       ptGeo.setDrawRange(0, ptUsed);
       ['position', 'aColor', 'aSite', 'aSize'].forEach((a) => { ptGeo.getAttribute(a).needsUpdate = true; });
@@ -712,6 +735,7 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
       siteData[si] = g;
       siteRadius[si] = lay.R;
       siteToG3D[si] = lay.toGraph3D;
+      recomputeMaxDistance();   // el radio real de la nube recién se conoce acá
       if (sparkOf[si] >= 0) ptSize[sparkOf[si]] = 0;
 
       pushPoints();
@@ -782,10 +806,13 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
     let lastUi = 0;
 
     let framed = false;
+    let lastFrame = performance.now();
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const now = performance.now();
       const time = (now - t0) / 1000;
+      const dt = Math.min(0.1, (now - lastFrame) / 1000);
+      lastFrame = now;
 
       // 1) Rotación isoclínica: 16 productos de cuaternión, una vez por frame.
       if (thetaAuto && now - lastThetaInput > 3000) theta += 0.075 / 60;
@@ -874,10 +901,21 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
       //    seguir acercándote te mete adentro. Es la "gravedad" de la
       //    dimensión, y es lo que hace que el ingreso sea continuo en vez de
       //    un botón disfrazado.
-      if (candIdx >= 0 && !camAnim.on) {
+      //    La atracción sólo actúa MIENTRAS estás acercándote a propósito. Sin
+      //    esa condición se realimenta sola —el centro se acerca a la nube, lo
+      //    que sube la atracción, que acerca más el centro— y la cámara se mete
+      //    adentro de una dimensión sin que el usuario toque nada.
+      if (candIdx >= 0 && !camAnim.on && now - lastZoomIn < 900) {
         const R = siteRadius[candIdx];
-        const pull = smoothstep(ENTER_FAR * R * 1.5, ENTER_NEAR * R, dCand);
-        if (pull > 0.001) controls.target.lerp(sitePos[candIdx], pull * 0.07);
+        const pull = smoothstep(ENTER_FAR * R * 2.2, ENTER_NEAR * R, dCand);
+        // Factor independiente del framerate. Con un lerp de paso fijo, una
+        // rueda rápida —o unos frames largos— dollyan más rápido de lo que
+        // converge el centro, y la cámara pasa de largo al costado de la nube
+        // sin llegar a entrar nunca.
+        if (pull > 0.001) {
+          const k = 1 - Math.pow(0.0001, Math.min(dt, 0.1));
+          controls.target.lerp(sitePos[candIdx], Math.min(0.6, pull * k * 1.6));
+        }
       }
       if (camAnim.on) {
         const p = Math.min(1, (now - camAnim.start) / camAnim.dur);
@@ -906,7 +944,18 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
           setEntering(true);
           const nm = sectionOfSite.get(candIdx);
           if (veilRef.current) veilRef.current.style.opacity = '1';
-          window.setTimeout(() => { if (alive) selectRef.current?.(nm); }, 260);
+          window.setTimeout(() => {
+            if (!alive) return;
+            selectRef.current?.(nm);
+            // Si el padre no desmonta (sin handler, o se canceló), el velo
+            // quedaría puesto y la pantalla negra para siempre.
+            window.setTimeout(() => {
+              if (!alive) return;
+              if (veilRef.current) veilRef.current.style.opacity = '0';
+              committed = false;
+              setEntering(false);
+            }, 1200);
+          }, 260);
         }
       }
       prevDist = dCand;
@@ -1073,7 +1122,7 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
         <span>
           {entering
             ? 'Entrando…'
-            : 'Arrastrá para orbitar · rueda para acercarte y entrar · ← → saltar de dimensión · [ ] girar la 4ª'}
+            : 'Arrastrá para orbitar · botón derecho para desplazarte · rueda para acercarte y entrar · ← → saltar de dimensión · [ ] girar la 4ª'}
         </span>
       </footer>
     </div>
