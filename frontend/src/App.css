@@ -4997,218 +4997,231 @@ body::before {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   MULTIVERSO — campo profundo isoclínico
-   Nubes de nodos reales colgando de una retícula de hipercubo. La escena es
-   WebGL entero; acá sólo vive el cromo: header, etiquetas, barra de
-   aproximación y el velo del corte hacia el grafo.
+   MULTIVERSO — un solo espacio navegable
+
+   No hay "entrar": alejarse muestra el espacio dimensional (cada sección es un
+   objeto de un color) y acercarse resuelve el grafo de esa sección. Por eso el
+   cromo no anuncia transiciones — dice DÓNDE estás — y el riel de dimensiones
+   nunca desaparece: perder las opciones al navegar era el problema de fondo.
    ══════════════════════════════════════════════════════════════════════════ */
 
 .mv-field {
   position: fixed;
   inset: 0;
-  z-index: 200;
-  display: flex;
-  flex-direction: column;
+  z-index: 400;
   background: #030508;
-}
-
-.mv-field-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 24px;
-  /* Degradé, no barra sólida: el campo tiene que seguir por detrás del cromo
-     en vez de quedar recortado por una franja opaca. */
-  background: linear-gradient(180deg, rgba(3,5,8,0.92) 0%, rgba(3,5,8,0) 100%);
-  z-index: 10;
-}
-
-.mv-field-title {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 17px;
-  font-weight: 600;
-  color: var(--text);
-  letter-spacing: 1px;
-}
-
-.mv-field-icon {
-  font-size: 20px;
-  color: #7FD8F5;
-  filter: drop-shadow(0 0 10px rgba(90, 200, 250, 0.45));
-}
-
-.mv-field-count {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--text-dim);
-  padding: 3px 11px;
-  border: 1px solid rgba(120, 200, 235, 0.16);
-  border-radius: 10px;
-}
-
-.mv-field-close {
-  width: 34px;
-  height: 34px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.02);
-  color: var(--text-mid);
-  font-size: 15px;
-  cursor: pointer;
-  transition: all 0.2s;
-  display: grid;
-  place-items: center;
-}
-
-.mv-field-close:hover {
-  background: rgba(255, 80, 100, 0.12);
-  border-color: rgba(255, 80, 100, 0.3);
-  color: #FF6B6B;
+  overflow: hidden;
 }
 
 .mv-field-scene {
-  flex: 1;
-  position: relative;
-  overflow: hidden;
+  position: absolute;
+  inset: 0;
   cursor: grab;
-  /* El header y el footer flotan encima del canvas, no le roban alto. */
-  margin-top: -62px;
-  margin-bottom: -46px;
 }
-
 .mv-field-scene:active { cursor: grabbing; }
+.mv-field-scene canvas { display: block; width: 100% !important; height: 100% !important; }
 
-.mv-field-scene canvas {
-  display: block;
-  width: 100% !important;
-  height: 100% !important;
-}
-
-/* Etiquetas: proyectadas a mano desde el loop, fuera del composer */
-.mv-field-label {
+/* ── Riel de dimensiones: la navegación permanente ───────────────────────── */
+.mv-rail {
   position: absolute;
-  top: 0;
-  left: 0;
-  pointer-events: none;
-  z-index: 10;
-  white-space: nowrap;
-  opacity: 0;
-  transition: opacity 0.25s;
-}
-
-.mv-field-label-name {
-  font-size: 10px;
-  font-weight: 500;
-  color: #CFE6F2;
-  letter-spacing: 3.6px;
-  text-transform: uppercase;
-  text-shadow: 0 2px 14px rgba(0,0,0,0.95), 0 0 4px rgba(0,0,0,1);
-}
-
-.mv-field-label--current .mv-field-label-name { color: #FFFFFF; }
-
-.mv-field-label--cand .mv-field-label-name {
-  color: #FFFFFF;
-  font-size: 12px;
-  letter-spacing: 4.2px;
-}
-
-.mv-field-loading {
-  position: absolute;
-  left: 50%;
-  top: 22px;
-  transform: translateX(-50%);
-  z-index: 12;
-  font-size: 11px;
-  letter-spacing: 1.4px;
-  color: rgba(150, 190, 210, 0.7);
-  text-transform: uppercase;
-  pointer-events: none;
-}
-
-/* Barra de aproximación: hace visible el umbral ANTES de cruzarlo, así
-   "automático" no termina significando "sorpresivo". */
-.mv-field-approach {
-  position: absolute;
-  left: 50%;
-  bottom: 62px;
-  transform: translateX(-50%);
+  top: 0; left: 0; bottom: 0;
   z-index: 20;
+  width: 216px;
+  padding: 18px 14px 14px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 9px;
+  /* Degradé, no panel: el espacio tiene que seguir por detrás del riel. */
+  background: linear-gradient(90deg, rgba(3,5,8,0.94) 0%, rgba(3,5,8,0.72) 62%, rgba(3,5,8,0) 100%);
   pointer-events: none;
-  width: min(340px, 72vw);
 }
+.mv-rail > * { pointer-events: auto; }
 
-.mv-field-approach-bar {
+.mv-rail-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
+}
+.mv-rail-title {
+  font-size: 10px; letter-spacing: 2.4px; text-transform: uppercase;
+  color: rgba(150, 190, 212, 0.75); font-weight: 600;
+}
+.mv-rail-all {
+  width: 26px; height: 26px; border-radius: 7px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: transparent; color: rgba(170, 205, 225, 0.8);
+  font-size: 13px; cursor: pointer; transition: all 0.16s;
+}
+.mv-rail-all:hover { border-color: rgba(140,220,255,0.5); color: #fff; background: rgba(120,210,245,0.10); }
+
+.mv-rail-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+.mv-rail-list::-webkit-scrollbar { width: 4px; }
+.mv-rail-list::-webkit-scrollbar-thumb { background: rgba(140,190,215,0.22); border-radius: 2px; }
+.mv-rail-list::-webkit-scrollbar-track { background: transparent; }
+
+.mv-rail-item {
   width: 100%;
-  height: 2px;
-  background: rgba(140, 200, 225, 0.13);
-  border-radius: 2px;
-  overflow: hidden;
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px;
+  margin-bottom: 2px;
+  border: none; border-radius: 8px;
+  background: transparent;
+  color: rgba(190, 214, 228, 0.72);
+  font: inherit; font-size: 12.5px; text-align: left;
+  cursor: pointer;
+  transition: background 0.16s, color 0.16s;
+}
+.mv-rail-item:hover { background: rgba(120, 200, 235, 0.08); color: #eaf6ff; }
+
+.mv-rail-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 8px currentColor;
+}
+.mv-rail-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-transform: capitalize; letter-spacing: 0.3px;
+}
+.mv-rail-count { font-size: 10.5px; color: rgba(140, 175, 195, 0.5); flex-shrink: 0; }
+
+/* Dónde estás AHORA (lo resuelve el zoom) vs cuál es tu sección activa. */
+.mv-rail-item--here {
+  background: rgba(120, 200, 235, 0.13);
+  color: #fff;
+  box-shadow: inset 2px 0 0 rgba(150, 225, 255, 0.85);
+}
+.mv-rail-item--active .mv-rail-name::after {
+  content: "activa";
+  margin-left: 7px; font-size: 9px; letter-spacing: 1px;
+  color: rgba(140, 200, 225, 0.55); text-transform: uppercase;
 }
 
-.mv-field-approach-fill {
-  height: 100%;
-  background: linear-gradient(90deg, rgba(120, 210, 245, 0.5), #9BE8FF);
-  box-shadow: 0 0 12px rgba(120, 210, 245, 0.5);
-  transition: width 0.09s linear;
+.mv-rail-foot {
+  padding-top: 10px; margin-top: 8px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+  color: rgba(130, 165, 185, 0.5);
 }
 
-.mv-field-approach-text {
-  font-size: 11px;
-  letter-spacing: 1.1px;
-  color: rgba(160, 205, 225, 0.85);
-  text-shadow: 0 2px 10px rgba(0,0,0,0.9);
+/* ── Migaja: dice dónde estás, nunca qué está por pasar ──────────────────── */
+.mv-where {
+  position: absolute;
+  top: 18px; left: 50%; transform: translateX(-50%);
+  z-index: 20;
+  display: flex; align-items: baseline; gap: 9px;
+  font-size: 12px; letter-spacing: 1.6px; text-transform: uppercase;
+  pointer-events: none;
+  text-shadow: 0 2px 14px rgba(0,0,0,0.95);
+}
+.mv-where-scope { color: #eaf6ff; font-weight: 600; transition: color 0.3s; }
+.mv-where-scope--dim { color: rgba(150, 185, 205, 0.45); font-weight: 500; }
+.mv-where-sep { color: rgba(140, 175, 195, 0.35); }
+.mv-where-here { color: rgba(180, 210, 228, 0.55); transition: color 0.3s; }
+.mv-where-here--on { font-weight: 700; }
+.mv-where-n {
+  font-size: 10px; letter-spacing: 1px;
+  color: rgba(140, 175, 195, 0.55); text-transform: none;
 }
 
-.mv-field-approach-text strong {
-  color: #FFFFFF;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 2px;
+.mv-close {
+  position: absolute; top: 14px; right: 16px; z-index: 20;
+  width: 32px; height: 32px; border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.02);
+  color: rgba(170, 195, 210, 0.8);
+  font-size: 14px; cursor: pointer; transition: all 0.18s;
+}
+.mv-close:hover { background: rgba(255,80,100,0.12); border-color: rgba(255,80,100,0.3); color: #ff6b6b; }
+
+/* ── Etiquetas flotantes de cada dimensión ───────────────────────────────── */
+.mv-field-label {
+  position: absolute; top: 0; left: 0;
+  pointer-events: none; z-index: 10;
+  white-space: nowrap; opacity: 0;
+  transition: opacity 0.25s;
+}
+.mv-field-label-name {
+  font-size: 10px; font-weight: 600; letter-spacing: 3.4px; text-transform: uppercase;
+  text-shadow: 0 2px 14px rgba(0,0,0,0.95), 0 0 5px rgba(0,0,0,1);
+}
+.mv-field-label--cand .mv-field-label-name { font-size: 12px; letter-spacing: 4px; }
+
+/* ── Acciones: sólo cuando ya estás dentro de una dimensión ──────────────── */
+.mv-actions {
+  position: absolute;
+  left: 50%; bottom: 52px; transform: translateX(-50%);
+  z-index: 20;
+  display: flex; gap: 10px;
+  animation: mvRise 0.25s ease-out;
+}
+@keyframes mvRise {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.mv-act {
+  padding: 10px 20px; border-radius: 999px;
+  font: inherit; font-size: 11.5px; font-weight: 600;
+  letter-spacing: 1.2px; text-transform: uppercase;
+  cursor: pointer; transition: all 0.18s;
+  backdrop-filter: blur(10px);
+}
+.mv-act--back {
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(8,14,20,0.55); color: rgba(190, 214, 228, 0.8);
+}
+.mv-act--back:hover { border-color: rgba(255,255,255,0.3); color: #fff; }
+.mv-act--open {
+  border: 1px solid rgba(140, 230, 255, 0.35);
+  background: rgba(0, 150, 200, 0.18); color: #dff6ff;
+  text-transform: none; letter-spacing: 0.6px;
+}
+.mv-act--open:hover {
+  border-color: rgba(140,230,255,0.8);
+  background: rgba(0, 175, 225, 0.3); color: #fff;
+  box-shadow: 0 0 26px rgba(0,190,240,0.3);
 }
 
 .mv-field-footer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  position: absolute; left: 0; right: 0; bottom: 0;
+  z-index: 15;
   padding: 12px 24px;
-  background: linear-gradient(0deg, rgba(3,5,8,0.92) 0%, rgba(3,5,8,0) 100%);
-  font-size: 11px;
-  letter-spacing: 0.5px;
-  color: rgba(140, 175, 195, 0.65);
-  z-index: 10;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(0deg, rgba(3,5,8,0.9) 0%, rgba(3,5,8,0) 100%);
+  font-size: 10.5px; letter-spacing: 0.4px;
+  color: rgba(130, 165, 185, 0.5);
   pointer-events: none;
 }
 
-/* Velo del corte: base sólida + destello. Con un solo gradiente el centro
-   quedaba translúcido y el salto a la vista de grafo se veía igual. */
-.mv-veil {
-  position: absolute;
-  inset: 0;
-  z-index: 30;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.26s ease-in;
-  background-color: #030508;
-  background-image: radial-gradient(circle at 50% 50%,
-    rgba(130, 225, 255, 0.22) 0%,
-    rgba(130, 225, 255, 0.05) 45%,
-    rgba(130, 225, 255, 0) 70%);
+@media (max-width: 760px) {
+  .mv-rail { width: 150px; padding: 12px 8px; }
+  .mv-rail-item { font-size: 11.5px; padding: 8px; }
+  .mv-where { font-size: 10px; top: 12px; }
+  .mv-actions { bottom: 44px; flex-direction: column; width: min(300px, 84vw); }
+  .mv-act { width: 100%; }
+  .mv-field-footer { display: none; }
 }
 
-@media (max-width: 600px) {
-  .mv-field-header { padding: 10px 14px; }
-  .mv-field-title { font-size: 14px; }
-  .mv-field-scene { margin-top: -54px; margin-bottom: -42px; }
-  .mv-field-footer { padding: 10px 14px; font-size: 10px; }
-  .mv-field-approach { bottom: 54px; }
+@media (prefers-reduced-motion: reduce) {
+  .mv-actions { animation: none; }
 }
+
+/* ── Selector de sección: scrollbar propia y color de identidad por fila ──── */
+.hdr-menu--portal::-webkit-scrollbar { width: 5px; }
+.hdr-menu--portal::-webkit-scrollbar-thumb {
+  background: rgba(140, 190, 215, 0.25); border-radius: 3px;
+}
+.hdr-menu--portal::-webkit-scrollbar-track { background: transparent; }
+.hdr-menu--portal { scrollbar-width: thin; scrollbar-color: rgba(140,190,215,0.25) transparent; }
+
+.seccion-row-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  flex-shrink: 0; box-shadow: 0 0 8px currentColor;
+}
+/* Las acciones de fila estaban en visibility:hidden hasta el hover: en touch
+   eran inalcanzables. Ahora están siempre, apenas visibles. */
+.seccion-row-act { visibility: visible !important; opacity: 0.28; }
+.seccion-row:hover .seccion-row-act { opacity: 0.75; }
+.seccion-row-act:hover { opacity: 1; }
+.seccion-row.active { box-shadow: inset 2px 0 0 rgba(150, 225, 255, 0.8); }
 
 /* Botón Multiverse en HomeView */
 .home-section-actions {
@@ -5232,4 +5245,81 @@ body::before {
   background: linear-gradient(135deg, rgba(90,200,250,0.25) 0%, rgba(47,224,200,0.15) 100%);
   border-color: rgba(90,200,250,0.5);
   box-shadow: 0 0 16px rgba(90,200,250,0.2);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   DIÁLOGOS DE LA APP
+   Reemplazan a window.prompt/confirm/alert, que en el webview embebido no
+   existen: prompt() LANZA "not supported" y mataba el handler entero, así que
+   crear/renombrar/eliminar secciones no hacía nada y sin error visible.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.dlg-backdrop {
+  position: fixed; inset: 0; z-index: 10000;
+  display: grid; place-items: center;
+  background: rgba(2, 4, 8, 0.66);
+  backdrop-filter: blur(3px);
+  animation: dlgIn 0.14s ease-out;
+}
+@keyframes dlgIn { from { opacity: 0 } to { opacity: 1 } }
+
+.dlg {
+  width: min(420px, calc(100vw - 40px));
+  padding: 22px;
+  border-radius: 14px;
+  background: rgba(12, 17, 26, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.65);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.dlg--peligro { border-color: rgba(232, 96, 86, 0.34); }
+
+.dlg-title {
+  font-size: 15px; font-weight: 600; color: #eaf2ff;
+  letter-spacing: 0.2px;
+}
+.dlg-detail {
+  font-size: 12.5px; line-height: 1.55;
+  color: rgba(170, 190, 210, 0.78);
+}
+
+.dlg-input {
+  height: 40px; padding: 0 13px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.32);
+  color: #eaf2ff; font: inherit; font-size: 13.5px;
+  outline: none; transition: border-color 0.15s, box-shadow 0.15s;
+  -webkit-appearance: none; appearance: none;
+}
+.dlg-input:focus {
+  border-color: rgba(90, 200, 250, 0.55);
+  box-shadow: 0 0 0 3px rgba(90, 200, 250, 0.12);
+}
+
+.dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.dlg-btn {
+  padding: 9px 16px; border-radius: 9px;
+  font: inherit; font-size: 12.5px; font-weight: 600;
+  cursor: pointer; transition: all 0.16s;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: transparent; color: rgba(190, 208, 224, 0.85);
+}
+.dlg-btn:hover { border-color: rgba(255,255,255,0.26); color: #fff; }
+.dlg-btn--ok {
+  border-color: rgba(90, 200, 250, 0.42);
+  background: rgba(30, 130, 180, 0.22);
+  color: #dff2ff;
+}
+.dlg-btn--ok:hover { background: rgba(40, 160, 215, 0.34); border-color: rgba(90,200,250,0.8); color: #fff; }
+.dlg-btn--ok:disabled { opacity: 0.4; cursor: default; background: transparent; }
+.dlg-btn--peligro {
+  border-color: rgba(232, 96, 86, 0.5);
+  background: rgba(180, 50, 44, 0.22);
+  color: #ffd6d0;
+}
+.dlg-btn--peligro:hover { background: rgba(210, 60, 52, 0.36); border-color: rgba(255,120,110,0.85); color: #fff; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dlg-backdrop { animation: none; }
 }

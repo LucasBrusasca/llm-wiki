@@ -87,3 +87,29 @@ export function nodeDotColor(node) {
   if (node.is_hub) return '#FFFFFF';
   return groupColor(groupKey(node));
 }
+
+/* ── Color de identidad de una SECCIÓN ──────────────────────────────────────
+   Una sección no tiene color propio en ningún lado: en el selector es un punto
+   cyan igual para todas, y en el Multiverso las nubes eran todas la misma sopa
+   pastel, porque cada nodo se pinta por su cluster. Sin identidad por sección
+   no hay forma de distinguir una dimensión de otra de un vistazo.
+
+   Se asigna por hash del nombre —estable, no depende del orden de la lista— y
+   se resuelven las colisiones probando el siguiente índice libre, así dos
+   secciones nunca comparten color mientras haya cupo en la paleta. */
+export function sectionColors(nombres) {
+  const out = new Map();
+  const usados = new Set();
+  const orden = [...nombres].sort();          // determinista, no según llegada
+  for (const n of orden) {
+    let h = 0;
+    for (let i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) >>> 0;
+    let idx = h % CLUSTER_PALETTE.length;
+    for (let k = 0; k < CLUSTER_PALETTE.length && usados.has(idx); k++) {
+      idx = (idx + 1) % CLUSTER_PALETTE.length;
+    }
+    usados.add(idx);
+    out.set(n, CLUSTER_PALETTE[idx]);
+  }
+  return out;
+}

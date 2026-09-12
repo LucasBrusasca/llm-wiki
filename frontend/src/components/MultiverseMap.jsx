@@ -5,7 +5,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { nodeDotColor, aclarar, groupKey, BG_COLOR, NO_GROUP_COLOR } from '../nodeColor.js';
+import { nodeDotColor, aclarar, groupKey, sectionColors, BG_COLOR, NO_GROUP_COLOR } from '../nodeColor.js';
 
 /* ══════════════════════════════════════════════════════════════════════════
    MULTIVERSO — campo profundo isoclínico
@@ -233,7 +233,6 @@ const hexToRgb = (hex) => {
 export default function MultiverseMap({ sections, onSelectSection, onClose, currentSection }) {
   const containerRef = useRef(null);
   const labelRefs = useRef({});
-  const veilRef = useRef(null);
   const apiRef = useRef(null);
   const selectRef = useRef(onSelectSection);
   selectRef.current = onSelectSection;
@@ -243,7 +242,8 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
   const [ready, setReady] = useState(0);
   const [candidate, setCandidate] = useState(null);
   const [approach, setApproach] = useState(0);
-  const [entering, setEntering] = useState(false);
+  const [inside, setInside] = useState(null);   // en qué dimensión estás, si estás en alguna
+  const [depth, setDepth] = useState(0);        // 0 = espacio dimensional, 1 = grafo
 
   const key = sections.map((s) => s.nombre).join('|');
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -319,12 +319,20 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
 
     // ── Uniformes compartidos ─────────────────────────────────────────────
     const uSite = new Float32Array(MAX_SITES * 4);      // xyz = posición, w = escala interna
-    const uSiteMod = new Float32Array(MAX_SITES * 4);   // x = alfa, y = distancia a cámara
+    const uSiteMod = new Float32Array(MAX_SITES * 4);   // x = alfa, y = distancia, z = resolución
+    /* El tinte es lo que distingue el ESPACIO DIMENSIONAL del espacio del grafo.
+       De lejos, toda la nube se pinta del color de identidad de su sección: la
+       dimensión se lee como UN objeto y se distingue de un vistazo de las
+       demás. Al acercarte, `resolución` va de 0 a 1 y el color se disuelve en
+       los colores reales de cluster de cada nodo: ahí ya estás en el grafo. La
+       frontera entre los dos espacios es un degradé, no un cambio de pantalla. */
+    const uSiteTint = new Float32Array(MAX_SITES * 3);
     const uV4 = new Float32Array(16 * 3);               // vértices ya proyectados
 
     const common = {
       uSite: { value: uSite },
       uSiteMod: { value: uSiteMod },
+      uSiteTint: { value: uSiteTint },
       uH: { value: h },
       uTanHalfFov: { value: Math.tan((FOV * Math.PI) / 360) },
       uFog: { value: 0.00115 },
@@ -337,6 +345,7 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
     const SITE_DECL = `
       uniform vec4 uSite[${MAX_SITES}];
       uniform vec4 uSiteMod[${MAX_SITES}];
+      uniform vec3 uSiteTint[${MAX_SITES}];
       uniform float uH, uTanHalfFov, uFog, uFocus, uCocK;
       uniform vec3 uLightDir;
     `;
@@ -406,7 +415,7 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
           float lam = 0.60 + 0.40 * dot(normalize(position + vec3(1e-4)), uLightDir);
 
           float fz = uFog * z;
-          vColor = aColor * mix(0.80, 1.08, lam);
+          vColor = mix(uSiteTint[i], aColor, md.z) * mix(0.80, 1.08, lam);
           vAlpha = 0.88 * md.x * sub * aCoc * exp(-fz * fz);
           vSharp = 1.0 - min(1.0, coc * 0.75);
         }`,
@@ -452,6 +461,7 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
         attribute float aSite;
         attribute float aAlpha;
         varying float vAlpha;
+        varying vec3 vTint;
         void main() {
           int i = int(aSite + 0.5);
           vec4 st = uSite[i];
@@ -462,14 +472,18 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
           float fz = uFog * z;
           // LINK_ALPHA_MULT de Graph3D: las aristas casi desaparecen de lejos y
           // sólo recuperan presencia cuando ya estás encima de la nube.
-          float far = md.y > 900.0 ? 0.25 : (md.y > 420.0 ? 0.5 : 1.0);
-          vAlpha = aAlpha * md.x * far * exp(-fz * fz);
+          // Las aristas pertenecen al espacio del GRAFO: en el dimensional casi
+          // no existen. Sin esto, a media distancia todas las secciones suman
+          // sus aristas y la pantalla se vuelve una maraña gris.
+          vAlpha = aAlpha * md.x * mix(0.06, 1.0, md.z) * exp(-fz * fz);
+          vTint = mix(uSiteTint[i], vec3(0.470, 0.529, 0.627), md.z);
         }`,
       fragmentShader: `
         varying float vAlpha;
+        varying vec3 vTint;
         void main() {
           if (vAlpha < 0.004) discard;
-          gl_FragColor = vec4(0.470, 0.529, 0.627, vAlpha);
+          gl_FragColor = vec4(vTint, vAlpha);
         }`,
     });
     const links = new THREE.LineSegments(lnGeo, lnMat);
@@ -625,6 +639,13 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
     const sectionOfSite = new Map();
     siteOfSection.forEach((si, nm) => sectionOfSite.set(si, nm));
     const occupied = new Set(siteOfSection.values());
+    const secColor = sectionColors(names);
+    siteOfSection.forEach((si, nm) => {
+      const c = hexToRgb(aclarar(secColor.get(nm) || NO_GROUP_COLOR, 0.10));
+      uSiteTint[si * 3] = c[0];
+      uSiteTint[si * 3 + 1] = c[1];
+      uSiteTint[si * 3 + 2] = c[2];
+    });
 
     // Relevancia de cada arista: brilla si conecta dos sitios ocupados, se apaga
     // —pero no desaparece— si no. La retícula existe siempre; lo que cambia es
@@ -773,6 +794,8 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
     let lastZoomIn = -1e9;
     let dragging = false;
     let candIdx = -1;
+    let insideIdx = -1;
+    let insideRes = 0;
     let wRamp = 0;
     let prevDist = Infinity;
     let committed = false;
@@ -871,9 +894,20 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
       }
 
       // 3) Uniformes por sitio.
+      insideIdx = -1;
+      insideRes = 0;
       for (let v = 0; v < 16; v++) {
         const isCand = v === candIdx;
         const morph = isCand ? wRamp : 0;
+        const dv = camera.position.distanceTo(sitePos[v]);
+        const Rv = siteRadius[v];
+        // Resolución: 0 = espacio dimensional (la sección es un objeto de un
+        // color), 1 = espacio del grafo (colores de cluster, aristas, detalle).
+        const res = sectionOfSite.has(v)
+          ? smoothstep(ENTER_FAR * Rv, ENTER_NEAR * Rv * 0.85, dv)
+          : 0;
+        uSiteMod[v * 4 + 2] = res;
+        if (res > insideRes) { insideRes = res; insideIdx = v; }
         // Al aproximarse, la nube candidata deja de ser arrastrada por la
         // rotación 4D y su escala interna converge al ×30 exacto de Graph3D: en
         // w = 1 la nube ya ES el layout de destino, así que no hay salto.
@@ -882,8 +916,10 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
         uSite[v * 4 + 1] = sitePos[v].y;
         uSite[v * 4 + 2] = sitePos[v].z;
         uSite[v * 4 + 3] = scale;
-        uSiteMod[v * 4] = isCand ? 1 : 1 - 0.85 * wRamp;
-        uSiteMod[v * 4 + 1] = camera.position.distanceTo(sitePos[v]);
+        // Atenuar las otras dimensiones, pero NUNCA apagarlas: si desaparecen,
+        // el usuario pierde el mapa justo cuando más lo necesita para volver.
+        uSiteMod[v * 4] = isCand ? 1 : 1 - 0.45 * wRamp;
+        uSiteMod[v * 4 + 1] = dv;
       }
 
       // 4) El andamio se retira mientras entrás y la niebla se abre: el último
@@ -932,32 +968,11 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
         dust.position.copy(dustAnchor);
       }
 
-      // 6) Commit. Cuatro condiciones: estás dentro de la nube, te seguís
-      //    acercando, la rampa está llena, y hubo un gesto de zoom-in reciente.
-      //    Sin la última, orbitar cerca te chupa adentro por accidente.
-      if (!committed && candIdx >= 0 && siteData[candIdx]) {
-        const R = siteRadius[candIdx];
-        const closing = dCand < prevDist - 0.01;
-        const intent = now - lastZoomIn < ZOOM_INTENT_MS;
-        if (dCand <= ENTER_NEAR * R && closing && wRamp >= 0.92 && intent && !dragging) {
-          committed = true;
-          setEntering(true);
-          const nm = sectionOfSite.get(candIdx);
-          if (veilRef.current) veilRef.current.style.opacity = '1';
-          window.setTimeout(() => {
-            if (!alive) return;
-            selectRef.current?.(nm);
-            // Si el padre no desmonta (sin handler, o se canceló), el velo
-            // quedaría puesto y la pantalla negra para siempre.
-            window.setTimeout(() => {
-              if (!alive) return;
-              if (veilRef.current) veilRef.current.style.opacity = '0';
-              committed = false;
-              setEntering(false);
-            }, 1200);
-          }, 260);
-        }
-      }
+      // No hay commit, ni velo, ni cambio de pantalla. Acercarse no te "mete"
+      // a ningún lado: simplemente resolvés más detalle de esa dimensión, y
+      // alejarte te devuelve al espacio dimensional. Que la transición fuera
+      // modal era lo que la volvía irreversible y lo que obligaba a anunciar
+      // "entrando", que es justo lo que no tiene que pasar.
       prevDist = dCand;
 
       // 7) Etiquetas a ~20 Hz: no hace falta tocar el DOM en cada frame.
@@ -978,6 +993,8 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
         });
         setCandidate(candIdx >= 0 ? (sectionOfSite.get(candIdx) ?? null) : null);
         setApproach(wRamp);
+        setInside(insideRes > 0.55 ? (sectionOfSite.get(insideIdx) ?? null) : null);
+        setDepth(insideRes);
       }
 
       composer.render();
@@ -1019,8 +1036,19 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
       const cur = occ.indexOf(candIdx);
       goToSite(occ[((cur + d) % occ.length + occ.length) % occ.length]);
     };
+    const goOverview = () => {
+      const c = new THREE.Vector3();
+      let k = 0;
+      occupied.forEach((v) => { c.add(sitePos[v]); k++; });
+      if (k) c.divideScalar(k);
+      const dir = tmp.copy(camera.position).sub(controls.target);
+      if (dir.lengthSq() < 1e-6) dir.set(0.4, 0.3, 1);
+      flyTo(c.clone().addScaledVector(dir.normalize(), controls.maxDistance * 0.92), c, 900);
+    };
     const onKey = (e) => {
-      if (e.key === 'Escape') { closeRef.current?.(); }
+      // Esc devuelve primero al espacio dimensional y sólo cierra si ya estabas
+      // ahí: cerrar de una era perder el lugar sin querer.
+      if (e.key === 'Escape') { if (insideRes > 0.2) goOverview(); else closeRef.current?.(); }
       else if (e.key === '[') { theta -= 0.06; lastThetaInput = performance.now(); }
       else if (e.key === ']') { theta += 0.06; lastThetaInput = performance.now(); }
       else if (e.key === ' ') { thetaAuto = !thetaAuto; e.preventDefault(); }
@@ -1029,7 +1057,12 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
     };
     window.addEventListener('keydown', onKey);
 
-    apiRef.current = { next: () => step(1), prev: () => step(-1) };
+    apiRef.current = {
+      next: () => step(1),
+      prev: () => step(-1),
+      overview: goOverview,
+      goTo: (nm) => goToSite(siteOfSection.get(nm)),
+    };
 
     // ── Resize ─────────────────────────────────────────────────────────────
     const onResize = () => {
@@ -1065,64 +1098,98 @@ export default function MultiverseMap({ sections, onSelectSection, onClose, curr
     };
   }, [names, currentSection]);
 
-  const meta = sections.find((s) => s.nombre === candidate);
-  const pct = Math.round(approach * 100);
+  const secColors = useMemo(() => sectionColors(sections.map((x) => x.nombre)), [sections]);
+  const here = sections.find((x) => x.nombre === inside);
+  const nearName = inside || candidate;
 
   return (
     <div className="mv-field">
-      <header className="mv-field-header">
-        <div className="mv-field-title">
-          <span className="mv-field-icon">◈</span>
-          <span>Multiverso</span>
-          <span className="mv-field-count">
-            {sections.length} {sections.length === 1 ? 'dimensión' : 'dimensiones'}
-          </span>
+      {/* Riel de dimensiones: SIEMPRE visible. Que las opciones desaparecieran
+          al navegar era el problema central — te quedabas sin mapa justo
+          cuando más lo necesitabas. */}
+      <nav className="mv-rail">
+        <div className="mv-rail-head">
+          <span className="mv-rail-title">Dimensiones</span>
+          <button className="mv-rail-all" onClick={() => apiRef.current?.overview()}
+            title="Ver todo el espacio dimensional (Esc)">⊡</button>
         </div>
-        <button className="mv-field-close" onClick={onClose} title="Cerrar (Esc)">✕</button>
-      </header>
+        <ul className="mv-rail-list">
+          {sections.map((sec) => (
+            <li key={sec.nombre}>
+              <button
+                className={
+                  'mv-rail-item'
+                  + (sec.nombre === inside ? ' mv-rail-item--here' : '')
+                  + (sec.nombre === currentSection ? ' mv-rail-item--active' : '')
+                }
+                onClick={() => apiRef.current?.goTo(sec.nombre)}
+                title={`Ir a ${sec.nombre}`}
+              >
+                <span className="mv-rail-dot" style={{ background: secColors.get(sec.nombre) }} />
+                <span className="mv-rail-name">{sec.nombre}</span>
+                <span className="mv-rail-count">{sec.count}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        <div className="mv-rail-foot">
+          {ready < sections.length ? `cargando ${ready}/${sections.length}` : `${sections.length} en total`}
+        </div>
+      </nav>
+
+      <button className="mv-close" onClick={onClose} title="Cerrar el Multiverso">✕</button>
+
+      {/* Migaja: dice dónde estás, no qué está por pasar. */}
+      <div className="mv-where">
+        <span className={'mv-where-scope' + (depth > 0.55 ? ' mv-where-scope--dim' : '')}>Multiverso</span>
+        {nearName && (
+          <>
+            <span className="mv-where-sep">/</span>
+            <span
+              className={'mv-where-here' + (depth > 0.55 ? ' mv-where-here--on' : '')}
+              style={depth > 0.55 ? { color: secColors.get(nearName) } : undefined}
+            >
+              {nearName}
+            </span>
+            {here && depth > 0.55 && <span className="mv-where-n">{here.count} nodos</span>}
+          </>
+        )}
+      </div>
 
       <div className="mv-field-scene" ref={containerRef}>
-        {sections.map((s) => (
+        {sections.map((sec) => (
           <div
-            key={s.nombre}
-            ref={(node) => { labelRefs.current[s.nombre] = node; }}
+            key={sec.nombre}
+            ref={(node) => { labelRefs.current[sec.nombre] = node; }}
             className={
               'mv-field-label'
-              + (s.nombre === currentSection ? ' mv-field-label--current' : '')
-              + (s.nombre === candidate ? ' mv-field-label--cand' : '')
+              + (sec.nombre === currentSection ? ' mv-field-label--current' : '')
+              + (sec.nombre === candidate ? ' mv-field-label--cand' : '')
             }
           >
-            <span className="mv-field-label-name">{s.nombre}</span>
+            <span className="mv-field-label-name" style={{ color: secColors.get(sec.nombre) }}>
+              {sec.nombre}
+            </span>
           </div>
         ))}
-
-        {ready < sections.length && (
-          <div className="mv-field-loading">
-            Materializando dimensiones · {ready}/{sections.length}
-          </div>
-        )}
-
-        {candidate && approach > 0.10 && !entering && (
-          <div className="mv-field-approach">
-            <div className="mv-field-approach-bar">
-              <div className="mv-field-approach-fill" style={{ width: `${pct}%` }} />
-            </div>
-            <div className="mv-field-approach-text">
-              {approach > 0.9 ? 'entrando a ' : 'seguí acercándote a '}
-              <strong>{candidate}</strong>
-              {meta ? ` · ${meta.count} nodos` : ''}
-            </div>
-          </div>
-        )}
-
-        <div className="mv-veil" ref={veilRef} />
       </div>
+
+      {/* Única acción que sale del Multiverso, y es explícita y opcional. */}
+      {inside && (
+        <div className="mv-actions">
+          <button className="mv-act mv-act--back" onClick={() => apiRef.current?.overview()}>
+            ← Volver al espacio
+          </button>
+          <button className="mv-act mv-act--open" onClick={() => onSelectSection?.(inside)}>
+            Abrir {inside} en el grafo completo →
+          </button>
+        </div>
+      )}
 
       <footer className="mv-field-footer">
         <span>
-          {entering
-            ? 'Entrando…'
-            : 'Arrastrá para orbitar · botón derecho para desplazarte · rueda para acercarte y entrar · ← → saltar de dimensión · [ ] girar la 4ª'}
+          Arrastrá para orbitar · botón derecho para desplazarte · rueda para acercarte y alejarte
+          {' · '}Esc para volver al espacio{' · '}[ ] girar la 4ª
         </span>
       </footer>
     </div>

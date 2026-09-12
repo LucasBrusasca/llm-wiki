@@ -15,8 +15,10 @@ import ArchitectPanel from './components/ArchitectPanel.jsx';
 import VaultBadge from './components/VaultBadge.jsx';
 import HomeView from './components/HomeView.jsx';
 import MultiverseMap from './components/MultiverseMap.jsx';
+import { sectionColors } from './nodeColor.js';
 import { computeDiscoveries } from './discoveries.js';
 import { pedirClave, avisarClaveIncorrecta } from './security.js';
+import { Dialog, pedirTexto, pedirSecreto, confirmar, avisar } from './dialog.jsx';
 
 // ── Paleta: TONOS JOYA ───────────────────────────────────────────────────────
 // Ni neon ni apagado. Los dos extremos que probamos fallaban por el mismo eje:
@@ -182,6 +184,13 @@ export default function App() {
     }
   }, []);
 
+  // Color de identidad por sección. Se comparte con el Multiverso: la dimensión
+  // es del mismo color en el selector y en el espacio 3D.
+  const secColors = useMemo(
+    () => sectionColors(sections.map(x => x.nombre)),
+    [sections],
+  );
+
   const loadSections = useCallback(() => {
     fetch('/api/sections')
       .then(r => r.json())
@@ -210,8 +219,12 @@ export default function App() {
     setSeccionOpen(false);
   }, []);
 
-  const nuevaSeccion = useCallback(() => {
-    const n = window.prompt('Nombre de la nueva sección (un grafo aparte):');
+  const nuevaSeccion = useCallback(async () => {
+    const n = await pedirTexto('Nueva sección', {
+      detalle: 'Cada sección es un grafo de conocimiento aparte.',
+      placeholder: 'nombre de la sección',
+      confirmar: 'Crear',
+    });
     const nombre = (n || '').trim();
     if (!nombre) return;
     setKnownSecciones([...getKnownSecciones(), nombre]);
@@ -252,7 +265,9 @@ export default function App() {
 
   const renombrarSeccion = useCallback(async (nombre) => {
     setSeccionOpen(false);
-    const nuevo = (window.prompt(`Nuevo nombre para «${nombre}»:`, nombre) || '').trim();
+    const nuevo = (await pedirTexto(`Renombrar «${nombre}»`, {
+      valorInicial: nombre, confirmar: 'Renombrar',
+    }) || '').trim();
     if (!nuevo || nuevo === nombre) return;
     const clave = await pedirClave(`renombrar «${nombre}»`);
     if (!clave) return;
@@ -262,19 +277,23 @@ export default function App() {
         body: JSON.stringify({ from: nombre, to: nuevo, ...clave }),
       });
       if (r.status === 403) { avisarClaveIncorrecta(); return; }
-      if (!r.ok) { window.alert('No se pudo renombrar.'); return; }
+      if (!r.ok) { avisar('No se pudo renombrar la sección.'); return; }
       setKnownSecciones(getKnownSecciones().map(x => x === nombre ? nuevo : x));
       if (seccion === nombre) cambiarSeccion(nuevo);
       loadGraph(); loadSections();
-    } catch { window.alert('Error de conexión.'); }
+    } catch { avisar('Error de conexión.'); }
   }, [seccion, cambiarSeccion, loadGraph, loadSections]);
 
   const eliminarSeccion = useCallback(async (nombre) => {
     setSeccionOpen(false);
-    if (!window.confirm(`¿Eliminar la sección «${nombre}» y TODOS sus documentos? No se puede deshacer.`)) return;
+    const ok = await confirmar(`¿Eliminar «${nombre}»?`, {
+      detalle: 'Se borran la sección y TODOS sus documentos. No se puede deshacer.',
+      confirmar: 'Eliminar', peligro: true,
+    });
+    if (!ok) return;
     let password = null;
     if (securityEnabled) {
-      password = window.prompt(`Clave de seguridad para eliminar «${nombre}»:`);
+      password = await pedirSecreto(`Clave de seguridad para eliminar «${nombre}»`, { confirmar: 'Eliminar' });
       if (password == null) return;
     }
     try {
@@ -282,12 +301,12 @@ export default function App() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nombre, password }),
       });
-      if (r.status === 403) { window.alert('Clave de seguridad incorrecta. La sección está intacta.'); return; }
-      if (!r.ok) { window.alert('No se pudo eliminar.'); return; }
+      if (r.status === 403) { avisar('Clave incorrecta', { detalle: 'La sección está intacta.' }); return; }
+      if (!r.ok) { avisar('No se pudo eliminar la sección.'); return; }
       setKnownSecciones(getKnownSecciones().filter(x => x !== nombre));
       if (seccion === nombre) cambiarSeccion('personal');
       loadGraph(); loadSections();
-    } catch { window.alert('Error de conexión.'); }
+    } catch { avisar('Error de conexión.'); }
   }, [seccion, securityEnabled, cambiarSeccion, loadGraph, loadSections]);
 
   useEffect(() => { loadGraph(); }, [loadGraph]);
@@ -450,25 +469,37 @@ export default function App() {
     // Con clave configurada → se pide la clave. Sin clave → hay que escribir "BORRAR".
     let password = null;
     if (securityEnabled) {
-      password = window.prompt('⚠️ Esto BORRA TODO de forma permanente y NO se puede deshacer.\n\nIngresá la CLAVE DE SEGURIDAD para confirmar:');
+      password = await pedirSecreto('Borrar TODO el grafo', {
+        detalle: 'Documentos, relaciones, temas e issues. No se puede deshacer.',
+        confirmar: 'Borrar todo', peligro: true,
+      });
       if (password == null) return;
     } else {
-      const r = window.prompt('⚠️ ESTO BORRA TODO de forma permanente (documentos, relaciones, temas, issues) y NO se puede deshacer.\n\nEscribí BORRAR (en mayúsculas) para confirmar:');
+      const r = await pedirTexto('Borrar TODO el grafo', {
+        detalle: 'Documentos, relaciones, temas e issues. No se puede deshacer. Escribí BORRAR en mayúsculas para confirmar.',
+        placeholder: 'BORRAR', confirmar: 'Borrar todo', peligro: true,
+      });
       if (r == null) return;
-      if (r.trim() !== 'BORRAR') { window.alert('Cancelado — no escribiste "BORRAR" exacto. El grafo está intacto.'); return; }
+      if (r.trim() !== 'BORRAR') {
+        avisar('Cancelado', { detalle: 'No escribiste «BORRAR» exacto. El grafo está intacto.' });
+        return;
+      }
     }
     // Red de seguridad: descargar un backup ANTES de borrar. Si falla, preguntar.
     try {
       await descargarBackup();
     } catch {
-      if (!window.confirm('No se pudo generar el backup automático. ¿Resetear IGUAL, sin respaldo?')) return;
+      const igual = await confirmar('No se pudo generar el backup', {
+        detalle: '¿Resetear igual, sin respaldo?', confirmar: 'Resetear sin respaldo', peligro: true,
+      });
+      if (!igual) return;
     }
     const resp = await fetch('/api/reset', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
     });
-    if (resp.status === 403) { window.alert('Clave de seguridad incorrecta. El grafo está intacto.'); return; }
-    if (!resp.ok) { window.alert('No se pudo resetear.'); return; }
+    if (resp.status === 403) { avisar('Clave incorrecta', { detalle: 'El grafo está intacto.' }); return; }
+    if (!resp.ok) { avisar('No se pudo resetear.'); return; }
     setFixedNode(null); setHoverNode(null);
     setAgentOpen(false); setSynthSelected(new Set()); setSelectedLink(null);
     loadGraph(); loadSections();
@@ -578,6 +609,7 @@ export default function App() {
   // Multiverse: abrir mapa de secciones
   const handleOpenMultiverse = useCallback(() => {
     loadSections();
+    setSeccionOpen(false);   // el menú va en z-index 9999: sin esto queda flotando sobre el Multiverso
     setShowHome(false);
     setShowMultiverse(true);
   }, [loadSections]);
@@ -596,6 +628,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <Dialog />
       {/* Home Architect-first: CTA principal a decidir con evidencia */}
       {showHome && (
         <HomeView
@@ -642,7 +675,8 @@ export default function App() {
               loadSections(); 
             }}
             title="Sección activa — cada sección es un grafo de conocimiento aparte">
-            <span className="seccion-dot" /> {seccion} <span className="seccion-caret">▾</span>
+            <span className="seccion-dot" style={{ background: secColors.get(seccion) || 'var(--data)' }} />
+            {seccion} <span className="seccion-caret">▾</span>
           </button>
           {/* FIX: Portal a document.body para evitar clipping del sidebar */}
           {seccionOpen && createPortal(
@@ -661,14 +695,14 @@ export default function App() {
                 {sections.map(s => (
                   <div key={s.nombre} className={`seccion-row${s.nombre === seccion ? ' active' : ''}`}>
                     <button className="seccion-row-main" onClick={() => cambiarSeccion(s.nombre)} title="Cambiar a esta sección">
-                      <span className="hdr-menu-ico">{s.nombre === seccion ? '●' : '○'}</span>
+                      <span className="seccion-row-dot" style={{ background: secColors.get(s.nombre) }} />
                       <span className="seccion-row-name">{s.nombre}</span>
                       <span className="seccion-row-count">{s.count}</span>
                     </button>
                     <button className="seccion-row-act" title={`Renombrar «${s.nombre}»`}
                       onClick={() => renombrarSeccion(s.nombre)}>✎</button>
                     <button className="seccion-row-act seccion-row-act--danger" title={`Eliminar «${s.nombre}»`}
-                      onClick={() => eliminarSeccion(s.nombre)}>🗑</button>
+                      onClick={() => eliminarSeccion(s.nombre)}>✕</button>
                   </div>
                 ))}
                 <div className="hdr-menu-sep" />
