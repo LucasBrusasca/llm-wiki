@@ -5,6 +5,22 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { clusterColor, CLUSTER_PALETTE } from '../App.jsx';
 
+// Simple throttle: ejecuta fn como máximo cada `ms` milisegundos.
+function throttle(fn, ms) {
+  let last = 0, timer = null;
+  return (...args) => {
+    const now = Date.now();
+    const remain = ms - (now - last);
+    if (remain <= 0) {
+      if (timer) { clearTimeout(timer); timer = null; }
+      last = now;
+      fn(...args);
+    } else if (!timer) {
+      timer = setTimeout(() => { last = Date.now(); timer = null; fn(...args); }, remain);
+    }
+  };
+}
+
 /* ── Mapa plano de documentos (constelación de miniaturas) ── */
 const NODE = {
   bg:      '#0A0B0E', // fondo casi negro
@@ -1157,7 +1173,8 @@ export default function Graph3D({
         // tarjeta con titulo: 65 tarjetas superpuestas eran ilegibles (y con miles
         // seria imposible). Ahora solo las N mas cercanas a la camara se abren;
         // el resto queda como punto. Es tambien lo que hace viable escalar.
-        const MAX_TARJETAS = 12;
+        // Reducido a 8 para mejor performance con ~100 nodos.
+        const MAX_TARJETAS = 8;
         let cercanos = null;
         if (!far) {
           cercanos = new Set(
@@ -1179,7 +1196,9 @@ export default function Graph3D({
         // re-dispara 'change' → recursión infinita.
       }
     };
-    if (controls) controls.addEventListener('change', updateLOD);
+    // Throttle LOD update para evitar cálculos excesivos durante zoom/pan rápido
+    const throttledLOD = throttle(updateLOD, 32); // ~30fps máximo para LOD checks
+    if (controls) controls.addEventListener('change', throttledLOD);
     // Estado inicial (fuera del evento 'change' → acá sí es seguro despertar).
     setTimeout(() => { updateLOD(); wakeRef.current(); }, 400);
   }, []);
@@ -1299,9 +1318,9 @@ export default function Graph3D({
     wakeRef.current?.();
   }, []);
 
-  const handleEngineTick = useCallback(() => {
-    wakeRef.current();  // mantiene el render vivo mientras la física corre
-    if (!clusterLabelSprites.current.length) return;
+  // Actualización de posiciones de etiquetas de cluster, throttled para performance.
+  const updateClusterPositions = useCallback(() => {
+    if (!clusterLabelSprites.current.length && !clusterHulls.current.length) return;
     const clusterGroups = {};
     graphData.nodes.forEach(n => {
       const k = groupKey(n);
@@ -1326,6 +1345,16 @@ export default function Graph3D({
       sprite.position.set(cx, maxY + 8, cz);
     });
   }, [graphData]);
+
+  const throttledClusterUpdate = useMemo(
+    () => throttle(updateClusterPositions, 50),
+    [updateClusterPositions]
+  );
+
+  const handleEngineTick = useCallback(() => {
+    wakeRef.current();  // mantiene el render vivo mientras la física corre
+    throttledClusterUpdate();
+  }, [throttledClusterUpdate]);
 
   /* Grafo pesado = todos los nodos vienen con posicion fija del backend. Correr
      la simulacion de fuerzas sobre 4.488 nodos fijos es trabajo puro al pedo: cada
