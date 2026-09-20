@@ -5,15 +5,31 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { clusterColor, CLUSTER_PALETTE } from '../App.jsx';
 
+// Simple throttle: ejecuta fn como máximo cada `ms` milisegundos.
+function throttle(fn, ms) {
+  let last = 0, timer = null;
+  return (...args) => {
+    const now = Date.now();
+    const remain = ms - (now - last);
+    if (remain <= 0) {
+      if (timer) { clearTimeout(timer); timer = null; }
+      last = now;
+      fn(...args);
+    } else if (!timer) {
+      timer = setTimeout(() => { last = Date.now(); timer = null; fn(...args); }, remain);
+    }
+  };
+}
+
 /* ── Mapa plano de documentos (constelación de miniaturas) ── */
 const NODE = {
-  bg:      '#000000', // negro con sesgo azul: el fondo de un instrumento, no violeta
-  card:    '#0B121B60', // relleno de tarjeta neutra (translúcido)
-  border:  'rgba(150,200,230,0.34)', // borde fino de tarjeta
-  label:   'rgba(214,232,244,0.9)',  // texto de etiqueta
-  line:    '90,200,250',             // conexiones: cian del instrumento (rgb base)
-  issue:   '#FFB44D',                // ámbar: reservado para lo excepcional
-  sel:     '#FFFFFF',                // retícula de selección
+  bg:      '#080A10', // fondo casi negro con tinte azul
+  card:    '#14181F60', // relleno de tarjeta (translúcido)
+  border:  'rgba(100,120,150,0.4)', // borde visible pero sutil
+  label:   'rgba(210,220,235,0.95)',  // texto de etiqueta claro, legible
+  line:    '130,150,180',             // conexiones: gris azulado VISIBLE (rgb base)
+  issue:   '#D4A55A',                // ámbar: reservado para lo excepcional
+  sel:     '#A8C0E0',                // selección: azul claro suave
 };
 
 // "#7C8CFF" → "124,140,255". Se cachea porque linkColor corre por arista y por frame.
@@ -100,19 +116,19 @@ const GLYPHS = {
   ppt: 'PPT', youtube: '▶', image: '▣', video: '▶', concepto: '◇',
 };
 
-// Tarjeta neutra (sin miniatura): rectángulo oscuro + borde fino + glyph del tipo.
+// Tarjeta neutra (sin miniatura): rectángulo oscuro + borde del color del cluster + glyph.
 function makeNeutralCardTexture(node, accent) {
   const cw = 128, ch = 96;
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = NODE.card; ctx.fillRect(0, 0, cw, ch);
-  // Barra superior + borde en el COLOR DEL CLUSTER → identidad de grupo (plano, no glow).
-  if (accent) { ctx.fillStyle = accent; ctx.fillRect(0, 0, cw, 6); }
-  ctx.strokeStyle = accent || NODE.border; ctx.lineWidth = 3;
-  ctx.strokeRect(1.5, 1.5, cw - 3, ch - 3);
+  ctx.fillStyle = '#101418'; ctx.fillRect(0, 0, cw, ch);
+  // Borde en el color del cluster (suave, visible)
+  const borderColor = accent || 'rgba(100,120,150,0.5)';
+  ctx.strokeStyle = borderColor; ctx.lineWidth = 2.5;
+  ctx.strokeRect(1.25, 1.25, cw - 2.5, ch - 2.5);
   const glyph = GLYPHS[(node.fuente || '').toLowerCase()] || '◇';
-  ctx.fillStyle = 'rgba(165,180,200,0.7)';
+  ctx.fillStyle = accent ? aclarar(accent, 0.2) : 'rgba(150,165,185,0.7)';
   ctx.font = `${glyph.length > 1 ? 26 : 40}px 'JetBrains Mono', 'Courier New', monospace`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(glyph, cw / 2, ch / 2);
@@ -121,8 +137,7 @@ function makeNeutralCardTexture(node, accent) {
   return { tex, aspect: cw / ch };
 }
 
-// Tarjeta con miniatura real: imagen + borde fino. Leve atenuación para que las
-// páginas blancas no superen el umbral del bloom (se ven nítidas, no quemadas).
+// Tarjeta con miniatura real: imagen + borde del color del cluster.
 function makeThumbCardTexture(img, accent) {
   const ar = (img.naturalWidth / img.naturalHeight) || 1;
   const M = 128; let w, h;
@@ -132,14 +147,13 @@ function makeThumbCardTexture(img, accent) {
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = '#0B0B16'; ctx.fillRect(0, 0, cw, ch);
+  ctx.fillStyle = '#0C1014'; ctx.fillRect(0, 0, cw, ch);
   ctx.drawImage(img, pad, pad, w, h);
   ctx.fillStyle = 'rgba(8,10,14,0.12)'; ctx.fillRect(pad, pad, w, h); // dim sutil
-  // Identidad de cluster (plano, no glow): barra de color arriba + marco del mismo color.
-  // La barra se lee aunque la tarjeta sea chica; el marco la encuadra.
-  if (accent) { ctx.fillStyle = accent; ctx.fillRect(0, 0, cw, 7); }
-  ctx.strokeStyle = accent || NODE.border; ctx.lineWidth = 3.5;
-  ctx.strokeRect(1.75, 1.75, cw - 3.5, ch - 3.5);
+  // Borde en el color del cluster
+  const borderColor = accent || 'rgba(100,120,150,0.5)';
+  ctx.strokeStyle = borderColor; ctx.lineWidth = 2.5;
+  ctx.strokeRect(1.25, 1.25, cw - 2.5, ch - 2.5);
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
   return { tex, aspect: cw / ch };
@@ -182,11 +196,11 @@ function buildCaption(text) {
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  // Placa oscura con leve tinte cian + borde fino cian (identidad sin saturar).
-  ctx.fillStyle = 'rgba(12,12,24,0.72)';
+  // Placa oscura con borde sutil
+  ctx.fillStyle = 'rgba(12,16,22,0.9)';
   roundRect(ctx, 0.5, 0.5, cw - 1, ch - 1, 5);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(124,140,255,0.34)'; ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(100,120,150,0.4)'; ctx.lineWidth = 1;
   ctx.stroke();
   ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   // Contorno oscuro para contraste sobre fondos claros (páginas blancas).
@@ -719,7 +733,7 @@ export default function Graph3D({
     const fg = fgRef.current;
     if (!fg || !graphData.nodes.length) return;
 
-    const SCALE = 30;
+    const SCALE = 42;  // aumentado para más separación entre nodos
 
     fg.d3Force('cluster', null);
     fg.d3Force('centroid', null);
@@ -780,9 +794,11 @@ export default function Graph3D({
         n.vx = 0; n.vy = 0; n.vz = 0;
       });
       const charge = fg.d3Force('charge');
-      if (charge) charge.strength(-230).distanceMax(SCALE * 12);  // separación amplia, sin explotar
+      // Repulsión más fuerte para separar clusters mejor
+      if (charge) charge.strength(-350).distanceMax(SCALE * 14);
       const link = fg.d3Force('link');
-      if (link) link.distance(SCALE * 1.4).strength(0.32);
+      // Links más largos y menos rígidos para más espacio entre nodos
+      if (link) link.distance(SCALE * 2.0).strength(0.25);
       fg.d3ReheatSimulation?.();
     }
 
@@ -1159,7 +1175,8 @@ export default function Graph3D({
         // tarjeta con titulo: 65 tarjetas superpuestas eran ilegibles (y con miles
         // seria imposible). Ahora solo las N mas cercanas a la camara se abren;
         // el resto queda como punto. Es tambien lo que hace viable escalar.
-        const MAX_TARJETAS = 12;
+        // Reducido a 8 para mejor performance con ~100 nodos.
+        const MAX_TARJETAS = 8;
         let cercanos = null;
         if (!far) {
           cercanos = new Set(
@@ -1181,7 +1198,9 @@ export default function Graph3D({
         // re-dispara 'change' → recursión infinita.
       }
     };
-    if (controls) controls.addEventListener('change', updateLOD);
+    // Throttle LOD update para evitar cálculos excesivos durante zoom/pan rápido
+    const throttledLOD = throttle(updateLOD, 32); // ~30fps máximo para LOD checks
+    if (controls) controls.addEventListener('change', throttledLOD);
     // Estado inicial (fuera del evento 'change' → acá sí es seguro despertar).
     setTimeout(() => { updateLOD(); wakeRef.current(); }, 400);
   }, []);
@@ -1221,28 +1240,29 @@ export default function Graph3D({
 
     let rgb, alphaBase;
     if (link.spoke) {
-      // Radio de la estrella: hereda el color del tema, muy tenue. Son miles;
-      // con alfa alto la pantalla se vuelve una masa solida.
+      // Radio de la estrella: hereda el color del tema
       const gk = nodoDestino ? groupKey(nodoDestino) : (nodoOrigen ? groupKey(nodoOrigen) : null);
-      rgb = hexToRgb(oscurecer(groupColor(gk), 0.45)); alphaBase = 0.16;
+      rgb = hexToRgb(oscurecer(groupColor(gk), 0.25)); alphaBase = 0.25;
     }
-    else if (issue) { rgb = hexToRgb(NODE.issue); alphaBase = 0.5; }
-    else if (mismoGrupo) { rgb = hexToRgb(oscurecer(groupColor(gkO), 0.45)); alphaBase = 0.34; }
-    else { rgb = '150,160,180'; alphaBase = 0.075; }  // puente entre grupos: gris muy tenue
-    // Son mayoria y, al ser grises, competian con los nodos por atencion.
+    else if (issue) { rgb = hexToRgb(NODE.issue); alphaBase = 0.6; }
+    else if (mismoGrupo) {
+      // MISMO GRUPO: color del cluster, visible
+      rgb = hexToRgb(oscurecer(groupColor(gkO), 0.20)); alphaBase = 0.45;
+    }
+    else {
+      // PUENTE entre grupos: gris azulado claro, visible
+      rgb = NODE.line; alphaBase = 0.35;
+    }
 
-    // La relacion senalada se enciende con su color VIVO y a opacidad plena: es
-    // la senal de "a esto le vas a pegar si hacés clic".
+    // Hover: se ilumina claramente (sigue siendo delgada, sin glow)
     if (hoverLink && link === hoverLink) {
-      // Dentro del grupo: su propio color, sin oscurecer y a opacidad plena.
-      // Entre grupos: el mismo gris de siempre, sólo encendido. El blanco puro
-      // que habia antes cortaba la escena como un tajo.
       return mismoGrupo
-        ? `rgba(${hexToRgb(groupColor(gkO))},0.95)`
-        : 'rgba(198,212,226,0.85)';
+        ? `rgba(${hexToRgb(aclarar(groupColor(gkO), 0.35))},0.9)`
+        : 'rgba(180,200,230,0.85)';
     }
 
-    const alpha = !hayFoco ? alphaBase : (enFoco ? 0.95 : 0.02);
+    // Edges conectadas al nodo seleccionado: más visibles, resto atenuado
+    const alpha = !hayFoco ? alphaBase : (enFoco ? 0.75 : 0.15);
     return `rgba(${rgb},${alpha})`;
   }, [selectedNode, highlighted, hoverLink]);
 
@@ -1302,9 +1322,9 @@ export default function Graph3D({
     wakeRef.current?.();
   }, []);
 
-  const handleEngineTick = useCallback(() => {
-    wakeRef.current();  // mantiene el render vivo mientras la física corre
-    if (!clusterLabelSprites.current.length) return;
+  // Actualización de posiciones de etiquetas de cluster, throttled para performance.
+  const updateClusterPositions = useCallback(() => {
+    if (!clusterLabelSprites.current.length && !clusterHulls.current.length) return;
     const clusterGroups = {};
     graphData.nodes.forEach(n => {
       const k = groupKey(n);
@@ -1329,6 +1349,16 @@ export default function Graph3D({
       sprite.position.set(cx, maxY + 8, cz);
     });
   }, [graphData]);
+
+  const throttledClusterUpdate = useMemo(
+    () => throttle(updateClusterPositions, 50),
+    [updateClusterPositions]
+  );
+
+  const handleEngineTick = useCallback(() => {
+    wakeRef.current();  // mantiene el render vivo mientras la física corre
+    throttledClusterUpdate();
+  }, [throttledClusterUpdate]);
 
   /* Grafo pesado = todos los nodos vienen con posicion fija del backend. Correr
      la simulacion de fuerzas sobre 4.488 nodos fijos es trabajo puro al pedo: cada

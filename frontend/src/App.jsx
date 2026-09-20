@@ -15,31 +15,24 @@ import VaultBadge from './components/VaultBadge.jsx';
 import { computeDiscoveries } from './discoveries.js';
 import { pedirClave, avisarClaveIncorrecta } from './security.js';
 
-// ── Paleta: TONOS JOYA ───────────────────────────────────────────────────────
-// Ni neon ni apagado. Los dos extremos que probamos fallaban por el mismo eje:
-// el neon tiene luminosidad muy alta y se lee estridente; el apagado tiene croma
-// bajo y se lee sucio. El registro elegante esta en el medio: SATURACION alta con
-// LUMINOSIDAD contenida (~50-65%). Es la formula de las piedras preciosas —
-// rubi, esmeralda, zafiro, amatista— y por eso lee como algo caro y no como una
-// pantalla de videojuego.
-//
-// Cada uno conserva al menos un canal RGB bajo, que es lo que mantiene la
-// identidad del matiz y evita el aspecto lavado.
+// ── Paleta: COLORES SUAVES PERO DISTINGUIBLES ────────────────────────────────
+// Saturación media: ni neón candy ni gris muerto. Cada cluster es reconocible
+// sin competir con el contenido. Tonos cálidos y fríos alternados.
 export const CLUSTER_PALETTE = [
-  '#C41E3A', // rubí
-  '#0E9594', // turquesa profundo
-  '#0F52BA', // zafiro
-  '#00A86B', // esmeralda
-  '#9B59B6', // amatista
-  '#D4AF37', // oro viejo
-  '#B03A5B', // granate
-  '#3E7CB1', // azul acero
-  '#6A8D3F', // oliva
-  '#C1553C', // terracota
+  '#5B8A9A', // teal suave
+  '#7A8FC4', // azul lavanda
+  '#C4A06A', // ámbar dorado
+  '#9A7AB4', // violeta suave
+  '#6AAA8A', // verde menta
+  '#C48A7A', // coral apagado
+  '#8AC4B4', // turquesa claro
+  '#B4A47A', // ocre suave
+  '#8A7A9A', // malva
+  '#7AAAB4', // cyan apagado
 ];
 
 // Reservado: sólo para lo excepcional (issues, alertas). Si aparece, significa algo.
-export const ALERT_COLOR = '#FFB44D';
+export const ALERT_COLOR = '#C9A25E';
 
 export function clusterColor(cluster) {
   // Sin grupo: gris frío y apagado, para que el ruido retroceda en vez de competir.
@@ -571,8 +564,22 @@ export default function App() {
           onChange={handleSearchChange}
         />
         <div className="header-actions">
-          {/* ── Etapa 1 · Contexto: lo que el sistema sabe ── */}
-          <span className="hdr-stage">Contexto</span>
+          {/* ── Inicio: volver al grafo limpio ── */}
+          <button
+            className={`btn-synth btn-inicio${!libraryOpen && !issueOpen && !processOpen && !architectOpen ? ' active' : ''}`}
+            onClick={() => {
+              setLibraryOpen(false);
+              setIssueOpen(false); setProcessOpen(false); setArchitectOpen(false);
+              setFixedNode(null); setHoverNode(null);
+            }}
+            title="Inicio — ver el grafo de conocimiento"
+          >
+            ◉ Inicio
+          </button>
+
+          <span className="hdr-sep" />
+
+          {/* ── Biblioteca: gestión de documentos ── */}
           <button
             className={`btn-synth${libraryOpen ? ' active' : ''}`}
             onClick={() => setLibraryOpen(o => !o)}
@@ -583,55 +590,15 @@ export default function App() {
 
           <span className="hdr-sep" />
 
-          {/* ── Etapa 2 · Explorar: qué hay en el corpus y cómo se relaciona ── */}
-          <span className="hdr-stage">Explorar</span>
+          {/* ── Secundario: herramientas avanzadas ── */}
+          <span className="hdr-stage hdr-stage--secondary">Avanzado</span>
           <button
-            className={`btn-synth${globalAgent ? ' active' : ''}`}
-            onClick={toggleGlobalAgent}
-            title="Agente — preguntá sobre tu conocimiento (fundado en el grafo, con citas)"
-          >
-            ⬡ Agente
-          </button>
-          <button
-            className={`btn-synth${discoveriesOpen ? ' active' : ''}`}
-            onClick={() => setDiscoveriesOpen(o => !o)}
-            title="Descubrir — puentes, silos y nodos aislados (sin IA, sobre tus datos)"
-          >
-            ◎ Descubrir
-          </button>
-          <button
-            className={`btn-synth${synthMode ? ' active' : ''}`}
-            onClick={toggleSynth}
-            title="Síntesis — combiná varios nodos en un documento"
-          >
-            ◈ Síntesis
-          </button>
-
-          <span className="hdr-sep" />
-
-          {/* ── Etapa 3 · Decidir ──
-                 Una sola entrada. Architect es el paso 1 del recorrido, no un
-                 módulo hermano: clasifica QUÉ intervención corresponde y, si la
-                 ruta amerita desarrollo, entrega el caso a Issue. Tener dos
-                 botones obligaba al usuario a saber de antemano cuál necesitaba,
-                 que es justamente lo que el sistema tiene que resolverle. */}
-          {/* ISSUE es la pantalla principal de esta etapa: ahí se trabaja el
-              problema, el flujograma, el reporte y el chat por etapa.
-              ARCHITECT es un complemento que se acopla: clasifica qué clase de
-              intervención corresponde ANTES de desarrollarla. Entra por Issue,
-              no al revés. */}
-          <span className="hdr-stage">Decidir</span>
-          <button
-            className={`btn-synth btn-issue${issueOpen || processOpen ? ' active' : ''}`}
+            className={`btn-synth btn-secondary${issueOpen || processOpen ? ' active' : ''}`}
             onClick={() => { setArchitectOpen(false); setIssueOpen(o => !o); }}
-            title="Issue — diagnosticá un problema o diseñá un proceso, fundado en tu grafo"
+            title="Issue — diagnosticá un problema o diseñá un proceso"
           >
-            ⚠ Issue
+            ⚑ Issue
           </button>
-          {/* Architect ya no tiene botón propio: vive como la pestaña «Clasificación»
-              dentro del detalle de un Issue. Era un paso del expediente disfrazado de
-              módulo hermano. El panel suelto sigue en el árbol por si hace falta
-              volver a exponerlo, pero no ocupa lugar en la navegación. */}
 
           <span className="hdr-sep" />
 
@@ -776,14 +743,13 @@ export default function App() {
             cuando se conecte con las citas del agente, que es lo que la haria util. */}
       </div>
 
-      {/* Botón flotante del Agente (estilo chatbot). Abajo a la DERECHA: el inferior
-          izquierdo lo ocupa el selector de layout. Se oculta si el agente ya está abierto. */}
-      {!globalAgent && !synthMode && !agentOpen && !discoveriesOpen && !processOpen && (
+      {/* Botón flotante del Agente (estilo chatbot Intercom/ChatGPT).
+          Siempre visible excepto cuando el chat del agente ya está abierto. */}
+      {!globalAgent && (
         <button className="agent-fab" onClick={toggleGlobalAgent}
           aria-label="Abrir el Agente IA"
-          title="Agente IA — preguntá sobre tu conocimiento">
+          title="Preguntá sobre tu conocimiento — fundado en el grafo, con citas">
           <span className="agent-fab-icon">⬡</span>
-          <span className="agent-fab-text">Agente</span>
         </button>
       )}
 
@@ -877,8 +843,18 @@ export default function App() {
           linkMeta={selectedLink.linkMeta}
           onReviewed={handleRelationReviewed}
           onClose={() => { setSelectedLink(null); setHighlighted(new Set()); }}
-          initialPos={tooltipPos}
           onOpenSynthesis={handleOpenSynthesisFromRelation}
+          onOpenNode={node => {
+            setSelectedLink(null);
+            setFixedNode(node);
+            setHoverNode(null);
+          }}
+          onFocusNode={node => {
+            setSelectedLink(null);
+            setFixedNode(node);
+            setHoverNode(null);
+            setFocusTrigger(t => t + 1);
+          }}
         />
       )}
 
