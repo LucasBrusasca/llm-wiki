@@ -7,13 +7,13 @@ import { clusterColor, CLUSTER_PALETTE } from '../App.jsx';
 
 /* ── Mapa plano de documentos (constelación de miniaturas) ── */
 const NODE = {
-  bg:      '#08090C', // fondo casi negro
-  card:    '#0D101460', // relleno de tarjeta neutra (translúcido)
-  border:  'rgba(130,145,165,0.28)', // borde fino de tarjeta, gris apagado
-  label:   'rgba(200,210,220,0.85)',  // texto de etiqueta
-  line:    '100,115,135',             // conexiones: gris azulado apagado (rgb base)
-  issue:   '#C9A25E',                // ámbar apagado: reservado para lo excepcional
-  sel:     '#B0BCC8',                // retícula de selección, no blanco puro
+  bg:      '#0A0B0E', // fondo casi negro
+  card:    '#12141850', // relleno de tarjeta neutra (translúcido oscuro)
+  border:  'rgba(90,95,105,0.35)', // borde fino gris neutro
+  label:   'rgba(180,185,195,0.9)',  // texto de etiqueta gris claro
+  line:    '70,75,85',               // conexiones: gris oscuro neutro (rgb base)
+  issue:   '#8A7A60',                // marrón apagado: reservado para lo excepcional
+  sel:     '#9099A5',                // selección: gris azulado suave, no blanco
 };
 
 // "#7C8CFF" → "124,140,255". Se cachea porque linkColor corre por arista y por frame.
@@ -100,19 +100,19 @@ const GLYPHS = {
   ppt: 'PPT', youtube: '▶', image: '▣', video: '▶', concepto: '◇',
 };
 
-// Tarjeta neutra (sin miniatura): rectángulo oscuro + borde fino + glyph del tipo.
+// Tarjeta neutra (sin miniatura): rectángulo oscuro + borde fino gris + glyph del tipo.
+// SIN barras de color - todo gris neutro.
 function makeNeutralCardTexture(node, accent) {
   const cw = 128, ch = 96;
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = NODE.card; ctx.fillRect(0, 0, cw, ch);
-  // Barra superior + borde en el COLOR DEL CLUSTER → identidad de grupo (plano, no glow).
-  if (accent) { ctx.fillStyle = accent; ctx.fillRect(0, 0, cw, 6); }
-  ctx.strokeStyle = accent || NODE.border; ctx.lineWidth = 3;
-  ctx.strokeRect(1.5, 1.5, cw - 3, ch - 3);
+  ctx.fillStyle = '#151820'; ctx.fillRect(0, 0, cw, ch);
+  // Borde fino gris neutro, sin barra de color
+  ctx.strokeStyle = 'rgba(80,85,95,0.5)'; ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, cw - 2, ch - 2);
   const glyph = GLYPHS[(node.fuente || '').toLowerCase()] || '◇';
-  ctx.fillStyle = 'rgba(165,180,200,0.7)';
+  ctx.fillStyle = 'rgba(130,140,155,0.6)';
   ctx.font = `${glyph.length > 1 ? 26 : 40}px 'JetBrains Mono', 'Courier New', monospace`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(glyph, cw / 2, ch / 2);
@@ -121,8 +121,8 @@ function makeNeutralCardTexture(node, accent) {
   return { tex, aspect: cw / ch };
 }
 
-// Tarjeta con miniatura real: imagen + borde fino. Leve atenuación para que las
-// páginas blancas no superen el umbral del bloom (se ven nítidas, no quemadas).
+// Tarjeta con miniatura real: imagen + borde fino gris. Leve atenuación para que las
+// páginas blancas no superen el umbral del bloom. SIN barras de color.
 function makeThumbCardTexture(img, accent) {
   const ar = (img.naturalWidth / img.naturalHeight) || 1;
   const M = 128; let w, h;
@@ -132,14 +132,12 @@ function makeThumbCardTexture(img, accent) {
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = '#0B0B16'; ctx.fillRect(0, 0, cw, ch);
+  ctx.fillStyle = '#0E1016'; ctx.fillRect(0, 0, cw, ch);
   ctx.drawImage(img, pad, pad, w, h);
-  ctx.fillStyle = 'rgba(8,10,14,0.12)'; ctx.fillRect(pad, pad, w, h); // dim sutil
-  // Identidad de cluster (plano, no glow): barra de color arriba + marco del mismo color.
-  // La barra se lee aunque la tarjeta sea chica; el marco la encuadra.
-  if (accent) { ctx.fillStyle = accent; ctx.fillRect(0, 0, cw, 7); }
-  ctx.strokeStyle = accent || NODE.border; ctx.lineWidth = 3.5;
-  ctx.strokeRect(1.75, 1.75, cw - 3.5, ch - 3.5);
+  ctx.fillStyle = 'rgba(8,10,14,0.15)'; ctx.fillRect(pad, pad, w, h); // dim sutil
+  // Borde fino gris neutro, SIN barra de color
+  ctx.strokeStyle = 'rgba(75,80,90,0.45)'; ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, cw - 2, ch - 2);
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
   return { tex, aspect: cw / ch };
@@ -182,11 +180,11 @@ function buildCaption(text) {
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  // Placa oscura con borde gris sutil (sin colores brillantes).
-  ctx.fillStyle = 'rgba(14,16,22,0.82)';
+  // Placa carbón oscuro con borde hairline gris (sin colores brillantes).
+  ctx.fillStyle = 'rgba(18,20,26,0.88)';
   roundRect(ctx, 0.5, 0.5, cw - 1, ch - 1, 5);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(100,115,135,0.30)'; ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(70,75,85,0.35)'; ctx.lineWidth = 1;
   ctx.stroke();
   ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   // Contorno oscuro para contraste sobre fondos claros (páginas blancas).
@@ -1240,7 +1238,8 @@ export default function Graph3D({
         : 'rgba(140,150,165,0.65)';
     }
 
-    const alpha = !hayFoco ? alphaBase : (enFoco ? 0.95 : 0.02);
+    // Edges conectadas al nodo seleccionado: solo un poco más visibles, no brillantes
+    const alpha = !hayFoco ? alphaBase : (enFoco ? 0.45 : 0.04);
     return `rgba(${rgb},${alpha})`;
   }, [selectedNode, highlighted, hoverLink]);
 

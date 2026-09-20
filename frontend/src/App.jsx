@@ -15,20 +15,20 @@ import VaultBadge from './components/VaultBadge.jsx';
 import { computeDiscoveries } from './discoveries.js';
 import { pedirClave, avisarClaveIncorrecta } from './security.js';
 
-// ── Paleta: TONOS SOBRIOS ─────────────────────────────────────────────────────
-// Colores desaturados con baja luminosidad. No compiten por atención visual.
-// Cada cluster se distingue por matiz, no por brillo ni saturación.
+// ── Paleta: GRISES NEUTROS CON VARIACIÓN SUTIL ───────────────────────────────
+// Todos los clusters son variantes de gris/slate con leve sesgo de tono.
+// La diferenciación es sutil: no compite con el contenido.
 export const CLUSTER_PALETTE = [
-  '#8B5A5A', // borgoña apagado
-  '#4A7A7A', // teal oscuro
-  '#4A5A7A', // azul grisáceo
-  '#4A7A5A', // verde musgo
-  '#6A5A7A', // lavanda oscuro
-  '#8A7A5A', // ocre apagado
-  '#7A5A6A', // malva oscuro
-  '#5A6A7A', // acero azulado
-  '#5A7A5A', // oliva apagado
-  '#7A5A5A', // terracota apagado
+  '#5A5E66', // slate neutro
+  '#525A62', // slate azulado
+  '#5E5A58', // slate cálido
+  '#585E5A', // slate verdoso
+  '#5C5860', // slate violáceo
+  '#5E5C56', // slate arena
+  '#565C5E', // slate frío
+  '#5A5656', // slate rosado
+  '#585C56', // slate oliva
+  '#5C5A5E', // slate lavanda
 ];
 
 // Reservado: sólo para lo excepcional (issues, alertas). Si aparece, significa algo.
@@ -564,7 +564,23 @@ export default function App() {
           onChange={handleSearchChange}
         />
         <div className="header-actions">
-          {/* ── Etapa 1 · Contexto: lo que el sistema sabe ── */}
+          {/* ── Inicio: volver al grafo limpio ── */}
+          <button
+            className={`btn-synth btn-inicio${!libraryOpen && !globalAgent && !discoveriesOpen && !synthMode && !issueOpen && !processOpen && !architectOpen ? ' active' : ''}`}
+            onClick={() => {
+              setLibraryOpen(false); setGlobalAgent(false); setAgentOpen(false);
+              setDiscoveriesOpen(false); setSynthMode(false);
+              setIssueOpen(false); setProcessOpen(false); setArchitectOpen(false);
+              setFixedNode(null); setHoverNode(null);
+            }}
+            title="Inicio — ver el grafo de conocimiento"
+          >
+            ◉ Inicio
+          </button>
+
+          <span className="hdr-sep" />
+
+          {/* ── Contexto: lo que el sistema sabe ── */}
           <span className="hdr-stage">Contexto</span>
           <button
             className={`btn-synth${libraryOpen ? ' active' : ''}`}
@@ -576,7 +592,7 @@ export default function App() {
 
           <span className="hdr-sep" />
 
-          {/* ── Etapa 2 · Explorar: qué hay en el corpus y cómo se relaciona ── */}
+          {/* ── Explorar: qué hay en el corpus y cómo se relaciona ── */}
           <span className="hdr-stage">Explorar</span>
           <button
             className={`btn-synth${globalAgent ? ' active' : ''}`}
@@ -602,29 +618,15 @@ export default function App() {
 
           <span className="hdr-sep" />
 
-          {/* ── Etapa 3 · Decidir ──
-                 Una sola entrada. Architect es el paso 1 del recorrido, no un
-                 módulo hermano: clasifica QUÉ intervención corresponde y, si la
-                 ruta amerita desarrollo, entrega el caso a Issue. Tener dos
-                 botones obligaba al usuario a saber de antemano cuál necesitaba,
-                 que es justamente lo que el sistema tiene que resolverle. */}
-          {/* ISSUE es la pantalla principal de esta etapa: ahí se trabaja el
-              problema, el flujograma, el reporte y el chat por etapa.
-              ARCHITECT es un complemento que se acopla: clasifica qué clase de
-              intervención corresponde ANTES de desarrollarla. Entra por Issue,
-              no al revés. */}
-          <span className="hdr-stage">Decidir</span>
+          {/* ── Secundario: herramientas avanzadas ── */}
+          <span className="hdr-stage hdr-stage--secondary">Avanzado</span>
           <button
-            className={`btn-synth btn-issue${issueOpen || processOpen ? ' active' : ''}`}
+            className={`btn-synth btn-secondary${issueOpen || processOpen ? ' active' : ''}`}
             onClick={() => { setArchitectOpen(false); setIssueOpen(o => !o); }}
-            title="Issue — diagnosticá un problema o diseñá un proceso, fundado en tu grafo"
+            title="Issue — diagnosticá un problema o diseñá un proceso"
           >
-            ⚠ Issue
+            ⚑ Issue
           </button>
-          {/* Architect ya no tiene botón propio: vive como la pestaña «Clasificación»
-              dentro del detalle de un Issue. Era un paso del expediente disfrazado de
-              módulo hermano. El panel suelto sigue en el árbol por si hace falta
-              volver a exponerlo, pero no ocupa lugar en la navegación. */}
 
           <span className="hdr-sep" />
 
