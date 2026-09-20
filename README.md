@@ -1,5 +1,15 @@
 # Algedi
 
+**Segundo cerebro vivo**: nodos tipados, secciones dimensionales a gusto del usuario, ingest que alimenta grafo/RAG, y un agente in-app que **cita o se abstiene**.
+
+> 🎯 **Visión canónica:** Algedi es un sistema de anclaje semántico navegable, no un desk de decisión con stepper. El home es navegar y habitar secciones del cerebro, no un wizard.
+>
+> 📍 **Roadmap ALIGNED:** [`ROADMAP_ALIGNED.md`](docs/ROADMAP_ALIGNED.md) define las fases de desarrollo. [`VISION_ALIGNED.md`](docs/VISION_ALIGNED.md) es el canon de producto.
+>
+> 📋 **Estado actual:** [`docs/FASE0_ESTADO.md`](docs/FASE0_ESTADO.md) documenta qué existe, qué falta, y las recomendaciones para Fase 1.
+
+---
+
 **Local AI-powered knowledge graph with 3D semantic visualization.**  
 Ingest PDFs, YouTube videos, web pages and Excel files → the system extracts concepts via LLM, builds a semantic graph, and lets you explore, query, and synthesize knowledge in 3D.
 
