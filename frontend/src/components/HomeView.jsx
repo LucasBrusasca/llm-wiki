@@ -3,19 +3,20 @@ import React, { useState, useEffect, useCallback } from 'react';
 /* ── HomeView · Architect-first Decision Desk ──────────────────────────────
    Algedi es para DECIDIR con evidencia, no chatear.
    
-   CTA primario: Empezar decisión (Architect)
-   El flujo es: PROBLEMA → EVIDENCIA → DECISIÓN → EXPEDIENTE
+   DOMAIN-AGNOSTIC: Works for any corpus. The flow adapts to whatever
+   documents are ingested — finance, legal, HR, ops, engineering, etc.
    
-   Sin feature cards genéricas. Sin vibes de SaaS template.
+   DIFFERENTIATED: Evidence approve/reject + Abstain + Saved expediente.
+   Not chat-for-chat's-sake. Not Multiverso. Not generic SaaS.
    ────────────────────────────────────────────────────────────────────────── */
 
 const RUTAS = [
-  { key: 'redesign', label: 'Rediseño', hint: 'ordenar el proceso' },
-  { key: 'rules', label: 'Reglas', hint: 'determinístico' },
-  { key: 'data', label: 'Datos', hint: 'visibilidad' },
-  { key: 'assistive', label: 'IA asistiva', hint: 'criterio' },
-  { key: 'agent', label: 'Agente', hint: 'delegado' },
-  { key: 'none', label: 'No implementar', hint: 'sin evidencia' },
+  { key: 'redesign', label: 'Rediseño' },
+  { key: 'rules', label: 'Reglas' },
+  { key: 'data', label: 'Datos' },
+  { key: 'assistive', label: 'IA asistiva' },
+  { key: 'agent', label: 'Agente' },
+  { key: 'none', label: 'No implementar' },
 ];
 
 export default function HomeView({
@@ -54,7 +55,6 @@ export default function HomeView({
 
   return (
     <div className="home-desk">
-      {/* Fondo con gradiente sutil */}
       <div className="home-desk-bg" />
       
       <div className="home-desk-content">
@@ -82,11 +82,12 @@ export default function HomeView({
           </div>
         </header>
 
-        {/* Hero: CTA Principal */}
+        {/* Hero: propuesta de valor diferenciada */}
         <section className="home-desk-hero">
           <h1>Decidí con evidencia</h1>
           <p className="home-desk-subtitle">
-            Planteá un problema. Architect busca en tu corpus, clasifica la ruta y arma el expediente.
+            Planteá un problema. Architect busca en tu corpus, vos aprobás o descartás 
+            cada fuente, y el expediente queda guardado con las citas.
           </p>
           
           <button className="home-desk-cta" onClick={onStartArchitect}>
@@ -98,8 +99,25 @@ export default function HomeView({
             <span className="home-desk-cta-arrow">→</span>
           </button>
 
+          {/* Diferenciadores clave */}
+          <div className="home-desk-diff">
+            <div className="home-desk-diff-item">
+              <span className="home-desk-diff-icon">✓ ✗</span>
+              <span>Aprobá o descartá cada fuente</span>
+            </div>
+            <div className="home-desk-diff-item">
+              <span className="home-desk-diff-icon">⊘</span>
+              <span>Abstención si no hay evidencia</span>
+            </div>
+            <div className="home-desk-diff-item">
+              <span className="home-desk-diff-icon">◈</span>
+              <span>Expediente con citas guardado</span>
+            </div>
+          </div>
+
           {/* Las 6 rutas como referencia visual */}
           <div className="home-desk-rutas">
+            <span className="home-desk-rutas-label">6 rutas posibles:</span>
             {RUTAS.map(r => (
               <span key={r.key} className="home-desk-ruta">
                 {r.label}
@@ -121,7 +139,7 @@ export default function HomeView({
               {expedientes.map(exp => {
                 const sv = exp.solve || {};
                 const ruta = RUTAS.find(r => r.key === sv.classification);
-                const status = sv.human_review?.status || 'pendiente';
+                const citasCount = sv.citations?.length || 0;
                 return (
                   <button
                     key={exp.id}
@@ -132,7 +150,7 @@ export default function HomeView({
                     <span className="home-desk-exp-info">
                       <span className="home-desk-exp-label">{exp.label}</span>
                       <span className="home-desk-exp-meta">
-                        {ruta ? ruta.label : 'sin clasificar'} · {status}
+                        {ruta ? ruta.label : 'sin clasificar'} · {citasCount} cita{citasCount !== 1 ? 's' : ''}
                       </span>
                     </span>
                   </button>
@@ -142,21 +160,23 @@ export default function HomeView({
           </section>
         )}
 
-        {/* Ejemplo de uso (cuando no hay expedientes) */}
+        {/* Empty state con guía clara */}
         {!loading && (!expedientes || expedientes.length === 0) && (
-          <section className="home-desk-ejemplo">
-            <div className="home-desk-ejemplo-label">ejemplo · tesorería</div>
-            <p>
-              "Tenemos un proceso de conciliación bancaria que toma 3 días porque se hace 
-              manual en Excel. Los errores de tipeo generan diferencias que después hay que rastrear."
-            </p>
-            <div className="home-desk-ejemplo-result">
-              → Architect analizaría si es rediseño, reglas, datos, IA asistiva, agente o si no hay suficiente evidencia.
+          <section className="home-desk-empty">
+            <div className="home-desk-empty-content">
+              <h3>Sin expedientes en "{seccion}"</h3>
+              <p>
+                Empezá tu primer caso: describí un problema, revisá la evidencia 
+                del corpus, y guardá el expediente con las fuentes citadas.
+              </p>
+              <button className="home-desk-empty-cta" onClick={onStartArchitect}>
+                Empezar primer caso →
+              </button>
             </div>
           </section>
         )}
 
-        {/* Accesos secundarios (mínimos) */}
+        {/* Accesos secundarios (mínimos, no compiten con el CTA) */}
         <section className="home-desk-secondary">
           <button className="home-desk-sec-btn" onClick={onOpenLibrary}>
             <span>⊞</span> Biblioteca
@@ -169,11 +189,11 @@ export default function HomeView({
           </button>
         </section>
 
-        {/* Footer mínimo */}
+        {/* Footer con nota de replicabilidad */}
         <footer className="home-desk-footer">
           <p>
-            Architect no es un módulo más: es el proceso para llegar a una decisión 
-            (o a "no implementar") con expediente y evidencia.
+            El mismo flujo funciona para cualquier corpus: finanzas, legal, RRHH, 
+            operaciones, ingeniería. Solo cambiá los documentos en la Biblioteca.
           </p>
         </footer>
       </div>

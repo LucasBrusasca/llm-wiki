@@ -2631,6 +2631,29 @@ body::before {
   color: rgba(255,255,255,0.7);
 }
 
+/* ── Instrucción del paso actual (siempre visible, una línea) ── */
+.arch-step-instruction {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 24px;
+  background: linear-gradient(90deg, rgba(45,212,191,0.08), transparent 60%);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  flex-shrink: 0;
+}
+.arch-instruction-step {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #2DD4BF;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.arch-instruction-text {
+  font-size: 13px;
+  color: rgba(255,255,255,0.7);
+}
+
 /* ── Contenido principal ── */
 .arch-desk-main {
   flex: 1;
@@ -2792,6 +2815,68 @@ body::before {
   line-height: 1.4;
 }
 
+/* Input groups */
+.arch-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.arch-input-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.5);
+  letter-spacing: 0.5px;
+}
+.arch-input-hint {
+  font-size: 12px;
+  color: rgba(255,255,255,0.35);
+  margin-top: 4px;
+}
+
+/* Empty state guidance */
+.arch-empty-guidance {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  background: rgba(255,255,255,0.02);
+  border: 1px dashed rgba(255,255,255,0.12);
+  border-radius: 8px;
+  margin-top: 16px;
+}
+.arch-guidance-icon {
+  font-size: 18px;
+  color: #2DD4BF;
+  opacity: 0.7;
+}
+.arch-empty-guidance span:last-child {
+  font-size: 13px;
+  color: rgba(255,255,255,0.5);
+}
+
+/* Button spinner */
+.arch-btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(5,7,14,0.3);
+  border-top-color: #05070E;
+  border-radius: 50%;
+  animation: archSpin 0.8s linear infinite;
+  margin-right: 8px;
+}
+@keyframes archSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* Step subtitle */
+.arch-step-subtitle {
+  font-size: 14px;
+  color: rgba(255,255,255,0.5);
+  margin: 0;
+  line-height: 1.5;
+}
+
 /* ═══ PASO 2: EVIDENCIA ═══ */
 .arch-step-evidencia {
   max-width: 800px;
@@ -2909,11 +2994,87 @@ body::before {
 }
 
 .arch-evidencia-summary {
-  padding: 12px 0;
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.arch-summary-bar {
+  width: 100%;
+  height: 6px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.arch-summary-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #2DD4BF, #06B6D4);
+  border-radius: 3px;
+  transition: width 0.3s ease;
 }
 .arch-summary-count {
   font-size: 13px;
   color: rgba(255,255,255,0.5);
+}
+.arch-summary-count strong {
+  color: #2DD4BF;
+}
+
+/* Abstain button */
+.arch-btn-abstain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 24px;
+  border: 1px solid rgba(234,179,8,0.3);
+  border-radius: 8px;
+  background: rgba(234,179,8,0.08);
+  color: #EAB308;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.arch-btn-abstain:hover {
+  background: rgba(234,179,8,0.15);
+  border-color: rgba(234,179,8,0.5);
+}
+.arch-btn-abstain-icon {
+  font-size: 16px;
+}
+
+/* Empty evidence actions */
+.arch-evidencia-empty h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  margin: 0 0 8px;
+}
+.arch-empty-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  font-size: 13px;
+  color: rgba(255,255,255,0.4);
+}
+.arch-empty-link {
+  background: none;
+  border: none;
+  color: #2DD4BF;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.arch-empty-link:hover {
+  color: #5EEAD4;
+}
+.arch-empty-link--warn {
+  color: #EAB308;
+}
+.arch-empty-link--warn:hover {
+  color: #FACC15;
 }
 
 /* ═══ PASO 3: DECISIÓN ═══ */
@@ -3001,6 +3162,24 @@ body::before {
   color: rgba(255,255,255,0.35);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+.arch-ruta-badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(45,212,191,0.15);
+  color: #2DD4BF;
+  margin-left: auto;
+}
+
+.arch-ruta-item.suggested {
+  border-color: rgba(45,212,191,0.25);
+  background: rgba(45,212,191,0.04);
 }
 
 .arch-understanding {
@@ -3213,6 +3392,40 @@ body::before {
   display: flex;
   justify-content: center;
   gap: 12px;
+}
+
+.arch-saved-summary {
+  display: flex;
+  justify-content: center;
+  gap: 40px;
+  margin-bottom: 32px;
+  padding: 20px;
+  background: rgba(255,255,255,0.02);
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.arch-saved-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.arch-saved-stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: #2DD4BF;
+}
+.arch-saved-stat-label {
+  font-size: 11px;
+  color: rgba(255,255,255,0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.arch-preview-ruta-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
 }
 
 /* ── Responsive ── */
@@ -4511,21 +4724,50 @@ body::before {
 }
 
 /* Rutas preview */
+/* Differentiators */
+.home-desk-diff {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  margin-top: 20px;
+  padding: 16px 0;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.home-desk-diff-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.5);
+}
+.home-desk-diff-icon {
+  font-size: 14px;
+  color: #2DD4BF;
+  opacity: 0.8;
+}
+
 .home-desk-rutas {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
+  align-items: center;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 16px;
+}
+.home-desk-rutas-label {
+  font-size: 11px;
+  color: rgba(255,255,255,0.35);
+  margin-right: 4px;
 }
 
 .home-desk-ruta {
-  padding: 6px 12px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 20px;
-  font-size: 11px;
-  color: rgba(255,255,255,0.5);
+  padding: 5px 10px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 16px;
+  font-size: 10px;
+  color: rgba(255,255,255,0.45);
 }
 
 /* Expedientes recientes */
@@ -4616,7 +4858,46 @@ body::before {
   color: rgba(255,255,255,0.4);
 }
 
-/* Ejemplo */
+/* Empty state */
+.home-desk-empty {
+  padding: 32px 24px;
+  background: rgba(255,255,255,0.02);
+  border: 1px dashed rgba(255,255,255,0.12);
+  border-radius: 12px;
+  text-align: center;
+}
+.home-desk-empty-content h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  margin: 0 0 12px;
+}
+.home-desk-empty-content p {
+  font-size: 14px;
+  color: rgba(255,255,255,0.5);
+  margin: 0 0 20px;
+  line-height: 1.6;
+  max-width: 400px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.home-desk-empty-cta {
+  padding: 12px 24px;
+  border: 1px solid rgba(45,212,191,0.4);
+  border-radius: 8px;
+  background: rgba(45,212,191,0.1);
+  color: #2DD4BF;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.home-desk-empty-cta:hover {
+  background: rgba(45,212,191,0.2);
+  border-color: #2DD4BF;
+}
+
+/* Ejemplo (legacy) */
 .home-desk-ejemplo {
   padding: 20px 24px;
   background: rgba(255,255,255,0.02);
