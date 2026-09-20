@@ -1,226 +1,121 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import ArchitectCanvas from './ArchitectCanvas.jsx';
 
-/* ── Architect · Taller de Casos con Chat Interactivo ─────────────────────────
-   CHAT + CANVAS: el usuario dialoga y el canvas se actualiza en vivo.
-   - Chat lateral para ida y vuelta con sugerencias clickeables
-   - Canvas como área de trabajo central
-   - Click en nodo → drawer lateral
-   - Sugerencias = botones que aplican acciones al canvas
+/* ── Algedi Architect · Decision Desk ─────────────────────────────────────────
+   STEPPER 1→4: Resolver un problema con evidencia, no chatear.
+   
+   1. PROBLEMA   — ¿Qué hay que resolver?
+   2. EVIDENCIA  — Fuentes recuperadas: aprobar/descartar
+   3. DECISIÓN   — Clasificación de ruta + canvas de flujo
+   4. EXPEDIENTE — Guardar versión en el mismo lugar
    ───────────────────────────────────────────────────────────────────────────── */
 
 const RUTAS = [
-  { key: 'redesign',  label: 'Rediseño',       hint: 'ordenar el proceso',      tone: '#B8F0FF' },
-  { key: 'rules',     label: 'Reglas',         hint: 'determinístico',          tone: '#7FDBFF' },
-  { key: 'data',      label: 'Datos / BI',     hint: 'visibilidad y calidad',   tone: '#5AC8FA' },
-  { key: 'assistive', label: 'IA asistiva',    hint: 'criterio con control',    tone: '#49B6E8' },
-  { key: 'agent',     label: 'Agente',         hint: 'acción delegada',         tone: '#2E86B8' },
-  { key: 'none',      label: 'No implementar', hint: 'la evidencia no alcanza', tone: '#FFB44D' },
+  { key: 'redesign',  label: 'Rediseño',       hint: 'ordenar el proceso',      tone: '#2DD4BF' },
+  { key: 'rules',     label: 'Reglas',         hint: 'determinístico',          tone: '#3B82F6' },
+  { key: 'data',      label: 'Datos / BI',     hint: 'visibilidad y calidad',   tone: '#06B6D4' },
+  { key: 'assistive', label: 'IA asistiva',    hint: 'criterio con control',    tone: '#A855F7' },
+  { key: 'agent',     label: 'Agente',         hint: 'acción delegada',         tone: '#EC4899' },
+  { key: 'none',      label: 'No implementar', hint: 'la evidencia no alcanza', tone: '#EAB308' },
+];
+
+const STEPS = [
+  { id: 1, key: 'problema',   label: 'PROBLEMA',   desc: 'Definí qué resolver' },
+  { id: 2, key: 'evidencia',  label: 'EVIDENCIA',  desc: 'Fuentes del corpus' },
+  { id: 3, key: 'decision',   label: 'DECISIÓN',   desc: 'Ruta y flujo' },
+  { id: 4, key: 'expediente', label: 'EXPEDIENTE', desc: 'Guardar versión' },
 ];
 
 export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarrollar, onAbrirExpediente, allNodes = [] }) {
-  // Estado del caso
+  // Paso actual del stepper
+  const [currentStep, setCurrentStep] = useState(1);
+  
+  // Datos del caso
   const [caseName, setCaseName] = useState('');
   const [problem, setProblem] = useState('');
   
-  // Chat interactivo
-  const [chatMessages, setChatMessages] = useState([
-    { role: 'assistant', content: '¡Hola! Contame qué problema querés resolver. Voy a ayudarte a armar el flujo de decisión.', suggestions: [
-      { label: 'Empezar con plantilla', action: 'use_template', params: { template: 'simple' } },
-    ], sources: [] }
-  ]);
-  const [chatInput, setChatInput] = useState('');
-  const [chatLoading, setChatLoading] = useState(false);
-  const chatEndRef = useRef(null);
+  // Evidencia recuperada
+  const [evidencias, setEvidencias] = useState([]);
+  const [evidenciasAprobadas, setEvidenciasAprobadas] = useState(new Set());
+  const [buscandoEvidencia, setBuscandoEvidencia] = useState(false);
   
-  // Trazabilidad: detalle de fuente seleccionada
-  const [sourceDetail, setSourceDetail] = useState(null);
-  
-  // Expedientes (vista alternativa)
-  const [vistaExpedientes, setVistaExpedientes] = useState(false);
-  const [expedientes, setExpedientes] = useState(null);
-  
-  // Análisis y sugerencias de rutas
+  // Análisis y clasificación
   const [sugerencias, setSugerencias] = useState(null);
   const [analizando, setAnalizando] = useState(false);
-  const [mostrarSugerencias, setMostrarSugerencias] = useState(false);
-
-  // Referencia al canvas para comunicación
+  const [rutaSeleccionada, setRutaSeleccionada] = useState(null);
+  
+  // Canvas ref
   const canvasRef = useRef(null);
   
-  // Auto-scroll del chat
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
+  // Expediente
+  const [guardando, setGuardando] = useState(false);
+  const [expedienteGuardado, setExpedienteGuardado] = useState(null);
+  
+  // Ejemplo de problema para tesorería/finanzas
+  const ejemploProblema = "Tenemos un proceso de conciliación bancaria que toma 3 días porque se hace manual en Excel. Los errores de tipeo generan diferencias que después hay que rastrear.";
 
-  const cargarExpedientes = useCallback(async () => {
-    setExpedientes(null);
-    try {
-      const r = await fetch(`/api/graph?seccion=${encodeURIComponent(seccion)}`);
-      const d = await r.json();
-      const issues = (d.nodos || []).filter(n => n.is_issue);
-      setExpedientes(issues);
-    } catch { setExpedientes([]); }
-  }, [seccion]);
-
-  // Obtener estado actual del canvas
-  const getCanvasState = useCallback(() => {
-    if (canvasRef.current?.getFlowData) {
-      const { nodes, edges } = canvasRef.current.getFlowData();
-      return { nodes, edges, caseName, problem };
-    }
-    return { nodes: [], edges: [], caseName, problem };
-  }, [caseName, problem]);
-
-  // Enviar mensaje al chat
-  const sendChatMessage = useCallback(async (messageText) => {
-    const text = messageText?.trim() || chatInput.trim();
-    if (!text || chatLoading) return;
+  // ─── PASO 1: PROBLEMA ───────────────────────────────────────────────────────
+  const handleContinueProblema = useCallback(async () => {
+    if (!problem.trim()) return;
     
-    // Agregar mensaje del usuario inmediatamente
-    const userMsg = { role: 'user', content: text };
-    setChatMessages(prev => [...prev, userMsg]);
-    setChatInput('');
-    setChatLoading(true);
-    
-    // Si es el primer mensaje sustancial, usarlo como problema
-    if (!problem && text.length > 15) {
-      setProblem(text);
-    }
+    setBuscandoEvidencia(true);
+    setEvidencias([]);
     
     try {
-      const canvasState = getCanvasState();
-      const allMessages = [...chatMessages, userMsg];
-      
+      // Buscar evidencia relevante en el corpus
       const r = await fetch('/api/architect/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: allMessages.map(m => ({ role: m.role, content: m.content })),
-          canvas_state: canvasState,
+          messages: [{ role: 'user', content: problem }],
+          canvas_state: { nodes: [], edges: [], caseName, problem },
           seccion,
         }),
       });
       
       const data = await r.json().catch(() => ({}));
       
-      // Agregar respuesta del asistente CON TRAZABILIDAD (sources)
-      const assistantMsg = {
-        role: 'assistant',
-        content: data.message || 'Contame más sobre tu caso.',
-        suggestions: data.suggestions || [],
-        sources: data.sources || [],  // TRAZABILIDAD: fuentes del corpus
-      };
-      setChatMessages(prev => [...prev, assistantMsg]);
+      // Extraer fuentes del corpus
+      const sources = data.sources || [];
+      setEvidencias(sources);
       
-      // Actualizar nombre del caso si el LLM sugirió uno mejor
+      // Auto-aprobar fuentes con alta relevancia
+      const autoApproved = new Set();
+      sources.forEach((s, i) => {
+        if (s.sim && s.sim >= 0.5) autoApproved.add(i);
+      });
+      setEvidenciasAprobadas(autoApproved);
+      
+      // Actualizar nombre si viene sugerido
       if (data.case_name && !caseName) {
         setCaseName(data.case_name);
       }
+      
+      setCurrentStep(2);
     } catch (err) {
-      setChatMessages(prev => [...prev, {
-        role: 'assistant',
-        content: 'Hubo un error. Intentá de nuevo.',
-        suggestions: [],
-        sources: [],
-      }]);
+      console.error('Error buscando evidencia:', err);
     } finally {
-      setChatLoading(false);
+      setBuscandoEvidencia(false);
     }
-  }, [chatInput, chatMessages, chatLoading, problem, caseName, seccion, getCanvasState]);
+  }, [problem, caseName, seccion]);
 
-  // Ejecutar una sugerencia clickeable
-  const executeSuggestion = useCallback(async (suggestion) => {
-    const { action, params = {}, label } = suggestion;
-    
-    // Feedback inmediato en el chat
-    setChatMessages(prev => [...prev, {
-      role: 'user',
-      content: `→ ${label}`,
-      isAction: true,
-    }]);
-    
-    switch (action) {
-      case 'generate_flow':
-        if (canvasRef.current?.generarFlujoDesdePrompt) {
-          setChatLoading(true);
-          await canvasRef.current.generarFlujoDesdePrompt(problem);
-          setChatLoading(false);
-          setChatMessages(prev => [...prev, {
-            role: 'assistant',
-            content: '¡Listo! Generé un flujo inicial. Podés editar los nodos haciendo click.',
-            suggestions: [
-              { label: 'Agregar paso', action: 'add_node', params: { type: 'paso', label: 'Nuevo paso' } },
-              { label: 'Analizar rutas', action: 'analyze_routes', params: {} },
-            ],
-          }]);
-        }
-        break;
-        
-      case 'use_template':
-        if (canvasRef.current?.cargarPlantilla) {
-          canvasRef.current.cargarPlantilla(params.template || 'simple');
-          setChatMessages(prev => [...prev, {
-            role: 'assistant',
-            content: `Cargué la plantilla "${params.template || 'simple'}". Hacé click en cualquier nodo para editarlo.`,
-            suggestions: [
-              { label: 'Generar desde problema', action: 'generate_flow', params: {} },
-            ],
-          }]);
-        }
-        break;
-        
-      case 'add_node':
-        if (canvasRef.current?.addNode) {
-          canvasRef.current.addNode(params.type || 'paso', params.label || 'Nuevo paso');
-          setChatMessages(prev => [...prev, {
-            role: 'assistant',
-            content: `Agregué el nodo "${params.label}". Arrastralo donde quieras.`,
-            suggestions: [],
-          }]);
-        }
-        break;
-        
-      case 'find_evidence':
-        setChatMessages(prev => [...prev, {
-          role: 'assistant',
-          content: 'Para vincular evidencia, hacé click en un nodo y usá el buscador en el drawer lateral.',
-          suggestions: [],
-        }]);
-        break;
-        
-      case 'refine_problem':
-        setChatMessages(prev => [...prev, {
-          role: 'assistant',
-          content: '¿Podrías contarme un poco más sobre el problema? Por ejemplo: ¿cuál es el proceso actual? ¿qué decisiones se toman?',
-          suggestions: [],
-        }]);
-        break;
-        
-      case 'analyze_routes':
-        if (canvasRef.current?.getFlowData) {
-          const flowData = canvasRef.current.getFlowData();
-          await analizarCaso(flowData);
-          setChatMessages(prev => [...prev, {
-            role: 'assistant',
-            content: 'Analicé el caso. Mirá las sugerencias de ruta abajo del canvas.',
-            suggestions: [],
-          }]);
-        }
-        break;
-        
-      default:
-        // Acción desconocida - enviar como mensaje
-        sendChatMessage(label);
-    }
-  }, [problem, sendChatMessage]);
+  // ─── PASO 2: EVIDENCIA ──────────────────────────────────────────────────────
+  const toggleEvidencia = useCallback((index) => {
+    setEvidenciasAprobadas(prev => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  }, []);
 
-  // Analizar el caso (para rutas)
-  const analizarCaso = useCallback(async (flowData) => {
-    if (!problem.trim()) return;
+  const handleContinueEvidencia = useCallback(async () => {
     setAnalizando(true);
-    setSugerencias(null);
+    
     try {
+      // Analizar con las evidencias aprobadas
+      const evidenciasSeleccionadas = evidencias.filter((_, i) => evidenciasAprobadas.has(i));
+      
       const r = await fetch('/api/architect/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -229,278 +124,460 @@ export default function ArchitectPanel({ onClose, seccion, onNavigate, onDesarro
           problem: problem.trim(),
           objective: '',
           current_process: '',
-          available_data: '',
+          available_data: evidenciasSeleccionadas.map(e => e.label).join(', '),
           constraints: '',
           expected_value: '',
-          flow: flowData,
+          evidence_ids: evidenciasSeleccionadas.map(e => e.node_id).filter(Boolean),
         }),
       });
+      
       const data = await r.json().catch(() => ({}));
+      
       if (r.ok) {
         setSugerencias(data);
-        setMostrarSugerencias(true);
+        setRutaSeleccionada(data.classification || null);
       }
-    } catch { }
-    finally { setAnalizando(false); }
-  }, [problem, caseName]);
+      
+      setCurrentStep(3);
+    } catch (err) {
+      console.error('Error analizando:', err);
+    } finally {
+      setAnalizando(false);
+    }
+  }, [caseName, problem, evidencias, evidenciasAprobadas]);
 
-  const rutaSugerida = useMemo(
-    () => sugerencias ? RUTAS.find(r => r.key === sugerencias.classification) : null,
-    [sugerencias]
+  const handleAbstenerse = useCallback(() => {
+    // Ir a decisión sin evidencia suficiente
+    setSugerencias({ classification: 'none', problem_understanding: 'La evidencia disponible no es suficiente para recomendar una implementación.' });
+    setRutaSeleccionada('none');
+    setCurrentStep(3);
+  }, []);
+
+  // ─── PASO 3: DECISIÓN ───────────────────────────────────────────────────────
+  const handleContinueDecision = useCallback(() => {
+    setCurrentStep(4);
+  }, []);
+
+  // ─── PASO 4: EXPEDIENTE ─────────────────────────────────────────────────────
+  const handleGuardarExpediente = useCallback(async () => {
+    setGuardando(true);
+    
+    try {
+      // Obtener datos del canvas
+      const flowData = canvasRef.current?.getFlowData?.() || { nodes: [], edges: [] };
+      const evidenciasSeleccionadas = evidencias.filter((_, i) => evidenciasAprobadas.has(i));
+      
+      // Crear el expediente como issue
+      const body = {
+        label: caseName || `Expediente: ${problem.slice(0, 50)}...`,
+        desc: problem,
+        seccion,
+        solve: {
+          classification: rutaSeleccionada,
+          problem_understanding: sugerencias?.problem_understanding || '',
+          matrix: sugerencias?.matrix || [],
+          critical_review: sugerencias?.critical_review || {},
+          inputs: { problem, objective: '', constraints: '', available_data: '' },
+          evidence_mode: evidenciasSeleccionadas.length > 0 ? 'chunks' : 'general',
+          citations: evidenciasSeleccionadas.map((e, i) => ({
+            marker: `[${i + 1}]`,
+            chunk_id: e.node_id || e.id,
+            label: e.label,
+            excerpt: e.excerpt || '',
+            page: e.page,
+          })),
+        },
+        flujograma: flowData.nodes.length > 0 ? {
+          etapas: flowData.nodes.map(n => ({ id: n.id, label: n.label, desc: '' })),
+          conexiones: flowData.edges.map(e => ({ source: e.source, target: e.target, label: '' })),
+        } : null,
+      };
+      
+      const r = await fetch('/api/issues', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      
+      const data = await r.json().catch(() => ({}));
+      
+      if (r.ok) {
+        setExpedienteGuardado({
+          id: data.id || data.nodo_id,
+          label: caseName || body.label,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      console.error('Error guardando expediente:', err);
+    } finally {
+      setGuardando(false);
+    }
+  }, [caseName, problem, seccion, rutaSeleccionada, sugerencias, evidencias, evidenciasAprobadas]);
+
+  // Ruta actual con color
+  const rutaActual = useMemo(
+    () => RUTAS.find(r => r.key === rutaSeleccionada),
+    [rutaSeleccionada]
   );
 
-  return (
-    <div className="arch-overlay">
-      <div className="arch-panel arch-panel--chat">
+  // ─── NAVEGACIÓN DEL STEPPER ─────────────────────────────────────────────────
+  const goToStep = useCallback((step) => {
+    if (step < currentStep) setCurrentStep(step);
+  }, [currentStep]);
 
-        {/* ── Cabecera ── */}
-        <header className="arch-head arch-head--compact">
-          <div className="arch-head-id">
-            <span className="arch-mark">⬢</span>
-            <span className="arch-title">ARCHITECT</span>
-            <span className="arch-sub">· Taller de casos</span>
+  return (
+    <div className="arch-desk-overlay">
+      <div className="arch-desk">
+        
+        {/* ── Header mínimo ── */}
+        <header className="arch-desk-header">
+          <div className="arch-desk-brand">
+            <span className="arch-desk-icon">⬢</span>
+            <span className="arch-desk-title">ARCHITECT</span>
+            <span className="arch-desk-divider">·</span>
+            <span className="arch-desk-section">{seccion}</span>
           </div>
-          <div className="arch-head-actions">
-            <button 
-              className={`arch-tab-btn${!vistaExpedientes ? ' active' : ''}`}
-              onClick={() => setVistaExpedientes(false)}
-            >
-              Caso actual
+          <div className="arch-desk-actions">
+            <button className="arch-desk-link" onClick={onAbrirExpediente}>
+              Ver expedientes
             </button>
-            <button 
-              className={`arch-tab-btn${vistaExpedientes ? ' active' : ''}`}
-              onClick={() => { setVistaExpedientes(true); cargarExpedientes(); }}
-            >
-              Expedientes
-            </button>
-            <span className="arch-chip">sección · {seccion}</span>
-            <button className="panel-close" onClick={onClose} title="Cerrar Architect">✕</button>
+            <button className="arch-desk-close" onClick={onClose}>✕</button>
           </div>
         </header>
 
-        {vistaExpedientes ? (
-          /* ── Vista de expedientes ── */
-          <div className="arch-expedientes-view">
-            <div className="arch-exps">
-              {expedientes === null && <div className="arch-empty">Buscando expedientes…</div>}
-              {expedientes?.length === 0 && (
-                <div className="arch-empty">
-                  Todavía no hay expedientes en <b>{seccion}</b>.<br />
-                  Empezá uno desde «Caso actual».
-                </div>
-              )}
-              {expedientes?.map(n => {
-                const sv = n.solve || null;
-                const rt = RUTAS.find(r => r.key === sv?.classification);
-                const hr = sv?.human_review?.status || 'sin decisión';
-                return (
-                  <button key={n.id} className="arch-exp"
-                          onClick={() => {
-                            setCaseName(n.label);
-                            if (n.solve?.inputs?.problem) {
-                              setProblem(n.solve.inputs.problem);
-                            }
-                            setSugerencias(n.solve);
-                            setVistaExpedientes(false);
-                          }}>
-                    <span className="arch-exp-dot" style={{ background: rt?.tone || 'var(--text-dim)' }} />
-                    <span className="arch-exp-main">
-                      <b>{n.label}</b>
-                      <small>{rt ? rt.label : 'sin clasificar'} · {hr}</small>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ) : (
-          /* ── Vista principal: Chat + Canvas ── */
-          <div className="arch-workspace arch-workspace--chat">
+        {/* ── Stepper 1→4 (siempre visible) ── */}
+        <nav className="arch-stepper">
+          {STEPS.map((step) => {
+            const isActive = currentStep === step.id;
+            const isDone = currentStep > step.id;
+            const isClickable = step.id < currentStep;
             
-            {/* ── Panel de Chat (izquierda) ── */}
-            <div className="arch-chat-panel">
-              <div className="arch-chat-header">
+            return (
+              <button
+                key={step.id}
+                className={`arch-stepper-item${isActive ? ' active' : ''}${isDone ? ' done' : ''}`}
+                onClick={() => isClickable && goToStep(step.id)}
+                disabled={!isClickable}
+              >
+                <span className="arch-stepper-num">{step.id}</span>
+                <span className="arch-stepper-content">
+                  <span className="arch-stepper-label">{step.label}</span>
+                  <span className="arch-stepper-desc">{step.desc}</span>
+                </span>
+                {step.id < 4 && <span className="arch-stepper-arrow">→</span>}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* ── Contenido según paso ── */}
+        <main className="arch-desk-main">
+          
+          {/* ═══ PASO 1: PROBLEMA ═══ */}
+          {currentStep === 1 && (
+            <div className="arch-step-content arch-step-problema">
+              <div className="arch-step-header">
+                <h2>¿Qué problema querés resolver?</h2>
+                <p>Describí la situación actual. Architect buscará evidencia en tu corpus.</p>
+              </div>
+              
+              <div className="arch-problema-form">
                 <input
-                  className="arch-chat-case-name"
-                  placeholder="Nombre del caso"
+                  className="arch-problema-name"
+                  placeholder="Nombre del caso (opcional)"
                   value={caseName}
                   onChange={e => setCaseName(e.target.value)}
                 />
-              </div>
-              
-              <div className="arch-chat-messages">
-                {chatMessages.map((msg, i) => (
-                  <div key={i} className={`arch-chat-msg arch-chat-msg--${msg.role}${msg.isAction ? ' action' : ''}`}>
-                    <div className="arch-chat-msg-content">{msg.content}</div>
-                    
-                    {/* TRAZABILIDAD: mostrar fuentes del corpus */}
-                    {msg.sources?.length > 0 && (
-                      <div className="arch-chat-sources">
-                        <span className="arch-chat-sources-label">Basado en:</span>
-                        {msg.sources.map((src, k) => (
-                          <button
-                            key={k}
-                            className="arch-chat-source"
-                            onClick={() => setSourceDetail(src)}
-                            title={`${src.label} (sim: ${src.sim})`}
-                          >
-                            <span className="arch-chat-source-icon">◇</span>
-                            <span className="arch-chat-source-name">{src.label?.slice(0, 30)}</span>
-                            {src.sim && <span className="arch-chat-source-score">{Math.round(src.sim * 100)}%</span>}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    
-                    {msg.suggestions?.length > 0 && (
-                      <div className="arch-chat-suggestions">
-                        {msg.suggestions.map((s, j) => (
-                          <button
-                            key={j}
-                            className="arch-chat-suggestion"
-                            onClick={() => executeSuggestion(s)}
-                            disabled={chatLoading}
-                          >
-                            {s.label}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-                {chatLoading && (
-                  <div className="arch-chat-msg arch-chat-msg--assistant">
-                    <div className="arch-chat-msg-content arch-chat-typing">
-                      <span></span><span></span><span></span>
-                    </div>
-                  </div>
-                )}
-                <div ref={chatEndRef} />
-              </div>
-              
-              <div className="arch-chat-input-wrap">
+                
                 <textarea
-                  className="arch-chat-input"
-                  placeholder="Escribí tu mensaje..."
-                  value={chatInput}
-                  onChange={e => setChatInput(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      sendChatMessage();
-                    }
-                  }}
-                  rows={2}
+                  className="arch-problema-input"
+                  placeholder={`Ej: ${ejemploProblema}`}
+                  value={problem}
+                  onChange={e => setProblem(e.target.value)}
+                  rows={6}
+                  autoFocus
                 />
+                
+                <div className="arch-problema-hint">
+                  <span className="arch-hint-icon">◈</span>
+                  <span>Tip: Mencioná el proceso actual, los puntos de dolor y el resultado esperado.</span>
+                </div>
+              </div>
+              
+              <div className="arch-step-actions">
                 <button
-                  className="arch-chat-send"
-                  onClick={() => sendChatMessage()}
-                  disabled={chatLoading || !chatInput.trim()}
+                  className="arch-btn-primary"
+                  onClick={handleContinueProblema}
+                  disabled={!problem.trim() || buscandoEvidencia}
                 >
-                  ↑
+                  {buscandoEvidencia ? 'Buscando evidencia…' : 'Continuar'}
                 </button>
               </div>
             </div>
+          )}
 
-            {/* ── Canvas (área principal) ── */}
-            <div className="arch-canvas-area">
-              <ArchitectCanvas
-                ref={canvasRef}
-                seccion={seccion}
-                allNodes={allNodes}
-                caseName={caseName}
-                initialProblem={problem}
-                onClose={onClose}
-                onAnalyze={analizarCaso}
-                sugerencias={sugerencias}
-                analizando={analizando}
-              />
-            </div>
-
-            {/* ── Sugerencias de rutas (colapsable) ── */}
-            {sugerencias && (
-              <div className={`arch-suggestions${mostrarSugerencias ? ' open' : ''}`}>
-                <button 
-                  className="arch-suggestions-toggle"
-                  onClick={() => setMostrarSugerencias(s => !s)}
-                >
-                  {mostrarSugerencias ? '▾' : '▸'} Sugerencia de ruta
-                  {rutaSugerida && (
-                    <span className="arch-suggestions-badge" style={{ background: rutaSugerida.tone }}>
-                      {rutaSugerida.label}
-                    </span>
-                  )}
-                </button>
-                {mostrarSugerencias && (
-                  <div className="arch-suggestions-body">
-                    <p className="arch-suggestions-hint">
-                      <strong>Opcional:</strong> Sugerencia basada en tu corpus.
-                    </p>
-                    <div className="arch-rutas-mini">
-                      {RUTAS.map(r => {
-                        const on = rutaSugerida?.key === r.key;
-                        return (
-                          <div key={r.key} className={`arch-ruta-mini${on ? ' on' : ''}`}
-                               style={on ? { borderColor: r.tone, background: `${r.tone}22` } : undefined}>
-                            <span className="arch-ruta-dot" style={{ background: r.tone }} />
-                            <span className="arch-ruta-l">{r.label}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {sugerencias.problem_understanding && (
-                      <p className="arch-understand">{sugerencias.problem_understanding}</p>
-                    )}
+          {/* ═══ PASO 2: EVIDENCIA ═══ */}
+          {currentStep === 2 && (
+            <div className="arch-step-content arch-step-evidencia">
+              <div className="arch-step-header">
+                <h2>Evidencia encontrada</h2>
+                <p>Estas fuentes del corpus parecen relevantes. Aprobá o descartá cada una.</p>
+              </div>
+              
+              <div className="arch-evidencia-list">
+                {evidencias.length === 0 ? (
+                  <div className="arch-evidencia-empty">
+                    <span className="arch-empty-icon">◇</span>
+                    <p>No se encontraron fuentes relevantes en el corpus para este problema.</p>
+                    <p className="arch-empty-hint">Podés continuar sin evidencia o reformular el problema.</p>
                   </div>
+                ) : (
+                  evidencias.map((ev, i) => {
+                    const isApproved = evidenciasAprobadas.has(i);
+                    return (
+                      <button
+                        key={i}
+                        className={`arch-evidencia-chip${isApproved ? ' approved' : ' dismissed'}`}
+                        onClick={() => toggleEvidencia(i)}
+                      >
+                        <span className="arch-chip-status">
+                          {isApproved ? '✓' : '✗'}
+                        </span>
+                        <span className="arch-chip-content">
+                          <span className="arch-chip-label">{ev.label}</span>
+                          {ev.excerpt && (
+                            <span className="arch-chip-excerpt">{ev.excerpt.slice(0, 100)}…</span>
+                          )}
+                        </span>
+                        <span className="arch-chip-sim">
+                          {ev.sim ? `${Math.round(ev.sim * 100)}%` : '—'}
+                        </span>
+                      </button>
+                    );
+                  })
                 )}
               </div>
-            )}
-          </div>
-        )}
-        
-        {/* ── Drawer de detalle de fuente (trazabilidad) ── */}
-        {sourceDetail && (
-          <div className="arch-source-drawer">
-            <div className="arch-source-drawer-header">
-              <h4>Fuente</h4>
-              <button className="arch-source-drawer-close" onClick={() => setSourceDetail(null)}>×</button>
-            </div>
-            <div className="arch-source-drawer-content">
-              <div className="arch-source-drawer-title">
-                <span className="arch-source-drawer-icon">◇</span>
-                {sourceDetail.label}
+              
+              <div className="arch-evidencia-summary">
+                <span className="arch-summary-count">
+                  {evidenciasAprobadas.size} de {evidencias.length} fuentes aprobadas
+                </span>
               </div>
-              {sourceDetail.page && (
-                <div className="arch-source-drawer-meta">
-                  Página {sourceDetail.page}
-                </div>
-              )}
-              {sourceDetail.sim && (
-                <div className="arch-source-drawer-sim">
-                  Relevancia: <strong>{Math.round(sourceDetail.sim * 100)}%</strong>
-                </div>
-              )}
-              <div className="arch-source-drawer-excerpt">
-                <h5>Extracto</h5>
-                <p>{sourceDetail.excerpt || '(Sin extracto disponible)'}</p>
-              </div>
-              {sourceDetail.node_id && onNavigate && (
+              
+              <div className="arch-step-actions">
                 <button
-                  className="arch-source-drawer-goto"
-                  onClick={() => {
-                    const node = allNodes.find(n => n.id === sourceDetail.node_id);
-                    if (node) {
-                      onNavigate(node);
-                      setSourceDetail(null);
-                    }
-                  }}
+                  className="arch-btn-secondary"
+                  onClick={handleAbstenerse}
                 >
-                  Ver en el grafo →
+                  Abstenerse
                 </button>
+                <button
+                  className="arch-btn-primary"
+                  onClick={handleContinueEvidencia}
+                  disabled={analizando}
+                >
+                  {analizando ? 'Analizando…' : 'Continuar'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ═══ PASO 3: DECISIÓN ═══ */}
+          {currentStep === 3 && (
+            <div className="arch-step-content arch-step-decision">
+              <div className="arch-decision-layout">
+                
+                {/* Panel izquierdo: clasificación */}
+                <div className="arch-decision-panel">
+                  <div className="arch-step-header">
+                    <h2>Clasificación de ruta</h2>
+                    <p>Basado en tu corpus, la intervención recomendada es:</p>
+                  </div>
+                  
+                  <div className="arch-rutas-list">
+                    {RUTAS.map(r => {
+                      const isSelected = rutaSeleccionada === r.key;
+                      return (
+                        <button
+                          key={r.key}
+                          className={`arch-ruta-item${isSelected ? ' selected' : ''}`}
+                          style={{ '--ruta-tone': r.tone }}
+                          onClick={() => setRutaSeleccionada(r.key)}
+                        >
+                          <span className="arch-ruta-dot" />
+                          <span className="arch-ruta-label">{r.label}</span>
+                          <span className="arch-ruta-hint">{r.hint}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  
+                  {sugerencias?.problem_understanding && (
+                    <div className="arch-understanding">
+                      <h4>Comprensión del problema</h4>
+                      <p>{sugerencias.problem_understanding}</p>
+                    </div>
+                  )}
+                  
+                  {sugerencias?.critical_review?.objection && (
+                    <div className="arch-objection">
+                      <h4>⚠ Objeción del verificador</h4>
+                      <p>{sugerencias.critical_review.objection}</p>
+                    </div>
+                  )}
+                </div>
+                
+                {/* Panel derecho: canvas de flujo */}
+                <div className="arch-decision-canvas">
+                  <div className="arch-canvas-header">
+                    <h3>Flujo de decisión</h3>
+                    <span className="arch-canvas-hint">Opcional: modelá el proceso</span>
+                  </div>
+                  <div className="arch-canvas-container">
+                    <ArchitectCanvas
+                      ref={canvasRef}
+                      seccion={seccion}
+                      allNodes={allNodes}
+                      caseName={caseName}
+                      initialProblem={problem}
+                      onClose={onClose}
+                      sugerencias={sugerencias}
+                      analizando={false}
+                    />
+                  </div>
+                </div>
+              </div>
+              
+              <div className="arch-step-actions">
+                <button
+                  className="arch-btn-primary"
+                  onClick={handleContinueDecision}
+                  disabled={!rutaSeleccionada}
+                >
+                  Continuar al expediente
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ═══ PASO 4: EXPEDIENTE ═══ */}
+          {currentStep === 4 && (
+            <div className="arch-step-content arch-step-expediente">
+              {!expedienteGuardado ? (
+                <>
+                  <div className="arch-step-header">
+                    <h2>Guardar expediente</h2>
+                    <p>Revisá el resumen antes de crear el expediente.</p>
+                  </div>
+                  
+                  <div className="arch-expediente-preview">
+                    <div className="arch-preview-section">
+                      <label>Nombre del caso</label>
+                      <input
+                        className="arch-preview-input"
+                        value={caseName}
+                        onChange={e => setCaseName(e.target.value)}
+                        placeholder="Sin título"
+                      />
+                    </div>
+                    
+                    <div className="arch-preview-section">
+                      <label>Problema</label>
+                      <div className="arch-preview-text">{problem}</div>
+                    </div>
+                    
+                    <div className="arch-preview-section">
+                      <label>Ruta seleccionada</label>
+                      {rutaActual && (
+                        <div 
+                          className="arch-preview-ruta"
+                          style={{ '--ruta-tone': rutaActual.tone }}
+                        >
+                          <span className="arch-ruta-dot" />
+                          <span>{rutaActual.label}</span>
+                          <span className="arch-ruta-hint">{rutaActual.hint}</span>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="arch-preview-section">
+                      <label>Evidencia ({evidenciasAprobadas.size} fuentes)</label>
+                      <div className="arch-preview-evidencias">
+                        {evidencias
+                          .filter((_, i) => evidenciasAprobadas.has(i))
+                          .map((ev, i) => (
+                            <span key={i} className="arch-preview-ev-tag">
+                              ◈ {ev.label}
+                            </span>
+                          ))
+                        }
+                        {evidenciasAprobadas.size === 0 && (
+                          <span className="arch-preview-ev-none">Sin evidencia del corpus</span>
+                        )}
+                      </div>
+                    </div>
+                    
+                    {sugerencias?.problem_understanding && (
+                      <div className="arch-preview-section">
+                        <label>Comprensión</label>
+                        <div className="arch-preview-text arch-preview-text--sm">
+                          {sugerencias.problem_understanding}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div className="arch-step-actions">
+                    <button
+                      className="arch-btn-primary arch-btn-save"
+                      onClick={handleGuardarExpediente}
+                      disabled={guardando}
+                    >
+                      {guardando ? 'Guardando…' : '◈ Guardar expediente'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="arch-expediente-saved">
+                  <div className="arch-saved-icon">✓</div>
+                  <h2>Expediente guardado</h2>
+                  <p className="arch-saved-name">{expedienteGuardado.label}</p>
+                  <p className="arch-saved-time">
+                    {new Date(expedienteGuardado.timestamp).toLocaleString('es-AR')}
+                  </p>
+                  
+                  <div className="arch-saved-actions">
+                    <button
+                      className="arch-btn-secondary"
+                      onClick={() => {
+                        // Resetear para nuevo caso
+                        setCurrentStep(1);
+                        setCaseName('');
+                        setProblem('');
+                        setEvidencias([]);
+                        setEvidenciasAprobadas(new Set());
+                        setSugerencias(null);
+                        setRutaSeleccionada(null);
+                        setExpedienteGuardado(null);
+                      }}
+                    >
+                      + Nuevo caso
+                    </button>
+                    <button
+                      className="arch-btn-primary"
+                      onClick={() => {
+                        if (onAbrirExpediente) onAbrirExpediente();
+                      }}
+                    >
+                      Ver expedientes →
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
-          </div>
-        )}
+          )}
+        </main>
       </div>
     </div>
   );

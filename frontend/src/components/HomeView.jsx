@@ -1,13 +1,22 @@
 import React, { useState, useEffect, useCallback } from 'react';
 
-/* ── HomeView · Experiencia Architect-first de Algedi ──────────────────────
-   El usuario entiende en 30 segundos: "acá decido con evidencia".
+/* ── HomeView · Architect-first Decision Desk ──────────────────────────────
+   Algedi es para DECIDIR con evidencia, no chatear.
    
    CTA primario: Empezar decisión (Architect)
-   Accesos secundarios: Explorar grafo · Biblioteca · Agente RAG
+   El flujo es: PROBLEMA → EVIDENCIA → DECISIÓN → EXPEDIENTE
    
-   Referencia: docs/UX_ARCHITECT_PRIMERO.md, docs/ORGANIZACION_ESPACIOS.md
+   Sin feature cards genéricas. Sin vibes de SaaS template.
    ────────────────────────────────────────────────────────────────────────── */
+
+const RUTAS = [
+  { key: 'redesign', label: 'Rediseño', hint: 'ordenar el proceso' },
+  { key: 'rules', label: 'Reglas', hint: 'determinístico' },
+  { key: 'data', label: 'Datos', hint: 'visibilidad' },
+  { key: 'assistive', label: 'IA asistiva', hint: 'criterio' },
+  { key: 'agent', label: 'Agente', hint: 'delegado' },
+  { key: 'none', label: 'No implementar', hint: 'sin evidencia' },
+];
 
 export default function HomeView({
   seccion,
@@ -30,7 +39,7 @@ export default function HomeView({
       const issues = (d.nodos || [])
         .filter(n => n.is_issue)
         .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
-        .slice(0, 5);
+        .slice(0, 4);
       setExpedientes(issues);
     } catch {
       setExpedientes([]);
@@ -44,123 +53,127 @@ export default function HomeView({
   }, [cargarExpedientes]);
 
   return (
-    <div className="home-view">
-      <div className="home-content">
-        {/* Identidad */}
-        <header className="home-header">
-          <div className="home-logo">
-            <span className="home-logo-icon">◈</span>
-            <span className="home-logo-text">ALGEDI</span>
+    <div className="home-desk">
+      {/* Fondo con gradiente sutil */}
+      <div className="home-desk-bg" />
+      
+      <div className="home-desk-content">
+        {/* Header mínimo */}
+        <header className="home-desk-header">
+          <div className="home-desk-brand">
+            <span className="home-desk-icon">◈</span>
+            <span className="home-desk-name">ALGEDI</span>
           </div>
-          <p className="home-tagline">
-            Decidí con evidencia. Sobre lo que sabés.
-          </p>
-        </header>
-
-        {/* CTA Principal: Architect */}
-        <section className="home-primary">
-          <button className="home-cta-primary" onClick={onStartArchitect}>
-            <span className="home-cta-icon">⬢</span>
-            <span className="home-cta-text">
-              <strong>Empezar decisión</strong>
-              <small>Planteá un problema · Architect te guía con tu corpus</small>
-            </span>
-          </button>
-        </section>
-
-        {/* Sección activa — más visible + atajos */}
-        <div className="home-section-selector">
-          <div className="home-section-current">
-            <span className="home-section-dot" />
-            <span className="home-section-label">Sección activa:</span>
-            <strong className="home-section-name">{seccion}</strong>
-          </div>
-          <div className="home-section-actions">
-            {onChangeSection && (
-              <button className="home-section-change" onClick={onChangeSection}>
-                Cambiar
-              </button>
-            )}
+          <div className="home-desk-nav">
             {onOpenMultiverse && (
-              <button className="home-section-multiverse" onClick={onOpenMultiverse}>
+              <button className="home-desk-nav-btn" onClick={onOpenMultiverse}>
                 ◈ Multiverso
               </button>
             )}
+            <div className="home-desk-section">
+              <span className="home-desk-section-dot" />
+              <span>{seccion}</span>
+              {onChangeSection && (
+                <button className="home-desk-section-change" onClick={onChangeSection}>
+                  cambiar
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        </header>
 
-        {/* Expedientes recientes */}
-        <section className="home-recent">
-          <h3 className="home-section-title">Expedientes recientes</h3>
-          {loading && <p className="home-loading">Cargando…</p>}
-          {!loading && expedientes?.length === 0 && (
-            <p className="home-empty">
-              Todavía no hay expedientes en <strong>{seccion}</strong>.
-              <br />
-              Empezá tu primera decisión con Architect.
-            </p>
-          )}
-          {!loading && expedientes?.length > 0 && (
-            <ul className="home-exp-list">
+        {/* Hero: CTA Principal */}
+        <section className="home-desk-hero">
+          <h1>Decidí con evidencia</h1>
+          <p className="home-desk-subtitle">
+            Planteá un problema. Architect busca en tu corpus, clasifica la ruta y arma el expediente.
+          </p>
+          
+          <button className="home-desk-cta" onClick={onStartArchitect}>
+            <span className="home-desk-cta-icon">⬢</span>
+            <span className="home-desk-cta-text">
+              <strong>Empezar decisión</strong>
+              <small>PROBLEMA → EVIDENCIA → DECISIÓN → EXPEDIENTE</small>
+            </span>
+            <span className="home-desk-cta-arrow">→</span>
+          </button>
+
+          {/* Las 6 rutas como referencia visual */}
+          <div className="home-desk-rutas">
+            {RUTAS.map(r => (
+              <span key={r.key} className="home-desk-ruta">
+                {r.label}
+              </span>
+            ))}
+          </div>
+        </section>
+
+        {/* Expedientes recientes (si hay) */}
+        {!loading && expedientes && expedientes.length > 0 && (
+          <section className="home-desk-expedientes">
+            <div className="home-desk-exp-header">
+              <h2>Expedientes recientes</h2>
+              <button className="home-desk-exp-all" onClick={() => onOpenIssue && onOpenIssue()}>
+                Ver todos →
+              </button>
+            </div>
+            <div className="home-desk-exp-list">
               {expedientes.map(exp => {
                 const sv = exp.solve || {};
+                const ruta = RUTAS.find(r => r.key === sv.classification);
                 const status = sv.human_review?.status || 'pendiente';
                 return (
-                  <li key={exp.id} className="home-exp-item">
-                    <button
-                      className="home-exp-btn"
-                      onClick={() => onOpenIssue && onOpenIssue(exp)}
-                    >
-                      <span className="home-exp-dot" />
-                      <span className="home-exp-label">{exp.label}</span>
-                      <span className="home-exp-status">{status}</span>
-                    </button>
-                  </li>
+                  <button
+                    key={exp.id}
+                    className="home-desk-exp-item"
+                    onClick={() => onOpenIssue && onOpenIssue(exp)}
+                  >
+                    <span className="home-desk-exp-dot" />
+                    <span className="home-desk-exp-info">
+                      <span className="home-desk-exp-label">{exp.label}</span>
+                      <span className="home-desk-exp-meta">
+                        {ruta ? ruta.label : 'sin clasificar'} · {status}
+                      </span>
+                    </span>
+                  </button>
                 );
               })}
-            </ul>
-          )}
-          {!loading && expedientes?.length > 0 && (
-            <button className="home-link" onClick={onOpenIssue}>
-              Ver todos los expedientes →
-            </button>
-          )}
+            </div>
+          </section>
+        )}
+
+        {/* Ejemplo de uso (cuando no hay expedientes) */}
+        {!loading && (!expedientes || expedientes.length === 0) && (
+          <section className="home-desk-ejemplo">
+            <div className="home-desk-ejemplo-label">ejemplo · tesorería</div>
+            <p>
+              "Tenemos un proceso de conciliación bancaria que toma 3 días porque se hace 
+              manual en Excel. Los errores de tipeo generan diferencias que después hay que rastrear."
+            </p>
+            <div className="home-desk-ejemplo-result">
+              → Architect analizaría si es rediseño, reglas, datos, IA asistiva, agente o si no hay suficiente evidencia.
+            </div>
+          </section>
+        )}
+
+        {/* Accesos secundarios (mínimos) */}
+        <section className="home-desk-secondary">
+          <button className="home-desk-sec-btn" onClick={onOpenLibrary}>
+            <span>⊞</span> Biblioteca
+          </button>
+          <button className="home-desk-sec-btn" onClick={onOpenAgent}>
+            <span>⬡</span> Agente RAG
+          </button>
+          <button className="home-desk-sec-btn" onClick={onOpenGraph}>
+            <span>◎</span> Explorar grafo
+          </button>
         </section>
 
-        {/* Accesos secundarios */}
-        <section className="home-secondary">
-          <h3 className="home-section-title">Explorar y consultar</h3>
-          <div className="home-grid">
-            <button className="home-card" onClick={onOpenGraph}>
-              <span className="home-card-icon">⬡</span>
-              <span className="home-card-text">
-                <strong>Explorar grafo</strong>
-                <small>Visualizá y navegá tu conocimiento en 3D</small>
-              </span>
-            </button>
-            <button className="home-card" onClick={onOpenLibrary}>
-              <span className="home-card-icon">⊞</span>
-              <span className="home-card-text">
-                <strong>Biblioteca</strong>
-                <small>Cargá y gestioná tus documentos</small>
-              </span>
-            </button>
-            <button className="home-card" onClick={onOpenAgent}>
-              <span className="home-card-icon">⬡</span>
-              <span className="home-card-text">
-                <strong>Agente RAG</strong>
-                <small>Preguntá sobre tu conocimiento con citas</small>
-              </span>
-            </button>
-          </div>
-        </section>
-
-        {/* Nota al pie */}
-        <footer className="home-footer">
+        {/* Footer mínimo */}
+        <footer className="home-desk-footer">
           <p>
-            <strong>Architect</strong> no es un módulo más: es el hilo que cruza
-            secciones y agrupaciones para llegar a una decisión (o a "no implementar"),
-            con expediente.
+            Architect no es un módulo más: es el proceso para llegar a una decisión 
+            (o a "no implementar") con expediente y evidencia.
           </p>
         </footer>
       </div>
