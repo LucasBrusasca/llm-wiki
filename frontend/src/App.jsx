@@ -566,10 +566,9 @@ export default function App() {
         <div className="header-actions">
           {/* ── Inicio: volver al grafo limpio ── */}
           <button
-            className={`btn-synth btn-inicio${!libraryOpen && !globalAgent && !discoveriesOpen && !synthMode && !issueOpen && !processOpen && !architectOpen ? ' active' : ''}`}
+            className={`btn-synth btn-inicio${!libraryOpen && !issueOpen && !processOpen && !architectOpen ? ' active' : ''}`}
             onClick={() => {
-              setLibraryOpen(false); setGlobalAgent(false); setAgentOpen(false);
-              setDiscoveriesOpen(false); setSynthMode(false);
+              setLibraryOpen(false);
               setIssueOpen(false); setProcessOpen(false); setArchitectOpen(false);
               setFixedNode(null); setHoverNode(null);
             }}
@@ -580,40 +579,13 @@ export default function App() {
 
           <span className="hdr-sep" />
 
-          {/* ── Contexto: lo que el sistema sabe ── */}
-          <span className="hdr-stage">Contexto</span>
+          {/* ── Biblioteca: gestión de documentos ── */}
           <button
             className={`btn-synth${libraryOpen ? ' active' : ''}`}
             onClick={() => setLibraryOpen(o => !o)}
             title="Biblioteca — cargá y gestioná tus documentos"
           >
             ⊞ Biblioteca
-          </button>
-
-          <span className="hdr-sep" />
-
-          {/* ── Explorar: qué hay en el corpus y cómo se relaciona ── */}
-          <span className="hdr-stage">Explorar</span>
-          <button
-            className={`btn-synth${globalAgent ? ' active' : ''}`}
-            onClick={toggleGlobalAgent}
-            title="Agente — preguntá sobre tu conocimiento (fundado en el grafo, con citas)"
-          >
-            ⬡ Agente
-          </button>
-          <button
-            className={`btn-synth${discoveriesOpen ? ' active' : ''}`}
-            onClick={() => setDiscoveriesOpen(o => !o)}
-            title="Descubrir — puentes, silos y nodos aislados (sin IA, sobre tus datos)"
-          >
-            ◎ Descubrir
-          </button>
-          <button
-            className={`btn-synth${synthMode ? ' active' : ''}`}
-            onClick={toggleSynth}
-            title="Síntesis — combiná varios nodos en un documento"
-          >
-            ◈ Síntesis
           </button>
 
           <span className="hdr-sep" />
@@ -771,14 +743,13 @@ export default function App() {
             cuando se conecte con las citas del agente, que es lo que la haria util. */}
       </div>
 
-      {/* Botón flotante del Agente (estilo chatbot). Abajo a la DERECHA: el inferior
-          izquierdo lo ocupa el selector de layout. Se oculta si el agente ya está abierto. */}
-      {!globalAgent && !synthMode && !agentOpen && !discoveriesOpen && !processOpen && (
+      {/* Botón flotante del Agente (estilo chatbot Intercom/ChatGPT).
+          Siempre visible excepto cuando el chat del agente ya está abierto. */}
+      {!globalAgent && (
         <button className="agent-fab" onClick={toggleGlobalAgent}
           aria-label="Abrir el Agente IA"
-          title="Agente IA — preguntá sobre tu conocimiento">
+          title="Preguntá sobre tu conocimiento — fundado en el grafo, con citas">
           <span className="agent-fab-icon">⬡</span>
-          <span className="agent-fab-text">Agente</span>
         </button>
       )}
 
@@ -872,8 +843,18 @@ export default function App() {
           linkMeta={selectedLink.linkMeta}
           onReviewed={handleRelationReviewed}
           onClose={() => { setSelectedLink(null); setHighlighted(new Set()); }}
-          initialPos={tooltipPos}
           onOpenSynthesis={handleOpenSynthesisFromRelation}
+          onOpenNode={node => {
+            setSelectedLink(null);
+            setFixedNode(node);
+            setHoverNode(null);
+          }}
+          onFocusNode={node => {
+            setSelectedLink(null);
+            setFixedNode(node);
+            setHoverNode(null);
+            setFocusTrigger(t => t + 1);
+          }}
         />
       )}
 

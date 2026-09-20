@@ -1389,29 +1389,23 @@ body::before {
 }
 
 /* ── FOOTER ───────────────────────────────────────────────────────── */
-/* Botón flotante del Agente (burbuja estilo chatbot que se expande al hover) */
+/* Botón flotante del Agente (burbuja estilo chatbot Intercom/ChatGPT) */
 .agent-fab {
   position: fixed; right: 26px; bottom: calc(var(--footer-h) + 30px); z-index: 90;
-  display: flex; align-items: center;
-  width: 52px; height: 52px; overflow: hidden; white-space: nowrap;
-  background: linear-gradient(135deg, rgba(122,143,168,0.14), rgba(122,143,168,0.05));
-  border: 1px solid rgba(122,143,168,0.35);
-  color: var(--accent); border-radius: 26px; cursor: pointer;
-  box-shadow: 0 6px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(122,143,168,0.06) inset;
-  transition: width 0.28s cubic-bezier(0.16,1,0.3,1), background var(--transition), box-shadow var(--transition), transform var(--transition);
+  display: flex; align-items: center; justify-content: center;
+  width: 52px; height: 52px;
+  background: linear-gradient(135deg, rgba(90,100,115,0.25), rgba(70,80,95,0.15));
+  border: 1px solid rgba(100,110,130,0.4);
+  color: #b8c4d4; border-radius: 999px; cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
 }
 .agent-fab:hover {
-  width: 156px;
-  background: linear-gradient(135deg, rgba(122,143,168,0.20), rgba(122,143,168,0.08));
-  transform: translateY(-2px);
-  box-shadow: 0 10px 30px rgba(0,0,0,0.6), 0 0 24px rgba(122,143,168,0.12);
+  background: linear-gradient(135deg, rgba(100,115,135,0.35), rgba(80,95,115,0.25));
+  transform: scale(1.08);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.5);
 }
-.agent-fab-icon { font-size: 22px; line-height: 1; width: 50px; text-align: center; flex-shrink: 0; }
-.agent-fab-text {
-  font-family: var(--font); font-size: 13px; letter-spacing: 1.5px;
-  opacity: 0; transition: opacity 0.18s;
-}
-.agent-fab:hover .agent-fab-text { opacity: 1; }
+.agent-fab-icon { font-size: 22px; line-height: 1; }
 
 /* ── Panel de Descubrimientos (lateral derecho, sin blur por performance) ── */
 .disc-panel {
@@ -2340,30 +2334,28 @@ body::before {
   bottom: calc(var(--bottom-h) + 22px);
 }
 
-/* ── Agente: justo encima del zoom, misma columna y mismo ancho de gesto ── */
+/* ── Agente: FAB flotante estilo Intercom/ChatGPT (burbuja de chat) ── */
 .agent-fab {
   right: 22px !important;
   bottom: calc(var(--bottom-h) + 132px);
-  width: 36px; height: 36px;
+  width: 48px; height: 48px;
   border-radius: 999px;
-  background: var(--glass);
+  background: linear-gradient(135deg, rgba(90,100,115,0.25), rgba(70,80,95,0.15));
   backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-  border: 1px solid var(--border);
-  color: var(--accent-hi);
-  box-shadow: var(--shadow-soft);
-  justify-content: flex-start;
+  border: 1px solid rgba(100,110,130,0.4);
+  color: #b8c4d4;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  justify-content: center;
+  transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
 }
 .agent-fab:hover {
-  width: 132px;
-  background: var(--glass-hi);
-  border-color: var(--border-hi);
-  transform: none;
-  box-shadow: var(--shadow-soft), 0 0 0 3px var(--accent-glow);
+  width: 48px;
+  background: linear-gradient(135deg, rgba(100,115,135,0.35), rgba(80,95,115,0.25));
+  border-color: rgba(120,135,160,0.5);
+  transform: scale(1.08);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.5);
 }
-.agent-fab-icon { font-size: 15px; width: 34px; }
-.agent-fab-text {
-  font-size: 12px; letter-spacing: 0.3px; font-weight: 600; color: var(--text);
-}
+.agent-fab-icon { font-size: 20px; width: auto; }
 
 @media (max-width: 780px) {
   .layout-controls { left: 12px; bottom: calc(var(--bottom-h) + 12px); }
