@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import Graph3D from './components/Graph3D.jsx';
 import NodePanel from './components/NodePanel.jsx';
 import AgentPanel from './components/AgentPanel.jsx';
@@ -12,8 +13,12 @@ import DiscoveriesPanel from './components/DiscoveriesPanel.jsx';
 import ProcessPanel from './components/ProcessPanel.jsx';
 import ArchitectPanel from './components/ArchitectPanel.jsx';
 import VaultBadge from './components/VaultBadge.jsx';
+import HomeView from './components/HomeView.jsx';
+import MultiverseMap from './components/MultiverseMap.jsx';
+import { sectionColors } from './nodeColor.js';
 import { computeDiscoveries } from './discoveries.js';
 import { pedirClave, avisarClaveIncorrecta } from './security.js';
+import { Dialog, pedirTexto, pedirSecreto, confirmar, avisar } from './dialog.jsx';
 
 // ── Paleta: TONOS JOYA ───────────────────────────────────────────────────────
 // Ni neon ni apagado. Los dos extremos que probamos fallaban por el mismo eje:
@@ -25,27 +30,11 @@ import { pedirClave, avisarClaveIncorrecta } from './security.js';
 //
 // Cada uno conserva al menos un canal RGB bajo, que es lo que mantiene la
 // identidad del matiz y evita el aspecto lavado.
-export const CLUSTER_PALETTE = [
-  '#C41E3A', // rubí
-  '#0E9594', // turquesa profundo
-  '#0F52BA', // zafiro
-  '#00A86B', // esmeralda
-  '#9B59B6', // amatista
-  '#D4AF37', // oro viejo
-  '#B03A5B', // granate
-  '#3E7CB1', // azul acero
-  '#6A8D3F', // oliva
-  '#C1553C', // terracota
-];
-
-// Reservado: sólo para lo excepcional (issues, alertas). Si aparece, significa algo.
-export const ALERT_COLOR = '#FFB44D';
-
-export function clusterColor(cluster) {
-  // Sin grupo: gris frío y apagado, para que el ruido retroceda en vez de competir.
-  if (cluster === undefined || cluster === null || cluster < 0) return '#565A78';
-  return CLUSTER_PALETTE[cluster % CLUSTER_PALETTE.length];
-}
+// La paleta y el color de nodo viven en ./nodeColor.js, que no importa nada:
+// Graph3D y MultiverseMap tienen que pintar el mismo nodo del mismo color, y
+// dejarlos acá creaba un ciclo de módulos. Se re-exportan para no romper a los
+// componentes que ya los importaban desde App.jsx.
+export { CLUSTER_PALETTE, ALERT_COLOR, clusterColor } from './nodeColor.js';
 
 export function ytId(url) {
   const m = url?.match(/(?:youtu\.be\/|v=|embed\/)([a-zA-Z0-9_-]{11})/);
@@ -154,12 +143,24 @@ export default function App() {
   const [seccion, setSeccionState]      = useState(() => localStorage.getItem('algedi_seccion') || 'personal');
   const [sections, setSections]         = useState([{ nombre: 'personal', count: 0 }]);
   const [seccionOpen, setSeccionOpen]   = useState(false);
+  const [seccionMenuPos, setSeccionMenuPos] = useState({ top: 0, left: 0 }); // FIX: posición del portal
+  const seccionBtnRef = useRef(null); // FIX: ref para posicionar el menú
   const [securityEnabled, setSecurityEnabled] = useState(false);
   const [layoutMode, setLayoutMode]     = useState('components');
   // Vista de FRAGMENTOS: cada documento se abre en la estrella de sus pasajes.
   const [verFragmentos, setVerFragmentos] = useState(false);
+  // Modo RAG Debug: visualiza los nodos recuperados para una query
+  const [ragDebugMode, setRagDebugMode] = useState(false);
+  const [ragDebugQuery, setRagDebugQuery] = useState('');
+  const [ragDebugResults, setRagDebugResults] = useState([]);
+  // FIX: escala de etiquetas del grafo (compacto 0.7 | normal 1.0 | amplio 1.4)
+  const [labelScale, setLabelScale] = useState(1.0);
   const [focusTrigger, setFocusTrigger] = useState(0);  // botón "enfocar" del panel
   const [fitTrigger, setFitTrigger]     = useState(0);  // botón "ver todo" (desenfocar)
+  // Home Architect-first: por defecto muestra el home con CTA a Architect
+  const [showHome, setShowHome]         = useState(true);
+  // Multiverse: mapa de secciones/dimensiones
+  const [showMultiverse, setShowMultiverse] = useState(false);
 
   const hoverTimer = useRef(null);
   const searchTimer = useRef(null);
@@ -182,6 +183,13 @@ export default function App() {
       setSemanticIds(null);
     }
   }, []);
+
+  // Color de identidad por sección. Se comparte con el Multiverso: la dimensión
+  // es del mismo color en el selector y en el espacio 3D.
+  const secColors = useMemo(
+    () => sectionColors(sections.map(x => x.nombre)),
+    [sections],
+  );
 
   const loadSections = useCallback(() => {
     fetch('/api/sections')
@@ -211,8 +219,12 @@ export default function App() {
     setSeccionOpen(false);
   }, []);
 
-  const nuevaSeccion = useCallback(() => {
-    const n = window.prompt('Nombre de la nueva sección (un grafo aparte):');
+  const nuevaSeccion = useCallback(async () => {
+    const n = await pedirTexto('Nueva sección', {
+      detalle: 'Cada sección es un grafo de conocimiento aparte.',
+      placeholder: 'nombre de la sección',
+      confirmar: 'Crear',
+    });
     const nombre = (n || '').trim();
     if (!nombre) return;
     setKnownSecciones([...getKnownSecciones(), nombre]);
@@ -236,9 +248,26 @@ export default function App() {
       });
   }, [seccion, verFragmentos]);
 
+  // RAG Debug: buscar top-k chunks para una query
+  const runRagDebug = useCallback(async (query) => {
+    if (!query?.trim()) {
+      setRagDebugResults([]);
+      return;
+    }
+    try {
+      const r = await fetch(`/api/rag-debug?q=${encodeURIComponent(query)}&top_k=8`);
+      const data = await r.json();
+      setRagDebugResults(data.results || []);
+    } catch {
+      setRagDebugResults([]);
+    }
+  }, []);
+
   const renombrarSeccion = useCallback(async (nombre) => {
     setSeccionOpen(false);
-    const nuevo = (window.prompt(`Nuevo nombre para «${nombre}»:`, nombre) || '').trim();
+    const nuevo = (await pedirTexto(`Renombrar «${nombre}»`, {
+      valorInicial: nombre, confirmar: 'Renombrar',
+    }) || '').trim();
     if (!nuevo || nuevo === nombre) return;
     const clave = await pedirClave(`renombrar «${nombre}»`);
     if (!clave) return;
@@ -248,19 +277,23 @@ export default function App() {
         body: JSON.stringify({ from: nombre, to: nuevo, ...clave }),
       });
       if (r.status === 403) { avisarClaveIncorrecta(); return; }
-      if (!r.ok) { window.alert('No se pudo renombrar.'); return; }
+      if (!r.ok) { avisar('No se pudo renombrar la sección.'); return; }
       setKnownSecciones(getKnownSecciones().map(x => x === nombre ? nuevo : x));
       if (seccion === nombre) cambiarSeccion(nuevo);
       loadGraph(); loadSections();
-    } catch { window.alert('Error de conexión.'); }
+    } catch { avisar('Error de conexión.'); }
   }, [seccion, cambiarSeccion, loadGraph, loadSections]);
 
   const eliminarSeccion = useCallback(async (nombre) => {
     setSeccionOpen(false);
-    if (!window.confirm(`¿Eliminar la sección «${nombre}» y TODOS sus documentos? No se puede deshacer.`)) return;
+    const ok = await confirmar(`¿Eliminar «${nombre}»?`, {
+      detalle: 'Se borran la sección y TODOS sus documentos. No se puede deshacer.',
+      confirmar: 'Eliminar', peligro: true,
+    });
+    if (!ok) return;
     let password = null;
     if (securityEnabled) {
-      password = window.prompt(`Clave de seguridad para eliminar «${nombre}»:`);
+      password = await pedirSecreto(`Clave de seguridad para eliminar «${nombre}»`, { confirmar: 'Eliminar' });
       if (password == null) return;
     }
     try {
@@ -268,12 +301,12 @@ export default function App() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nombre, password }),
       });
-      if (r.status === 403) { window.alert('Clave de seguridad incorrecta. La sección está intacta.'); return; }
-      if (!r.ok) { window.alert('No se pudo eliminar.'); return; }
+      if (r.status === 403) { avisar('Clave incorrecta', { detalle: 'La sección está intacta.' }); return; }
+      if (!r.ok) { avisar('No se pudo eliminar la sección.'); return; }
       setKnownSecciones(getKnownSecciones().filter(x => x !== nombre));
       if (seccion === nombre) cambiarSeccion('personal');
       loadGraph(); loadSections();
-    } catch { window.alert('Error de conexión.'); }
+    } catch { avisar('Error de conexión.'); }
   }, [seccion, securityEnabled, cambiarSeccion, loadGraph, loadSections]);
 
   useEffect(() => { loadGraph(); }, [loadGraph]);
@@ -436,25 +469,37 @@ export default function App() {
     // Con clave configurada → se pide la clave. Sin clave → hay que escribir "BORRAR".
     let password = null;
     if (securityEnabled) {
-      password = window.prompt('⚠️ Esto BORRA TODO de forma permanente y NO se puede deshacer.\n\nIngresá la CLAVE DE SEGURIDAD para confirmar:');
+      password = await pedirSecreto('Borrar TODO el grafo', {
+        detalle: 'Documentos, relaciones, temas e issues. No se puede deshacer.',
+        confirmar: 'Borrar todo', peligro: true,
+      });
       if (password == null) return;
     } else {
-      const r = window.prompt('⚠️ ESTO BORRA TODO de forma permanente (documentos, relaciones, temas, issues) y NO se puede deshacer.\n\nEscribí BORRAR (en mayúsculas) para confirmar:');
+      const r = await pedirTexto('Borrar TODO el grafo', {
+        detalle: 'Documentos, relaciones, temas e issues. No se puede deshacer. Escribí BORRAR en mayúsculas para confirmar.',
+        placeholder: 'BORRAR', confirmar: 'Borrar todo', peligro: true,
+      });
       if (r == null) return;
-      if (r.trim() !== 'BORRAR') { window.alert('Cancelado — no escribiste "BORRAR" exacto. El grafo está intacto.'); return; }
+      if (r.trim() !== 'BORRAR') {
+        avisar('Cancelado', { detalle: 'No escribiste «BORRAR» exacto. El grafo está intacto.' });
+        return;
+      }
     }
     // Red de seguridad: descargar un backup ANTES de borrar. Si falla, preguntar.
     try {
       await descargarBackup();
     } catch {
-      if (!window.confirm('No se pudo generar el backup automático. ¿Resetear IGUAL, sin respaldo?')) return;
+      const igual = await confirmar('No se pudo generar el backup', {
+        detalle: '¿Resetear igual, sin respaldo?', confirmar: 'Resetear sin respaldo', peligro: true,
+      });
+      if (!igual) return;
     }
     const resp = await fetch('/api/reset', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
     });
-    if (resp.status === 403) { window.alert('Clave de seguridad incorrecta. El grafo está intacto.'); return; }
-    if (!resp.ok) { window.alert('No se pudo resetear.'); return; }
+    if (resp.status === 403) { avisar('Clave incorrecta', { detalle: 'El grafo está intacto.' }); return; }
+    if (!resp.ok) { avisar('No se pudo resetear.'); return; }
     setFixedNode(null); setHoverNode(null);
     setAgentOpen(false); setSynthSelected(new Set()); setSelectedLink(null);
     loadGraph(); loadSections();
@@ -523,8 +568,91 @@ export default function App() {
     };
   }, [graphData]);
 
+  // Callbacks para el HomeView
+  const handleStartArchitect = useCallback(() => {
+    setShowHome(false);
+    setArchitectOpen(true);
+  }, []);
+
+  const handleOpenGraphFromHome = useCallback(() => {
+    setShowHome(false);
+  }, []);
+
+  const handleOpenLibraryFromHome = useCallback(() => {
+    setShowHome(false);
+    setLibraryOpen(true);
+  }, []);
+
+  const handleOpenAgentFromHome = useCallback(() => {
+    setShowHome(false);
+    setGlobalAgent(true);
+  }, []);
+
+  const handleOpenIssueFromHome = useCallback((exp) => {
+    setShowHome(false);
+    setIssueOpen(true);
+    if (exp) {
+      const n = graphData.nodes.find(x => x.id === exp.id);
+      if (n) { setFixedNode(n); setHoverNode(null); }
+    }
+  }, [graphData.nodes]);
+
+  const handleChangeSectionFromHome = useCallback(() => {
+    loadSections();
+    if (seccionBtnRef.current) {
+      const rect = seccionBtnRef.current.getBoundingClientRect();
+      setSeccionMenuPos({ top: rect.top, left: rect.right + 8 });
+    }
+    setSeccionOpen(true);
+  }, [loadSections]);
+
+  // Multiverse: abrir mapa de secciones
+  const handleOpenMultiverse = useCallback(() => {
+    loadSections();
+    setSeccionOpen(false);   // el menú va en z-index 9999: sin esto queda flotando sobre el Multiverso
+    setShowHome(false);
+    setShowMultiverse(true);
+  }, [loadSections]);
+
+  // Multiverse: seleccionar una sección y entrar
+  const handleSelectSectionFromMultiverse = useCallback((nombre) => {
+    cambiarSeccion(nombre);
+    setShowMultiverse(false);
+  }, [cambiarSeccion]);
+
+  // Multiverse: cerrar y volver al Home
+  const handleCloseMultiverse = useCallback(() => {
+    setShowMultiverse(false);
+    setShowHome(true);
+  }, []);
+
   return (
     <div className="app">
+      <Dialog />
+      {/* Home Architect-first: CTA principal a decidir con evidencia */}
+      {showHome && (
+        <HomeView
+          seccion={seccion}
+          onStartArchitect={handleStartArchitect}
+          onOpenGraph={handleOpenGraphFromHome}
+          onOpenLibrary={handleOpenLibraryFromHome}
+          onOpenAgent={handleOpenAgentFromHome}
+          onOpenIssue={handleOpenIssueFromHome}
+          onChangeSection={handleChangeSectionFromHome}
+          onOpenMultiverse={handleOpenMultiverse}
+        />
+      )}
+
+      {/* Multiverse: mapa de secciones/dimensiones */}
+      {showMultiverse && (
+        <MultiverseMap
+          sections={sections}
+          currentSection={seccion}
+          onSelectSection={handleSelectSectionFromMultiverse}
+          onClose={handleCloseMultiverse}
+        />
+      )}
+
       <VaultBadge onGraphChanged={loadGraph} />
       <header className="header">
         <div className="header-brand">
@@ -534,34 +662,57 @@ export default function App() {
 
         {/* Selector de SECCIÓN (grafo de conocimiento activo) */}
         <div className="hdr-menu-wrap">
-          <button className="seccion-btn"
-            onClick={() => { setSeccionOpen(o => !o); loadSections(); }}
+          <button 
+            ref={seccionBtnRef}
+            className="seccion-btn"
+            onClick={() => { 
+              // FIX: calcular posición del menú antes de abrir
+              if (seccionBtnRef.current) {
+                const rect = seccionBtnRef.current.getBoundingClientRect();
+                setSeccionMenuPos({ top: rect.top, left: rect.right + 8 });
+              }
+              setSeccionOpen(o => !o); 
+              loadSections(); 
+            }}
             title="Sección activa — cada sección es un grafo de conocimiento aparte">
-            <span className="seccion-dot" /> {seccion} <span className="seccion-caret">▾</span>
+            <span className="seccion-dot" style={{ background: secColors.get(seccion) || 'var(--data)' }} />
+            {seccion} <span className="seccion-caret">▾</span>
           </button>
-          {seccionOpen && (<>
-            <div className="hdr-menu-backdrop" onClick={() => setSeccionOpen(false)} />
-            <div className="hdr-menu" style={{ left: 0, right: 'auto', minWidth: 290 }}>
-              <div className="hdr-menu-label">Secciones (grafos aparte)</div>
-              {sections.map(s => (
-                <div key={s.nombre} className={`seccion-row${s.nombre === seccion ? ' active' : ''}`}>
-                  <button className="seccion-row-main" onClick={() => cambiarSeccion(s.nombre)} title="Cambiar a esta sección">
-                    <span className="hdr-menu-ico">{s.nombre === seccion ? '●' : '○'}</span>
-                    <span className="seccion-row-name">{s.nombre}</span>
-                    <span className="seccion-row-count">{s.count}</span>
-                  </button>
-                  <button className="seccion-row-act" title={`Renombrar «${s.nombre}»`}
-                    onClick={() => renombrarSeccion(s.nombre)}>✎</button>
-                  <button className="seccion-row-act seccion-row-act--danger" title={`Eliminar «${s.nombre}»`}
-                    onClick={() => eliminarSeccion(s.nombre)}>🗑</button>
-                </div>
-              ))}
-              <div className="hdr-menu-sep" />
-              <button className="hdr-menu-item" onClick={nuevaSeccion}>
-                <span className="hdr-menu-ico">＋</span> Nueva sección…
-              </button>
-            </div>
-          </>)}
+          {/* FIX: Portal a document.body para evitar clipping del sidebar */}
+          {seccionOpen && createPortal(
+            <>
+              <div className="hdr-menu-backdrop" onClick={() => setSeccionOpen(false)} />
+              <div 
+                className="hdr-menu hdr-menu--portal" 
+                style={{ 
+                  position: 'fixed',
+                  top: seccionMenuPos.top, 
+                  left: seccionMenuPos.left,
+                  minWidth: 280,
+                }}
+              >
+                <div className="hdr-menu-label">Secciones (grafos aparte)</div>
+                {sections.map(s => (
+                  <div key={s.nombre} className={`seccion-row${s.nombre === seccion ? ' active' : ''}`}>
+                    <button className="seccion-row-main" onClick={() => cambiarSeccion(s.nombre)} title="Cambiar a esta sección">
+                      <span className="seccion-row-dot" style={{ background: secColors.get(s.nombre) }} />
+                      <span className="seccion-row-name">{s.nombre}</span>
+                      <span className="seccion-row-count">{s.count}</span>
+                    </button>
+                    <button className="seccion-row-act" title={`Renombrar «${s.nombre}»`}
+                      onClick={() => renombrarSeccion(s.nombre)}>✎</button>
+                    <button className="seccion-row-act seccion-row-act--danger" title={`Eliminar «${s.nombre}»`}
+                      onClick={() => eliminarSeccion(s.nombre)}>✕</button>
+                  </div>
+                ))}
+                <div className="hdr-menu-sep" />
+                <button className="hdr-menu-item" onClick={nuevaSeccion}>
+                  <span className="hdr-menu-ico">＋</span> Nueva sección…
+                </button>
+              </div>
+            </>,
+            document.body
+          )}
         </div>
 
         <input
@@ -571,11 +722,47 @@ export default function App() {
           onChange={handleSearchChange}
         />
         <div className="header-actions">
-          {/* ── Etapa 1 · Contexto: lo que el sistema sabe ── */}
+          {/* ── Botón de Inicio (volver al Home Architect-first) ── */}
+          <button
+            className={`btn-synth${showHome ? ' active' : ''}`}
+            onClick={() => { setShowHome(true); setShowMultiverse(false); }}
+            title="Inicio — volver al home de Algedi"
+          >
+            ◇ Inicio
+          </button>
+
+          {/* ── Multiverso: mapa de secciones/dimensiones ── */}
+          <button
+            className={`btn-synth${showMultiverse ? ' active' : ''}`}
+            onClick={() => { loadSections(); setShowHome(false); setShowMultiverse(true); }}
+            title="Multiverso — mapa de todas las secciones"
+          >
+            ◈ Multiverso
+          </button>
+
+          <span className="hdr-sep" />
+
+          {/* ── Etapa Principal · Decidir con Architect ──
+                 Architect es el camino principal: decidir qué construir antes de
+                 elegir la tecnología. CTA prominente.
+                 Los Expedientes viven DENTRO de Architect (pestaña), no como
+                 módulo separado. Issue ya no aparece en la nav principal. */}
+          <span className="hdr-stage">Decidir</span>
+          <button
+            className={`btn-synth btn-architect${architectOpen ? ' active' : ''}`}
+            onClick={() => { setShowHome(false); setArchitectOpen(o => !o); }}
+            title="Architect — decidí qué construir, fundado en tu corpus (incluye expedientes)"
+          >
+            ⬢ Architect
+          </button>
+
+          <span className="hdr-sep" />
+
+          {/* ── Etapa Secundaria · Contexto: lo que el sistema sabe ── */}
           <span className="hdr-stage">Contexto</span>
           <button
             className={`btn-synth${libraryOpen ? ' active' : ''}`}
-            onClick={() => setLibraryOpen(o => !o)}
+            onClick={() => { setShowHome(false); setLibraryOpen(o => !o); }}
             title="Biblioteca — cargá y gestioná tus documentos"
           >
             ⊞ Biblioteca
@@ -583,55 +770,29 @@ export default function App() {
 
           <span className="hdr-sep" />
 
-          {/* ── Etapa 2 · Explorar: qué hay en el corpus y cómo se relaciona ── */}
+          {/* ── Etapa Secundaria · Explorar: qué hay en el corpus y cómo se relaciona ── */}
           <span className="hdr-stage">Explorar</span>
           <button
             className={`btn-synth${globalAgent ? ' active' : ''}`}
-            onClick={toggleGlobalAgent}
+            onClick={() => { setShowHome(false); toggleGlobalAgent(); }}
             title="Agente — preguntá sobre tu conocimiento (fundado en el grafo, con citas)"
           >
             ⬡ Agente
           </button>
           <button
             className={`btn-synth${discoveriesOpen ? ' active' : ''}`}
-            onClick={() => setDiscoveriesOpen(o => !o)}
+            onClick={() => { setShowHome(false); setDiscoveriesOpen(o => !o); }}
             title="Descubrir — puentes, silos y nodos aislados (sin IA, sobre tus datos)"
           >
             ◎ Descubrir
           </button>
           <button
             className={`btn-synth${synthMode ? ' active' : ''}`}
-            onClick={toggleSynth}
+            onClick={() => { setShowHome(false); toggleSynth(); }}
             title="Síntesis — combiná varios nodos en un documento"
           >
             ◈ Síntesis
           </button>
-
-          <span className="hdr-sep" />
-
-          {/* ── Etapa 3 · Decidir ──
-                 Una sola entrada. Architect es el paso 1 del recorrido, no un
-                 módulo hermano: clasifica QUÉ intervención corresponde y, si la
-                 ruta amerita desarrollo, entrega el caso a Issue. Tener dos
-                 botones obligaba al usuario a saber de antemano cuál necesitaba,
-                 que es justamente lo que el sistema tiene que resolverle. */}
-          {/* ISSUE es la pantalla principal de esta etapa: ahí se trabaja el
-              problema, el flujograma, el reporte y el chat por etapa.
-              ARCHITECT es un complemento que se acopla: clasifica qué clase de
-              intervención corresponde ANTES de desarrollarla. Entra por Issue,
-              no al revés. */}
-          <span className="hdr-stage">Decidir</span>
-          <button
-            className={`btn-synth btn-issue${issueOpen || processOpen ? ' active' : ''}`}
-            onClick={() => { setArchitectOpen(false); setIssueOpen(o => !o); }}
-            title="Issue — diagnosticá un problema o diseñá un proceso, fundado en tu grafo"
-          >
-            ⚠ Issue
-          </button>
-          {/* Architect ya no tiene botón propio: vive como la pestaña «Clasificación»
-              dentro del detalle de un Issue. Era un paso del expediente disfrazado de
-              módulo hermano. El panel suelto sigue en el árbol por si hace falta
-              volver a exponerlo, pero no ocupa lugar en la navegación. */}
 
           <span className="hdr-sep" />
 
@@ -749,32 +910,100 @@ export default function App() {
         projectRef={projectRef}
         focusTrigger={focusTrigger}
         fitTrigger={fitTrigger}
+        ragDebugMode={ragDebugMode}
+        ragDebugResults={ragDebugResults}
+        labelScale={labelScale}
       />
 
-      {/* Layout Mode Selector */}
-      <div className="layout-controls">
-        {[
-          { id: 'density',    icon: '⊞', label: 'Densidad',   tip: 'Dónde se concentra tu atención: agrupa los documentos por tema, revelando los focos del corpus (los atractores del espacio latente).' },
-          { id: 'components', icon: '⬡', label: 'UMAP',       tip: 'La forma real del conocimiento: proyecta los embeddings preservando la vecindad semántica. La distancia entre nodos refleja qué tan relacionados están.' },
-          { id: 'force',      icon: '⧉', label: 'Relacional', tip: 'La estructura de vínculos: las relaciones tiran de los nodos. Lo conectado se junta, lo suelto se aleja — quedan a la vista los hubs, los puentes y los aislados.' },
-        ].map(({ id, icon, label, tip }) => (
-          <div key={id} className="layout-btn-wrap">
-            <button
-              className={`layout-btn${layoutMode === id ? ' active' : ''}`}
-              /* Encuadrar en cada cambio de modo: cada layout deja el grafo con otra
-               forma y extension, asi que la camara anterior casi nunca sirve. */
-            onClick={() => { setLayoutMode(id); setFitTrigger(f => f + 1); }}
-            >
-              <span className="layout-btn-icon">{icon}</span>
-              <span className="layout-btn-label">{label}</span>
-            </button>
-            <div className="layout-btn-tooltip">{tip}</div>
+      {/* ═══════════════════════════════════════════════════════════════════
+          TOOLBAR UNIFICADO DEL GRAFO — ocultar en Home y Multiverse
+          ═══════════════════════════════════════════════════════════════════ */}
+      {!showHome && !showMultiverse && (
+        <div className="graph-toolbar">
+          {/* Vista: Densidad | UMAP | Relacional */}
+          <div className="gtb-group">
+            <span className="gtb-label">Vista</span>
+            <div className="gtb-segment">
+              {[
+                { id: 'density',    label: 'Densidad' },
+                { id: 'components', label: 'UMAP' },
+                { id: 'force',      label: 'Relacional' },
+              ].map(({ id, label }) => (
+                <button
+                  key={id}
+                  className={`gtb-seg-btn${layoutMode === id ? ' active' : ''}`}
+                  onClick={() => { setLayoutMode(id); setFitTrigger(f => f + 1); }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
-        ))}
-        {/* La vista de Fragmentos se retira del selector: mostraba densidad pero no
-            respondia ninguna pregunta. El endpoint /api/graph/chunks queda vivo para
-            cuando se conecte con las citas del agente, que es lo que la haria util. */}
-      </div>
+
+          {/* Separador */}
+          <div className="gtb-divider" />
+
+          {/* RAG Debug */}
+          <div className="gtb-group">
+            <button
+              className={`gtb-toggle${ragDebugMode ? ' active' : ''}`}
+              onClick={() => { 
+                setRagDebugMode(!ragDebugMode);
+                if (!ragDebugMode) setRagDebugQuery('');
+                setRagDebugResults([]);
+              }}
+              title="Explorar recuperación RAG"
+            >
+              <span className="gtb-toggle-dot" />
+              RAG
+            </button>
+            {ragDebugMode && (
+              <div className="gtb-rag-input">
+                <input
+                  type="text"
+                  placeholder="Query..."
+                  value={ragDebugQuery}
+                  onChange={e => setRagDebugQuery(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && runRagDebug(ragDebugQuery)}
+                />
+                <button onClick={() => runRagDebug(ragDebugQuery)} disabled={!ragDebugQuery.trim()}>⏎</button>
+                {ragDebugResults.length > 0 && <span className="gtb-rag-count">{ragDebugResults.length}</span>}
+              </div>
+            )}
+          </div>
+
+          {/* Separador */}
+          <div className="gtb-divider" />
+
+          {/* Etiquetas: S | M | L */}
+          <div className="gtb-group">
+            <span className="gtb-label">Etiquetas</span>
+            <div className="gtb-segment gtb-segment--sm">
+              {[
+                { value: 0.7, label: 'S' },
+                { value: 1.0, label: 'M' },
+                { value: 1.4, label: 'L' },
+              ].map(({ value, label }) => (
+                <button
+                  key={value}
+                  className={`gtb-seg-btn${labelScale === value ? ' active' : ''}`}
+                  onClick={() => setLabelScale(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Separador */}
+          <div className="gtb-divider" />
+
+          {/* Zoom */}
+          <div className="gtb-group gtb-zoom">
+            <button className="gtb-zoom-btn" onClick={() => setFitTrigger(f => f + 1)} title="Encuadrar">⊡</button>
+          </div>
+        </div>
+      )}
 
       {/* Botón flotante del Agente (estilo chatbot). Abajo a la DERECHA: el inferior
           izquierdo lo ocupa el selector de layout. Se oculta si el agente ya está abierto. */}
@@ -853,6 +1082,7 @@ export default function App() {
       {architectOpen && (
         <ArchitectPanel
           seccion={seccion}
+          allNodes={graphData.nodes}
           /* Entrega del caso a Issue: Architect decidió la clase de intervención,
              Issue la desarrolla. Es el paso 2 del mismo recorrido. */
           onDesarrollar={() => { setArchitectOpen(false); setIssueOpen(true); }}

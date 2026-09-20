@@ -28,7 +28,7 @@ function humanizeError(msg) {
 // Toast flotante de progreso: NO bloquea la app — la ingesta corre en el backend y
 // esto solo la mira. Va por portal a <body> para seguir visible aunque la Biblioteca
 // (que contiene este panel) esté oculta.
-function ProgressToast({ status, queueInfo, onCancel }) {
+function ProgressToast({ status, queueInfo, fileQueue, onCancel }) {
   const pct = status.progress || 0;
   const step = STEPS.find(s => pct <= s.at) || STEPS[STEPS.length - 1];
   // Para playlists el backend manda "Video X/N: título…": lo mostramos tal cual.
@@ -36,6 +36,10 @@ function ProgressToast({ status, queueInfo, onCancel }) {
                 : /lista de YouTube/i.test(status.message || '') ? status.message
                 : null;
   const st = status.state;
+
+  // Mostrar cola de archivos restantes
+  const pendientes = queueInfo && fileQueue ? fileQueue.slice(queueInfo.current) : [];
+  const tieneMultiples = queueInfo && queueInfo.total > 1;
 
   return createPortal(
     <div className={`ingest-toast${st === 'done' ? ' ingest-toast--done' : ''}${st === 'error' ? ' ingest-toast--error' : ''}`}>
@@ -45,7 +49,7 @@ function ProgressToast({ status, queueInfo, onCancel }) {
         {st === 'error' && <span style={{ color: '#e87a6e', flexShrink: 0 }}>✕</span>}
         <span className="ingest-toast-title" title={queueInfo?.name || status.message}>
           {st === 'processing'
-            ? (queueInfo ? `Cargando ${queueInfo.current}/${queueInfo.total} · ${queueInfo.name || ''}` : 'Cargando…')
+            ? (queueInfo ? `${queueInfo.current}/${queueInfo.total} · ${queueInfo.name || ''}` : 'Cargando…')
             : status.message}
         </span>
         <button className="ingest-toast-cancel" onClick={onCancel} title={st === 'processing' ? 'Cancelar la carga' : 'Cerrar'}>✕</button>
@@ -55,8 +59,19 @@ function ProgressToast({ status, queueInfo, onCancel }) {
           <div className="ingest-toast-bar-wrap">
             <div className="ingest-toast-bar" style={{ width: `${pct}%` }} />
           </div>
-          <div className="ingest-toast-step">{liveMsg || step.label} · {pct}%{status.label ? ` · "${status.label}"` : ''}</div>
-          <div className="ingest-toast-step" style={{ opacity: 0.65 }}>Corre en segundo plano — podés seguir usando la app</div>
+          <div className="ingest-toast-step">{liveMsg || step.label} · {pct}%</div>
+          {tieneMultiples && (
+            <div className="ingest-toast-queue">
+              {pendientes.length > 0 ? (
+                <span>En cola: {pendientes.slice(0, 3).map(f => f.name?.split('.')[0] || '?').join(', ')}{pendientes.length > 3 ? ` +${pendientes.length - 3} más` : ''}</span>
+              ) : (
+                <span>Último archivo de la cola</span>
+              )}
+            </div>
+          )}
+          <div className="ingest-toast-step" style={{ opacity: 0.55, fontSize: '10px' }}>
+            Podés seguir usando la app mientras se procesan
+          </div>
         </>
       )}
     </div>,
@@ -305,7 +320,12 @@ export default function IngestPanel({ onRefresh, inline = false, seccion = 'pers
   return (
     <>
       {(isProcessing || isDone || isError) && (
-        <ProgressToast status={status} queueInfo={queueInfo} onCancel={reset} />
+        <ProgressToast 
+          status={status} 
+          queueInfo={queueInfo} 
+          fileQueue={fileQueueRef.current}
+          onCancel={reset} 
+        />
       )}
 
       <div className={`ingest-panel${inline ? ' ingest-panel--inline' : ''}`}>

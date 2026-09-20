@@ -1,3 +1,5 @@
+import { pedirSecreto, avisar } from './dialog.jsx';
+
 // Clave de seguridad para las acciones que destruyen o reescriben el grafo.
 //
 // El backend acepta la acción sin clave cuando ALGEDI_ADMIN_PASSWORD está vacío
@@ -24,11 +26,15 @@ async function estaHabilitada() {
  */
 export async function pedirClave(accion) {
   if (!(await estaHabilitada())) return { password: null };
-  const password = window.prompt(`Clave de seguridad para ${accion}:`);
+  // window.prompt lanza en navegadores embebidos, así que la acción moría acá.
+  const password = await pedirSecreto(`Clave de seguridad para ${accion}`, {
+    detalle: 'Esta acción reescribe el grafo.',
+    confirmar: 'Continuar',
+  });
   return password == null ? null : { password };
 }
 
 /** Mensaje uniforme cuando el backend rechaza la clave. */
 export function avisarClaveIncorrecta() {
-  window.alert('Clave de seguridad incorrecta. No se hizo ningún cambio.');
+  avisar('Clave de seguridad incorrecta', { detalle: 'No se hizo ningún cambio.' });
 }

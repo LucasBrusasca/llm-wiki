@@ -36,7 +36,7 @@ THUMBS.mkdir(exist_ok=True)
 VAULT = BASE / "vault"
 VAULT.mkdir(exist_ok=True)
 
-MAX_UPLOAD_MB = max(1, int(os.getenv("ALGEDI_MAX_UPLOAD_MB", "50")))
+MAX_UPLOAD_MB = max(1, int(os.getenv("ALGEDI_MAX_UPLOAD_MB", "150")))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 INGEST_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".html", ".htm", ".txt", ".md",
                      ".docx", ".pptx", ".pptm"}
@@ -728,6 +728,57 @@ async def get_sections(db: AsyncSession = Depends(get_async_session)):
         secciones.insert(0, {"nombre": "personal", "count": 0})
     secciones.sort(key=lambda s: (s["nombre"] != "personal", s["nombre"].lower()))
     return {"secciones": secciones}
+
+
+@app.get("/api/sections/bridges")
+async def get_section_bridges(db: AsyncSession = Depends(get_async_session)):
+    """Puentes entre secciones: conexiones cross-dominio basadas en conceptos compartidos.
+    
+    MVP: usa heurística simple basada en overlap de taxonomías (temas) entre secciones.
+    Si dos secciones comparten temas similares, hay un puente entre ellas.
+    """
+    # Obtener todas las secciones con sus nodos
+    rows = (await db.execute(
+        select(Node.dominio, Node.group_label).where(
+            Node.is_centroid == False,
+            Node.is_issue == False,
+            Node.group_label.isnot(None)
+        )
+    )).all()
+    
+    # Agrupar temas por sección
+    section_themes = {}
+    for dominio, theme in rows:
+        d = dominio or "personal"
+        if d not in section_themes:
+            section_themes[d] = set()
+        if theme:
+            section_themes[d].add(theme.lower().strip())
+    
+    # Calcular puentes basados en temas compartidos
+    bridges = []
+    sections_list = list(section_themes.keys())
+    for i, s1 in enumerate(sections_list):
+        for s2 in sections_list[i+1:]:
+            themes1 = section_themes[s1]
+            themes2 = section_themes[s2]
+            # Overlap: temas en común
+            common = themes1 & themes2
+            if common:
+                # Peso basado en cantidad de temas compartidos
+                weight = len(common) / max(1, min(len(themes1), len(themes2)))
+                if weight > 0.1:  # umbral mínimo
+                    bridges.append({
+                        "source": s1,
+                        "target": s2,
+                        "weight": round(weight * 3, 2),  # escalar para visualización
+                        "shared_themes": list(common)[:5],  # máximo 5 para no saturar
+                    })
+    
+    # Ordenar por peso descendente
+    bridges.sort(key=lambda b: b["weight"], reverse=True)
+    
+    return {"bridges": bridges[:20]}  # máximo 20 puentes
 
 
 @app.get("/api/traceability/status")
@@ -1713,6 +1764,46 @@ async def semantic_search(
     return {"ids": ids}
 
 
+@app.get("/api/rag-debug")
+async def rag_debug_search(
+    q: str,
+    top_k: int = 10,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Debug visual de RAG: devuelve los top-k chunks recuperados con scores y node_ids.
+    
+    Usado por el modo "Explorar recuperación" en el grafo 3D.
+    """
+    if not q or len(q.strip()) < 3:
+        return {"query": q, "results": [], "node_ids": []}
+    
+    chunks = await _chunks_relevantes_scored(q.strip(), max_n=top_k, db=db)
+    
+    # Agrupar por nodo, quedarse con el mejor chunk por nodo
+    by_node = {}
+    for chunk in chunks:
+        nid = chunk["node_id"]
+        if nid not in by_node or chunk["sim"] > by_node[nid]["sim"]:
+            by_node[nid] = {
+                "node_id": nid,
+                "label": chunk["label"],
+                "sim": round(chunk["sim"], 3),
+                "excerpt": chunk["content"][:300],
+                "page": chunk.get("page"),
+                "chunk_id": chunk["id"],
+            }
+    
+    results = sorted(by_node.values(), key=lambda x: x["sim"], reverse=True)
+    node_ids = [r["node_id"] for r in results]
+    
+    return {
+        "query": q,
+        "results": results,
+        "node_ids": node_ids,
+        "count": len(results),
+    }
+
+
 # ── Node operations ───────────────────────────────────────────────────
 
 @app.delete("/api/node/{node_id}")
@@ -2249,6 +2340,250 @@ Devolvé SOLO JSON:
         "resumen": str(data.get("resumen") or "").strip(),
         "turnos_usuario": turnos_usuario,
     }
+
+
+class GenerateFlowRequest(BaseModel):
+    """Genera un flujograma inicial desde una descripción del problema."""
+    problem: str
+    case_name: str = ""
+
+
+@app.post("/api/architect/generate-flow")
+async def generate_flow_from_prompt(payload: GenerateFlowRequest):
+    """Genera un flujograma de decisión a partir de un prompt.
+
+    Usa el LLM para extraer pasos, decisiones y resultados del problema descripto.
+    Devuelve nodos y aristas listos para React Flow.
+    """
+    from processor import parsear_json, query_llm
+
+    problem = payload.problem.strip()[:2000]
+    if len(problem) < 10:
+        raise HTTPException(400, "Describí el problema con al menos 10 caracteres")
+
+    prompt = f"""Analizá este problema y generá un flujograma de decisión simple.
+
+PROBLEMA: {problem}
+
+Devolvé SOLO JSON válido con este formato:
+{{
+  "nodes": [
+    {{"id": "1", "type": "paso", "label": "Analizar situación", "position": {{"x": 250, "y": 50}}}},
+    {{"id": "2", "type": "decision", "label": "¿Cumple criterios?", "position": {{"x": 250, "y": 170}}}},
+    {{"id": "3", "type": "resultado", "label": "Implementar", "position": {{"x": 100, "y": 300}}}},
+    {{"id": "4", "type": "resultado", "label": "No implementar", "position": {{"x": 400, "y": 300}}}}
+  ],
+  "edges": [
+    {{"source": "1", "target": "2"}},
+    {{"source": "2", "target": "3"}},
+    {{"source": "2", "target": "4"}}
+  ]
+}}
+
+Tipos válidos: paso (acción), decision (bifurcación con Sí/No), resultado (fin).
+Posiciones: empieza en y=50, incrementa ~120 por nivel. x=250 centrado, x=100 izquierda, x=400 derecha.
+Máximo 6 nodos. Decisiones tienen dos salidas. Sé conciso en los labels (máx 40 chars).
+NO inventes etapas genéricas si el problema no las necesita.
+SOLO JSON, sin explicación."""
+
+    try:
+        import asyncio
+        raw = await asyncio.to_thread(
+            query_llm,
+            [{"role": "user", "content": prompt}],
+            "Sos un experto en modelado de procesos. Generás flujogramas concisos. Respondés SOLO JSON.",
+        )
+        data = parsear_json(raw.strip())
+        if not isinstance(data, dict) or not data.get("nodes"):
+            raise ValueError("respuesta inválida")
+        return {
+            "nodes": data.get("nodes", [])[:6],
+            "edges": data.get("edges", []),
+        }
+    except Exception as exc:
+        # Fallback: devolver un flujo mínimo para que el frontend no falle
+        return {
+            "nodes": [
+                {"id": "1", "type": "paso", "label": problem[:40] + ("…" if len(problem) > 40 else ""), "position": {"x": 250, "y": 50}},
+                {"id": "2", "type": "decision", "label": "¿Proceder?", "position": {"x": 250, "y": 170}},
+                {"id": "3", "type": "resultado", "label": "Implementar", "position": {"x": 100, "y": 300}},
+                {"id": "4", "type": "resultado", "label": "No implementar", "position": {"x": 400, "y": 300}},
+            ],
+            "edges": [
+                {"source": "1", "target": "2"},
+                {"source": "2", "target": "3"},
+                {"source": "2", "target": "4"},
+            ],
+            "fallback": True,
+            "error": str(exc),
+        }
+
+
+class ArchitectChatRequest(BaseModel):
+    """Chat interactivo del caso: el usuario dialoga y recibe sugerencias accionables."""
+    messages: list = []
+    canvas_state: dict = {}  # {nodes: [], edges: [], caseName: "", problem: ""}
+    seccion: str = "personal"
+
+
+@app.post("/api/architect/chat")
+async def architect_chat(
+    payload: ArchitectChatRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Chat interactivo para el taller de casos.
+    
+    A diferencia del intake one-shot, este endpoint:
+    - Devuelve sugerencias CLICKEABLES que el frontend puede ejecutar
+    - Incluye TRAZABILIDAD: fuentes/evidencia de donde salió cada respuesta
+    - Responde rápido con feedback inmediato
+    """
+    import asyncio
+    from processor import parsear_json, query_llm
+
+    mensajes = [m for m in (payload.messages or [])
+                if isinstance(m, dict) and str(m.get("content") or "").strip()]
+    if not mensajes:
+        raise HTTPException(400, "No hay mensaje para procesar")
+
+    ultimo_msg = str(mensajes[-1].get("content", "")).strip()[:2000]
+    canvas = payload.canvas_state or {}
+    num_nodos = len(canvas.get("nodes", []))
+    case_name = canvas.get("caseName", "")
+    problem = canvas.get("problem", "")
+    
+    # TRAZABILIDAD: buscar evidencia relevante al mensaje + problema
+    search_query = f"{problem[:500]} {ultimo_msg}"
+    chunks = await _chunks_relevantes_scored(search_query, max_n=5, db=db)
+    
+    # Formatear fuentes para incluir en respuesta
+    sources = []
+    evidence_context = ""
+    if chunks:
+        evidence_lines = []
+        for i, chunk in enumerate(chunks[:4]):
+            sources.append({
+                "node_id": chunk["node_id"],
+                "label": chunk["label"],
+                "excerpt": chunk["content"][:200],
+                "page": chunk.get("page"),
+                "sim": round(chunk["sim"], 2),
+            })
+            evidence_lines.append(f"[{i+1}] {chunk['label']}: {chunk['content'][:150]}...")
+        evidence_context = "\n".join(evidence_lines)
+    
+    # Historial resumido (últimos 6 mensajes)
+    historial = "\n".join(
+        f"{'Usuario' if m.get('role') == 'user' else 'Asistente'}: {str(m.get('content'))[:500]}"
+        for m in mensajes[-6:]
+    )
+    
+    # Contexto del canvas
+    canvas_context = ""
+    if num_nodos > 0:
+        nodos_desc = ", ".join(n.get("data", {}).get("label", "?")[:30] for n in canvas.get("nodes", [])[:5])
+        canvas_context = f"\nCANVAS ACTUAL: {num_nodos} nodos ({nodos_desc}...)"
+    
+    # Contexto de evidencia para el LLM
+    evidence_prompt = ""
+    if evidence_context:
+        evidence_prompt = f"\n\nEVIDENCIA RELACIONADA (del corpus):\n{evidence_context}"
+    
+    prompt = f"""Sos el asistente de Algedi Architect, un taller de casos.
+Tu rol es ayudar al usuario a construir un flujo de decisión, NO dar respuestas largas.
+
+CONTEXTO:
+- Caso: {case_name or '(sin nombre)'}
+- Problema: {problem[:300] or '(no definido)'}
+{canvas_context}{evidence_prompt}
+
+HISTORIAL:
+{historial}
+
+ULTIMO MENSAJE: {ultimo_msg}
+
+REGLAS:
+1. Respuestas CORTAS (2-3 oraciones máximo)
+2. Siempre incluí al menos 1 SUGERENCIA accionable
+3. Si hay evidencia relacionada, mencioná brevemente qué encontraste
+4. Si piden generar flujo, sugerí la acción correspondiente
+5. Si el canvas está vacío, sugerí empezar con una plantilla o generar desde el problema
+
+TIPOS DE SUGERENCIAS (usa el "action" correspondiente):
+- generate_flow: generar flujograma desde el problema actual
+- add_node: agregar un nodo específico al canvas
+- use_template: usar una plantilla predefinida (simple, verificacion, hitl)
+- find_evidence: buscar evidencia relacionada
+- refine_problem: el problema necesita más detalle
+- analyze_routes: analizar rutas (solo si el usuario lo pide explícitamente)
+- view_source: ver una fuente específica (params: node_id)
+
+Devolvé SOLO JSON:
+{{
+  "message": "tu respuesta corta al usuario",
+  "suggestions": [
+    {{"label": "texto del botón", "action": "generate_flow", "params": {{}}}},
+    {{"label": "Agregar paso: X", "action": "add_node", "params": {{"type": "paso", "label": "X"}}}},
+    {{"label": "Ver fuente: Doc X", "action": "view_source", "params": {{"node_id": "..."}}}}
+  ],
+  "case_name": "nombre sugerido si detectás uno mejor, o null"
+}}
+
+Máximo 3 sugerencias. Las sugerencias deben ser relevantes al mensaje."""
+
+    try:
+        raw = await asyncio.to_thread(
+            query_llm,
+            [{"role": "user", "content": prompt}],
+            "Sos un asistente conciso de taller de casos. Respondés SOLO JSON válido.",
+        )
+        data = parsear_json(raw.strip())
+        if not isinstance(data, dict):
+            raise ValueError("respuesta inválida")
+        
+        # Validar y limpiar sugerencias
+        suggestions = []
+        for s in data.get("suggestions", [])[:3]:
+            if isinstance(s, dict) and s.get("label") and s.get("action"):
+                suggestions.append({
+                    "label": str(s["label"])[:60],
+                    "action": str(s["action"]),
+                    "params": s.get("params", {}),
+                })
+        
+        # Si no hay sugerencias, agregar una por defecto
+        if not suggestions:
+            if num_nodos == 0:
+                suggestions = [
+                    {"label": "Generar flujo", "action": "generate_flow", "params": {}},
+                    {"label": "Plantilla simple", "action": "use_template", "params": {"template": "simple"}},
+                ]
+            else:
+                suggestions = [
+                    {"label": "Agregar nodo", "action": "add_node", "params": {"type": "paso", "label": "Nuevo paso"}},
+                ]
+        
+        return {
+            "message": str(data.get("message", "")).strip()[:500] or "¿En qué te puedo ayudar?",
+            "suggestions": suggestions,
+            "case_name": data.get("case_name") if data.get("case_name") else None,
+            "sources": sources,  # TRAZABILIDAD: fuentes de donde salió la respuesta
+        }
+    except Exception as exc:
+        # Fallback rápido sin LLM
+        default_suggestions = [
+            {"label": "Generar flujo", "action": "generate_flow", "params": {}},
+            {"label": "Usar plantilla", "action": "use_template", "params": {"template": "simple"}},
+        ] if num_nodos == 0 else [
+            {"label": "Agregar paso", "action": "add_node", "params": {"type": "paso", "label": "Nuevo paso"}},
+        ]
+        return {
+            "message": "Contame más sobre tu caso. Puedo ayudarte a armar el flujo.",
+            "suggestions": default_suggestions,
+            "case_name": None,
+            "sources": sources if 'sources' in dir() else [],  # Incluir sources si se recuperaron
+            "_fallback": True,
+        }
 
 
 @app.post("/api/architect/analyze")

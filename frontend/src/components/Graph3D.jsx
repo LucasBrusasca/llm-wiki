@@ -3,34 +3,42 @@ import ForceGraph3D from 'react-force-graph-3d';
 import * as THREE from 'three';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { clusterColor, CLUSTER_PALETTE } from '../App.jsx';
+import { clusterColor, CLUSTER_PALETTE, aclarar, groupKey, groupColor, nodeDotColor, ISSUE_COLOR } from '../nodeColor.js';
 
-/* ── Mapa plano de documentos (constelación de miniaturas) ── */
+/* ── PERF: throttle genérico para reducir recálculos en eventos de alta frecuencia ── */
+function throttle(fn, ms) {
+  let last = 0, pending = null;
+  return (...args) => {
+    const now = performance.now();
+    if (now - last >= ms) { last = now; fn(...args); }
+    else if (!pending) { pending = setTimeout(() => { pending = null; last = performance.now(); fn(...args); }, ms - (now - last)); }
+  };
+}
+
+/* ── Sistema visual premium: fondo profundo, nodos nítidos, edges legibles ── */
 const NODE = {
-  bg:      '#000000', // negro con sesgo azul: el fondo de un instrumento, no violeta
-  card:    '#0B121B60', // relleno de tarjeta neutra (translúcido)
-  border:  'rgba(150,200,230,0.34)', // borde fino de tarjeta
-  label:   'rgba(214,232,244,0.9)',  // texto de etiqueta
-  line:    '90,200,250',             // conexiones: cian del instrumento (rgb base)
-  issue:   '#FFB44D',                // ámbar: reservado para lo excepcional
+  bg:      '#030508', // negro profundo con sesgo azulado: más cinematográfico
+  card:    '#0D151F80', // relleno de tarjeta neutra (translúcido, más contraste)
+  border:  'rgba(130,180,220,0.45)', // borde más visible
+  label:   'rgba(230,242,255,0.95)',  // texto de etiqueta más brillante
+  line:    '100,210,255',             // conexiones: cian más vibrante
+  issue:   ISSUE_COLOR,              // ámbar: reservado para lo excepcional
   sel:     '#FFFFFF',                // retícula de selección
+  glow:    'rgba(90,200,250,0.15)',  // glow sutil para hover (sin bloom)
 };
 
 // "#7C8CFF" → "124,140,255". Se cachea porque linkColor corre por arista y por frame.
 const _rgbCache = new Map();
+// PERF: cache de colores de aristas para evitar recálculos por frame
+const _linkColorCache = new Map();
+let _linkColorCacheKey = '';
 /* El NODO se pinta mas claro que su propia arista. Con la paleta oscura, nodo y
    arista compartiendo color exacto hacia que las aristas —que son muchisimas mas—
    dominaran la pantalla y los nodos desaparecieran. Aclarar solo el nodo mantiene
    la paleta oscura del conjunto y devuelve al nodo la jerarquia que le corresponde:
    el documento es la entidad, la arista es la relacion. */
-function aclarar(hex, k = 0.14) {
-  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
-  if (!m) return hex;
-  const n = parseInt(m[1], 16);
-  const mez = c => Math.round(c + (255 - c) * k);
-  const r = mez((n >> 16) & 255), g = mez((n >> 8) & 255), b = mez(n & 255);
-  return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
-}
+// aclarar() vive ahora en ../nodeColor.js: el Multiverso pinta los mismos
+// nodos y las dos vistas tienen que calcular el color igual.
 
 /* La ARISTA se pinta mas oscura que el nodo, con el mismo matiz. Al subir el
    brillo de la paleta, las aristas heredaron ese brillo — y son un orden de
@@ -77,13 +85,13 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-/* ── Tamaño de tarjeta = centralidad (grado de conexiones), chico ── */
+/* ── Tamaño de tarjeta = centralidad (grado de conexiones) ── */
 function cardHeight(degree, maxDegree) {
   const norm = maxDegree > 0 ? Math.sqrt(degree / maxDegree) : 0;
-  // Achicadas: con 5..10 las tarjetas se encimaban en UMAP, donde los documentos
-  // quedan naturalmente juntos. El tope de 14 tarjetas simultaneas ayuda, pero si
-  // cada una es grande igual se pisan entre si.
-  return 4.4 + norm * 4.4; // ~4.4 (periferico) .. ~8.8 (hub)
+  // FIX: tamaño medio para que las miniaturas sean reconocibles
+  // Antes: 1.8..4.0 (muy chico, no se veía el preview)
+  // Ahora: 3.0..6.0 (visible pero no gigante)
+  return 3.0 + norm * 3.0;
 }
 
 // Dimensiones de la tarjeta normalizadas por ÁREA: un video 16:9 (ancho) y un PDF
@@ -106,16 +114,38 @@ function makeNeutralCardTexture(node, accent) {
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = NODE.card; ctx.fillRect(0, 0, cw, ch);
-  // Barra superior + borde en el COLOR DEL CLUSTER → identidad de grupo (plano, no glow).
-  if (accent) { ctx.fillStyle = accent; ctx.fillRect(0, 0, cw, 6); }
-  ctx.strokeStyle = accent || NODE.border; ctx.lineWidth = 3;
-  ctx.strokeRect(1.5, 1.5, cw - 3, ch - 3);
+  
+  // Fondo con gradiente sutil para profundidad
+  const bg = ctx.createLinearGradient(0, 0, 0, ch);
+  bg.addColorStop(0, '#0F1820');
+  bg.addColorStop(1, '#0A1218');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, cw, ch);
+  
+  // Barra superior del color del cluster (más ancha y brillante)
+  if (accent) {
+    ctx.fillStyle = accent;
+    ctx.fillRect(0, 0, cw, 5);
+    // Brillo sutil debajo de la barra
+    const glow = ctx.createLinearGradient(0, 5, 0, 20);
+    glow.addColorStop(0, accent.replace(')', ',0.2)').replace('rgb', 'rgba'));
+    glow.addColorStop(1, 'transparent');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 5, cw, 15);
+  }
+  
+  // Borde nítido
+  ctx.strokeStyle = accent || NODE.border;
+  ctx.lineWidth = 2.5;
+  ctx.strokeRect(1, 1, cw - 2, ch - 2);
+  
+  // Glyph del tipo de archivo (más visible)
   const glyph = GLYPHS[(node.fuente || '').toLowerCase()] || '◇';
-  ctx.fillStyle = 'rgba(165,180,200,0.7)';
-  ctx.font = `${glyph.length > 1 ? 26 : 40}px 'JetBrains Mono', 'Courier New', monospace`;
+  ctx.fillStyle = 'rgba(180,200,220,0.85)';
+  ctx.font = `${glyph.length > 1 ? 24 : 36}px 'JetBrains Mono', 'Courier New', monospace`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(glyph, cw / 2, ch / 2);
+  ctx.fillText(glyph, cw / 2, ch / 2 + 4);
+  
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
   return { tex, aspect: cw / ch };
@@ -169,39 +199,88 @@ function titleCase(str) {
   }).join('');
 }
 
-// Caption: etiqueta de texto chica centrada debajo de la tarjeta.
-function buildCaption(text) {
-  const pad = 5, fontPx = 34; // más px = texto más nítido
+// Truncado inteligente: preserva palabras clave, no corta a mitad de palabra
+function smartTruncate(text, maxLen) {
+  if (!text || text.length <= maxLen) return text;
+  // Intentar cortar en un espacio antes del límite
+  let cut = text.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(' ');
+  // Si hay un espacio razonable (no muy al inicio), cortar ahí
+  if (lastSpace > maxLen * 0.5) {
+    cut = cut.slice(0, lastSpace);
+  }
+  return cut.trim() + '…';
+}
+
+// Caption: etiqueta de texto centrada debajo de la tarjeta.
+// FIX: títulos más largos (hasta 48 chars) con truncado inteligente, 2 líneas si es necesario
+function buildCaption(text, fullText = null) {
+  const pad = 10, fontPx = 28, lineH = 34; // fuente legible, padding generoso
   const measure = document.createElement('canvas').getContext('2d');
-  const font = `600 ${fontPx}px 'JetBrains Mono', 'Courier New', monospace`;
+  const font = `600 ${fontPx}px 'Sora', 'Inter', system-ui, sans-serif`;
   measure.font = font;
-  let label = titleCase(text);
-  if (label.length > 26) label = label.slice(0, 25) + '…';
-  const tw = Math.max(1, Math.ceil(measure.measureText(label).width));
-  const cw = tw + pad * 2, ch = fontPx + pad * 2;
+  
+  const original = titleCase(text);
+  const full = fullText || original;  // texto completo para tooltip
+  
+  // Truncado inteligente: hasta 48 chars, o 2 líneas de ~28 cada una
+  let lines = [];
+  if (original.length <= 48) {
+    // Cabe en una línea
+    lines = [original];
+  } else {
+    // Intentar 2 líneas de ~28 chars
+    const firstLine = smartTruncate(original, 28);
+    const rest = original.slice(firstLine.length - 1).trim(); // sin el "…"
+    if (rest.length > 0) {
+      const secondLine = smartTruncate(rest, 26);
+      lines = [firstLine.replace('…', ''), secondLine];
+    } else {
+      lines = [smartTruncate(original, 48)];
+    }
+  }
+  
+  const numLines = lines.length;
+  const maxTw = Math.max(...lines.map(l => Math.ceil(measure.measureText(l).width)));
+  const cw = maxTw + pad * 2;
+  const ch = lineH * numLines + pad * 2;
+  
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  // Placa oscura con leve tinte cian + borde fino cian (identidad sin saturar).
-  ctx.fillStyle = 'rgba(12,12,24,0.72)';
-  roundRect(ctx, 0.5, 0.5, cw - 1, ch - 1, 5);
+  
+  // Fondo más sólido con blur visual (sin performance hit)
+  ctx.fillStyle = 'rgba(8,12,20,0.92)';
+  roundRect(ctx, 0, 0, cw, ch, 6);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(124,140,255,0.34)'; ctx.lineWidth = 1;
+  
+  // Borde sutil con gradiente
+  ctx.strokeStyle = 'rgba(90,200,250,0.3)';
+  ctx.lineWidth = 1.5;
   ctx.stroke();
+  
   ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  // Contorno oscuro para contraste sobre fondos claros (páginas blancas).
-  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-  ctx.strokeText(label, cw / 2, ch / 2);
-  ctx.fillStyle = 'rgba(238,245,255,0.98)'; // blanco hueso, más legible
-  ctx.fillText(label, cw / 2, ch / 2);
+  
+  // Dibujar cada línea
+  lines.forEach((line, i) => {
+    const y = pad + lineH / 2 + i * lineH;
+    // Sombra más definida
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,0.95)';
+    ctx.strokeText(line, cw / 2, y);
+    // Texto blanco brillante
+    ctx.fillStyle = 'rgba(245,250,255,1)';
+    ctx.fillText(line, cw / 2, y);
+  });
+  
   const tex = new THREE.CanvasTexture(cv);
   tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false, fog: false });
   const sprite = new THREE.Sprite(mat);
-  const worldH = 1.7, worldW = worldH * cw / ch;
+  const worldH = 1.8 + (numLines - 1) * 0.9;  // más alto si hay 2 líneas
+  const worldW = worldH * cw / ch;
   sprite.scale.set(worldW, worldH, 1);
   sprite.renderOrder = 3;
-  sprite.userData = { worldW, worldH };
+  sprite.userData = { worldW, worldH, fullText: full };  // guardar texto completo
   return sprite;
 }
 
@@ -216,35 +295,28 @@ function hasThumb(node) {
   return /\.(pdf|png|jpe?g|gif|webp|bmp|mp4|webm|mov|m4v|html?|docx?|pptx?|pptm|xlsx?|txt|md|markdown)$/i.test(node.fuente_path || '');
 }
 
-// Textura de punto (gradiente radial suave) para el nodo "de lejos" (LOD).
-/* Nodo = núcleo brillante con halo ajustado, no un disco con borde.
-   El aro oscuro anterior los hacía leer como botones; un núcleo saturado con
-   caída rápida se lee como punto de luz, que es lo que hace que una constelación
-   densa se vea como red y no como un puñado de pelotas. */
+// Textura de punto premium: núcleo nítido con borde sutil, sin blur excesivo.
+/* Look moderno: centro sólido con caída rápida y un anillo exterior muy tenue.
+   Evita el "confeti blur" manteniendo el núcleo definido. */
 function makeDotTexture() {
   const s = 128, c = document.createElement('canvas');
   c.width = c.height = s;
   const g = c.getContext('2d');
   const cx = s / 2;
 
-  /* El raycaster usa el sprite ENTERO como area de clic, no la parte visible.
-     Con el nucleo ocupando solo el 38% del ancho, cada nodo tenia una zona de clic
-     2,6x mas grande de lo que se veia, y esa zona invisible se tragaba los clics
-     dirigidos a las lineas cercanas. Achicando el halo y agrandando el nucleo, lo
-     que se ve ocupa casi todo lo que se toca. El tamaño visible no cambia: se
-     compensa reduciendo dotBase en la misma proporcion. */
-  const halo = g.createRadialGradient(cx, cx, 0, cx, cx, s * 0.5);
-  halo.addColorStop(0,    'rgba(255,255,255,0.45)');
-  halo.addColorStop(0.45, 'rgba(255,255,255,0.14)');
-  halo.addColorStop(0.75, 'rgba(255,255,255,0.03)');
-  halo.addColorStop(1,    'rgba(255,255,255,0)');
-  g.fillStyle = halo; g.fillRect(0, 0, s, s);
+  // Anillo exterior muy sutil: da profundidad sin blur
+  const outer = g.createRadialGradient(cx, cx, s * 0.28, cx, cx, s * 0.48);
+  outer.addColorStop(0, 'rgba(255,255,255,0)');
+  outer.addColorStop(0.5, 'rgba(255,255,255,0.08)');
+  outer.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = outer; g.fillRect(0, 0, s, s);
 
-  // Núcleo: ocupa 2/3 del sprite. Es lo que da la sensación de brillo.
-  const core = g.createRadialGradient(cx, cx, 0, cx, cx, s * 0.33);
-  core.addColorStop(0,    'rgba(255,255,255,1)');
-  core.addColorStop(0.62, 'rgba(255,255,255,1)');
-  core.addColorStop(1,    'rgba(255,255,255,0)');
+  // Núcleo sólido: borde definido, no difuso
+  const core = g.createRadialGradient(cx, cx, 0, cx, cx, s * 0.28);
+  core.addColorStop(0, 'rgba(255,255,255,1)');
+  core.addColorStop(0.7, 'rgba(255,255,255,0.95)');
+  core.addColorStop(0.85, 'rgba(255,255,255,0.6)');
+  core.addColorStop(1, 'rgba(255,255,255,0)');
   g.fillStyle = core; g.fillRect(0, 0, s, s);
 
   const t = new THREE.CanvasTexture(c);
@@ -254,36 +326,29 @@ function makeDotTexture() {
 }
 const DOT_TEX = makeDotTexture();
 
-/* Anillo de selección: aro fino y nítido, sin relleno. Marca QUÉ estás tocando
-   sin taparlo ni depender de un cambio de opacidad que casi no se percibe. */
-/* Retícula de selección: aro fino y abierto en cuatro arcos, no un círculo macizo.
-   Un aro pleno tapa el nodo y lee a "botón seleccionado"; los arcos leen a mira de
-   instrumento y dejan ver el nodo que están señalando. */
+/* Anillo de selección premium: círculo completo con glow sutil.
+   Más visible y moderno que los arcos fragmentados. */
 function makeRingTexture() {
   const s = 256, c = document.createElement('canvas');
   c.width = c.height = s;
   const g = c.getContext('2d');
-  const cx = s / 2, r = s * 0.36;
+  const cx = s / 2, r = s * 0.38;
 
-  g.strokeStyle = 'rgba(255,255,255,1)';
-  g.lineWidth = s * 0.018;          // fino: el peso lo da el contraste, no el grosor
-  g.lineCap = 'round';
-  const hueco = 0.30;               // porción de cada cuadrante que queda abierta
-  for (let i = 0; i < 4; i++) {
-    const desde = (i * Math.PI / 2) + (hueco * Math.PI / 4);
-    const hasta = ((i + 1) * Math.PI / 2) - (hueco * Math.PI / 4);
-    g.beginPath(); g.arc(cx, cx, r, desde, hasta); g.stroke();
-  }
+  // Glow exterior sutil (sin afectar performance)
+  g.strokeStyle = 'rgba(90,200,250,0.25)';
+  g.lineWidth = s * 0.06;
+  g.beginPath(); g.arc(cx, cx, r, 0, Math.PI * 2); g.stroke();
 
-  // Cuatro marcas radiales cortas en las aberturas: refuerzan la lectura de mira.
-  g.lineWidth = s * 0.014;
-  for (let i = 0; i < 4; i++) {
-    const a = i * Math.PI / 2;
-    g.beginPath();
-    g.moveTo(cx + Math.cos(a) * r * 0.86, cx + Math.sin(a) * r * 0.86);
-    g.lineTo(cx + Math.cos(a) * r * 1.12, cx + Math.sin(a) * r * 1.12);
-    g.stroke();
-  }
+  // Anillo principal blanco
+  g.strokeStyle = 'rgba(255,255,255,0.95)';
+  g.lineWidth = s * 0.022;
+  g.beginPath(); g.arc(cx, cx, r, 0, Math.PI * 2); g.stroke();
+
+  // Punto de referencia arriba (indica orientación)
+  g.fillStyle = 'rgba(255,255,255,1)';
+  g.beginPath();
+  g.arc(cx, cx - r, s * 0.025, 0, Math.PI * 2);
+  g.fill();
 
   const t = new THREE.CanvasTexture(c);
   t.minFilter = THREE.LinearFilter;
@@ -296,13 +361,16 @@ const RING_TEX = makeRingTexture();
    Lejos: cada nodo es un punto de color por cluster (constelación limpia).
    Cerca: vuelve a ser la tarjeta con miniatura. LOD_FAR es estado global del zoom. */
 let LOD_FAR = true; // arranca en "puntos" (vista general); las tarjetas aparecen al acercarse
+let SHOW_CLUSTER_LABELS = false; // las etiquetas de cluster solo se ven en zoom intermedio
+let LINK_ALPHA_MULT = 0.55; // Opacidad base más alta para mejor legibilidad (ajustado por zoom)
 
-function setNodeLOD(ud, far) {
+function setNodeLOD(ud, far, isHovered = false) {
   if (!ud) return;
   if (ud.esFragmento) return;   // siempre punto
   if (ud.face)    ud.face.visible = !far;
-  // El nodo elegido y sus vecinos conservan el nombre aunque el LOD los pase a punto.
-  if (ud.caption) ud.caption.visible = !far || !!ud.forzarCaption;
+  // FIX: caption visible en hover, selección, o zoom cercano para identificar documentos
+  // El nodo elegido, sus vecinos, o el hover conservan el nombre aunque el LOD los pase a punto.
+  if (ud.caption) ud.caption.visible = !far || !!ud.forzarCaption || isHovered;
   if (ud.halo)    ud.halo.visible = !far;
   if (ud.dot)     ud.dot.visible = far;
   // El anillo acompaña el LOD: rodea el punto de lejos y la tarjeta de cerca.
@@ -316,29 +384,7 @@ function setNodeLOD(ud, far) {
 // Clave de agrupamiento del grafo: el TEMA (taxonomía asignada por LLM) manda; si un
 // nodo no tiene tema, cae al cluster HDBSCAN; si tampoco, queda sin grupo (gris neutro).
 // Así el "grupo" (color/etiqueta/empaquetado) refleja la taxonomía, no la densidad.
-function groupKey(node) {
-  const t = node.tema;
-  if (t && t !== 'Sin clasificar') return 't:' + t;
-  if (node.cluster != null && node.cluster >= 0) return 'c:' + node.cluster;
-  return null;
-}
-
-function groupColor(key) {
-  if (key == null) return '#565A78';              // sin grupo → gris frío: retrocede
-  if (key.startsWith('c:')) return clusterColor(parseInt(key.slice(2), 10));
-  let h = 0;                                       // tema (string) → color estable
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
-  return CLUSTER_PALETTE[h % CLUSTER_PALETTE.length];
-}
-
-function nodeDotColor(node) {
-  if (node.is_issue) return NODE.issue;
-  // El HUB se sobreexpone a blanco. Es lo que produce los nucleos brillantes de las
-  // referencias: no es un color mas de la paleta, es luz saturada en el centro de la
-  // estrella. El color del tema lo siguen aportando los fragmentos que lo rodean.
-  if (node.is_hub) return '#FFFFFF';
-  return groupColor(groupKey(node));
-}
+// groupKey/groupColor/nodeDotColor viven ahora en ../nodeColor.js.
 
 // Un fragmento es un punto y nada mas: sin tarjeta, sin etiqueta, sin halo.
 // Con 4.397 fragmentos, cinco sprites por nodo serian 22.000 objetos y el
@@ -402,6 +448,9 @@ function buildNode(node, degree, maxDegree, texReg) {
       caption.userData.worldH *= k;
     }
   }
+  // FIX: guardar escala base para poder aplicar labelScale dinámicamente
+  caption.userData.baseScaleX = caption.scale.x;
+  caption.userData.baseScaleY = caption.scale.y;
   caption.position.set(0, -(fh / 2) - caption.userData.worldH / 2 - 0.8, 0);
   group.add(caption);
   if (texReg) { texReg.add(caption.material.map); texReg.add(caption.material); }
@@ -490,20 +539,20 @@ function buildNode(node, degree, maxDegree, texReg) {
 
 // Etiqueta de cluster: placa oscura + borde y marcador del COLOR del cluster + texto
 // brillante. El color la distingue de los captions de nodo y de otros clusters.
+// FIX: truncado más agresivo para que no tapen los nodos al hacer zoom
 function buildClusterTextSprite(text, color) {
-  const H = 66, fontPx = 26, leftPad = 48, rightPad = 26;
-  const font = `bold ${fontPx}px 'JetBrains Mono', 'Courier New', monospace`;
-  // La caja se dimensiona al texto (más abajo), así que dejamos que la etiqueta se
-  // vea COMPLETA. Sólo truncamos si es absurdamente larga (evita un sprite gigante),
-  // y en borde de palabra.
+  const H = 52, fontPx = 20, leftPad = 36, rightPad = 18;  // más compacto
+  const font = `600 ${fontPx}px 'Sora', 'Inter', system-ui, sans-serif`;
+  
+  // FIX: truncado mucho más agresivo (max ~35 chars) para evitar pills gigantes
   let display = text || '';
-  if (display.length > 64) {
-    display = display.slice(0, 63);
+  if (display.length > 36) {
+    display = display.slice(0, 35);
     const sp = display.lastIndexOf(' ');
-    if (sp > 40) display = display.slice(0, sp);
+    if (sp > 20) display = display.slice(0, sp);
     display += '…';
   }
-  // Medir el texto y dimensionar la caja para que NO se corte.
+  
   const measure = document.createElement('canvas').getContext('2d');
   measure.font = font;
   const textW = Math.ceil(measure.measureText(display).width);
@@ -512,22 +561,38 @@ function buildClusterTextSprite(text, color) {
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
-  roundRect(ctx, 2, 2, W - 4, H - 4, 9);
-  ctx.fillStyle = 'rgba(5, 9, 16, 0.96)';
+  
+  // Fondo premium con gradiente muy sutil
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, 'rgba(12, 18, 28, 0.95)');
+  bgGrad.addColorStop(1, 'rgba(6, 10, 18, 0.97)');
+  roundRect(ctx, 1, 1, W - 2, H - 2, 8);
+  ctx.fillStyle = bgGrad;
   ctx.fill();
+  
+  // Borde con el color del cluster (más sutil)
   ctx.strokeStyle = color;
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 2;
   ctx.stroke();
-  // Marcador de color del cluster (cuadradito a la izquierda).
+  
+  // Marcador de color (círculo en lugar de cuadrado, más moderno)
+  ctx.beginPath();
+  ctx.arc(24, H / 2, 8, 0, Math.PI * 2);
   ctx.fillStyle = color;
-  roundRect(ctx, 16, H / 2 - 10, 20, 20, 4);
   ctx.fill();
-  // Texto del concepto que caracteriza al grupo.
+  // Anillo exterior sutil
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  
+  // Texto con sombra sutil
   ctx.font = font;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(234,245,255,0.98)';
-  ctx.fillText(display, leftPad, H / 2 + 1);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillText(display, leftPad + 1, H / 2 + 2);
+  ctx.fillStyle = 'rgba(245,252,255,1)';
+  ctx.fillText(display, leftPad, H / 2);
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
   const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, depthTest: false, fog: false });
@@ -640,6 +705,8 @@ export default function Graph3D({
   graphData, selectedNode, highlighted, filteredIds,
   onNodeClick, onNodeHover, onLinkClick, synthMode, layoutMode = 'components',
   projectRef, focusTrigger = 0, fitTrigger = 0,
+  ragDebugMode = false, ragDebugResults = [],
+  labelScale = 1.0,  // FIX: escala de labels (0.7 = compacto, 1.0 = normal, 1.4 = amplio)
 }) {
   const fgRef                 = useRef();
   const stageRef              = useRef(null);      // contenedor real del lienzo
@@ -682,6 +749,7 @@ export default function Graph3D({
   const prevLayoutRef         = useRef(null);      // detectar cambio de layout vs refresh
   const didFitRef             = useRef(false);     // ya encuadró alguna vez
   const fitPendingRef         = useRef(true);      // encuadrar en el próximo asentamiento
+  const hoverIdRef            = useRef(null);      // FIX: ID del nodo en hover (para mostrar caption)
 
   /* ── CANAL: centralidad = grado (cantidad de aristas conectadas) ── */
   const { degreeMap, maxDegree } = useMemo(() => {
@@ -696,6 +764,12 @@ export default function Graph3D({
     m.forEach(v => { if (v > max) max = v; });
     return { degreeMap: m, maxDegree: max };
   }, [graphData.links]);
+
+  /* ── RAG Debug: Set de IDs de nodos recuperados ── */
+  const ragNodeIds = useMemo(() => {
+    if (!ragDebugMode || !ragDebugResults.length) return new Set();
+    return new Set(ragDebugResults.map(r => r.node_id));
+  }, [ragDebugMode, ragDebugResults]);
 
   const nodeThreeObject = useMemo(() => {
     spriteMap.current = new Map();
@@ -885,6 +959,8 @@ export default function Graph3D({
         const cyLbl = members.reduce((a, n) => a + (n.fy ?? n.y ?? 0), 0) / members.length;
         sprite.position.set(cx, cyLbl + 4, cz);
         sprite.userData.cid = key;
+        // PERF: inicializar ocultas, se muestran solo en zoom intermedio
+        sprite.visible = SHOW_CLUSTER_LABELS;
         scene.add(sprite);
         clusterLabelSprites.current.push(sprite);
       });
@@ -907,6 +983,7 @@ export default function Graph3D({
   }, [graphData, layoutMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Estado visual: atenuar las tarjetas no resaltadas, agrandar la seleccionada.
+  // RAG Debug: resaltar nodos recuperados, atenuar el resto.
   useEffect(() => {
     // Vecinos directos del nodo elegido (para mostrarles el nombre).
     const conectados = new Set();
@@ -921,24 +998,51 @@ export default function Graph3D({
       const ud = obj.userData;
       if (!ud?.face) return;
       const isSel = selectedNode?.id === id;
-      const isDim = highlighted.size > 0 && !highlighted.has(id);
+      
+      // RAG Debug: nodos recuperados se resaltan, el resto se atenúa fuertemente
+      const isRagHit = ragNodeIds.has(id);
+      const ragActive = ragNodeIds.size > 0;
+      
+      // isDim: atenuado por búsqueda normal O por RAG debug (no recuperado)
+      const isDim = ragActive
+        ? !isRagHit && !isSel  // RAG mode: solo brillan los recuperados + seleccionado
+        : (highlighted.size > 0 && !highlighted.has(id));
+      
       // Lo seleccionado se marca por FORMA (anillo + escala), no sólo por opacidad:
       // un delta de 0.9 a 1.0 en un punto de 2px era imperceptible.
       // Lo atenuado baja más que antes, para que el foco realmente destaque.
-      ud.face.material.opacity    = isDim ? 0.16 : 1;
-      ud.caption.material.opacity = isDim ? 0.08 : (isSel ? 1 : 0.62);
-      const fs = isSel ? 1.18 : 1;
-      ud.face.scale.set(ud.baseFW * fs, ud.baseFH * fs, 1);
+      const faceOpacity = isDim ? (ragActive ? 0.08 : 0.16) : 1;
+      ud.face.material.opacity = faceOpacity;
+      ud.caption.material.opacity = isDim ? 0.05 : (isSel ? 1 : 0.62);
+      
+      // Escala de tarjeta: base (labelScale) + boost por selección/RAG hit
+      // Seleccionado: +30% para destacar el preview
+      // RAG hit: +20% para identificar resultados
+      const boost = isSel ? 1.3 : (isRagHit && ragActive ? 1.2 : 1);
+      ud.face.scale.set(ud.baseFW * boost, ud.baseFH * boost, 1);
 
       // Punto LOD (vista lejana): conserva SU color de grupo — cambiarlo a cian
       // hacía perder la referencia de a qué tema pertenece el nodo elegido.
+      // RAG hits: cambiar a color distintivo (cian brillante)
       if (ud.dot) {
-        ud.dot.material.color.set(ud.dotColor);
-        ud.dot.material.opacity = isDim ? 0.12 : (isSel ? 1 : 0.88);
-        ud.dot.scale.setScalar(isSel ? ud.dotBase * 1.45 : ud.dotBase);
+        if (isRagHit && ragActive) {
+          ud.dot.material.color.set('#00FFFF');  // cian brillante para RAG hits
+          ud.dot.material.opacity = 1;
+          ud.dot.scale.setScalar(ud.dotBase * 1.5);
+        } else {
+          ud.dot.material.color.set(ud.dotColor);
+          ud.dot.material.opacity = isDim ? (ragActive ? 0.06 : 0.12) : (isSel ? 1 : 0.88);
+          ud.dot.scale.setScalar(isSel ? ud.dotBase * 1.45 : ud.dotBase);
+        }
       }
       // Halo de grupo (vista cercana): atenuar / realzar, sutil.
-      if (ud.halo) ud.halo.material.opacity = isDim ? 0.03 : (isSel ? 0.34 : 0.2);
+      if (ud.halo) {
+        if (isRagHit && ragActive) {
+          ud.halo.material.opacity = 0.5;  // halo más visible para RAG hits
+        } else {
+          ud.halo.material.opacity = isDim ? 0.02 : (isSel ? 0.34 : 0.2);
+        }
+      }
 
       // Anillo: la señal principal de "esto es lo que estás tocando".
       // Al seleccionar, los VECINOS muestran su nombre: saber con que se conecta
@@ -947,10 +1051,12 @@ export default function Graph3D({
         const vecino = selectedNode ? conectados.has(id) : false;
         /* `conectados` son los VECINOS, no incluye al nodo elegido: sin isSel aca,
            el documento en foco era el unico sin nombre visible. */
-        ud.caption.visible = isSel || vecino || (!isDim && !LOD_FAR);
+        // RAG hits siempre muestran caption
+        ud.caption.visible = isSel || vecino || (isRagHit && ragActive) || (!isDim && !LOD_FAR);
         if (isSel) ud.caption.material.opacity = 1;
         else if (vecino) ud.caption.material.opacity = 0.95;
-        ud.forzarCaption = isSel || vecino;
+        else if (isRagHit && ragActive) ud.caption.material.opacity = 0.9;
+        ud.forzarCaption = isSel || vecino || (isRagHit && ragActive);
       }
       if (ud.ring) {
         ud.ring.visible = false;   // retícula retirada a pedido: molestaba mas de lo que marcaba
@@ -958,7 +1064,29 @@ export default function Graph3D({
       }
     });
     wakeRef.current();  // renderizar el cambio de highlight/selección (luego idle)
-  }, [highlighted, selectedNode, graphData]);
+  }, [highlighted, selectedNode, graphData, ragNodeIds]);
+
+  // FIX: actualizar escala de captions Y tarjetas cuando cambia labelScale
+  useEffect(() => {
+    spriteMap.current.forEach((obj) => {
+      const ud = obj.userData;
+      // Escalar caption
+      if (ud?.caption?.userData?.baseScaleX) {
+        const capUd = ud.caption.userData;
+        ud.caption.scale.set(capUd.baseScaleX * labelScale, capUd.baseScaleY * labelScale, 1);
+      }
+      // Escalar tarjeta (face) - las miniaturas también deben escalar
+      if (ud?.face && ud?.baseFW && ud?.baseFH) {
+        ud.face.scale.set(ud.baseFW * labelScale, ud.baseFH * labelScale, 1);
+        // Reposicionar caption debajo de la tarjeta escalada
+        if (ud.caption) {
+          const scaledFH = ud.baseFH * labelScale;
+          ud.caption.position.y = -(scaledFH / 2) - (ud.caption.userData?.worldH || 1) / 2 - 0.8;
+        }
+      }
+    });
+    wakeRef.current();
+  }, [labelScale]);
 
   // (Sin fly-to automático al seleccionar: clickear un nodo NO mueve el grafo.)
   // Enfoque + destello EXPLÍCITO (botón ⌖ del panel): acerca la cámara al nodo y
@@ -1148,6 +1276,36 @@ export default function Graph3D({
       if (d > FAR_IN) far = true; else if (d < FAR_OUT) far = false;
       const changed = far !== LOD_FAR;
       if (changed) LOD_FAR = far;
+
+      // PERF: las etiquetas de cluster solo se ven en zoom intermedio (no muy cerca, no muy lejos)
+      // Fix: escalar inversamente al zoom para que no crezcan y tapen todo al acercarse
+      const LABEL_SHOW = R * 3.2, LABEL_HIDE = R * 0.9;  // rango más amplio pero con escala controlada
+      const showLabels = d > LABEL_HIDE && d < LABEL_SHOW;
+      if (showLabels !== SHOW_CLUSTER_LABELS) {
+        SHOW_CLUSTER_LABELS = showLabels;
+        clusterLabelSprites.current.forEach(s => { s.visible = showLabels; });
+      }
+      
+      // FIX: escalar etiquetas de cluster inversamente al zoom para tamaño visual constante
+      // Al acercarse (d pequeña) → escala baja; al alejarse → escala normal (1)
+      // Esto evita que las pills gigantes tapen los nodos
+      if (showLabels) {
+        const baseScale = 1.0;  // escala de referencia a distancia media
+        const refDist = R * 2.0;  // distancia de referencia
+        // Escala inversa con límites: min 0.3 (muy cerca), max 1.2 (lejos)
+        const clusterLabelScale = Math.min(1.2, Math.max(0.3, (d / refDist) * baseScale));
+        clusterLabelSprites.current.forEach(s => {
+          s.scale.setScalar(clusterLabelScale);
+        });
+      }
+
+      // PERF: aristas más tenues de lejos (menos overdraw visual, más legible)
+      const newAlphaMult = d > R * 2.5 ? 0.25 : (d > R * 1.5 ? 0.5 : 1.0);
+      if (Math.abs(newAlphaMult - LINK_ALPHA_MULT) > 0.05) {
+        LINK_ALPHA_MULT = newAlphaMult;
+        _linkColorCache.clear(); // forzar recálculo de colores
+      }
+
       if (true) {
         // En modo lejos, escalar los puntos ∝ distancia → tamaño ~constante en pantalla
         // (un sprite normal se achica con la distancia y desaparecería). El coeficiente
@@ -1173,7 +1331,9 @@ export default function Graph3D({
         spriteMap.current.forEach((obj, id) => {
           const ud = obj.userData;
           const comoPunto = far || (cercanos ? !cercanos.has(id) : false);
-          setNodeLOD(ud, comoPunto);
+          // FIX: pasar estado de hover para mantener caption visible al pasar el mouse
+          const isHovered = hoverIdRef.current === id;
+          setNodeLOD(ud, comoPunto, isHovered);
           if (comoPunto && ud.dot) ud.dot.scale.setScalar(far ? dotScale : ud.dotBase);
         });
         // NO llamar a wake() acá: este handler corre dentro del evento 'change' de los
@@ -1181,7 +1341,9 @@ export default function Graph3D({
         // re-dispara 'change' → recursión infinita.
       }
     };
-    if (controls) controls.addEventListener('change', updateLOD);
+    // PERF: throttle updateLOD para no recalcular en cada frame de arrastre
+    const throttledLOD = throttle(updateLOD, 50);
+    if (controls) controls.addEventListener('change', throttledLOD);
     // Estado inicial (fuera del evento 'change' → acá sí es seguro despertar).
     setTimeout(() => { updateLOD(); wakeRef.current(); }, 400);
   }, []);
@@ -1201,8 +1363,23 @@ export default function Graph3D({
      justamente lo que estas apuntando. Encender la relacion bajo el puntero
      hace visible el blanco antes de hacer clic. */
   const [hoverLink, setHoverLink] = useState(null);
+  
+  // FIX: tooltip con nombre completo del documento en hover
+  const [nodeTooltip, setNodeTooltip] = useState(null); // { text, x, y }
 
   const linkColor = useCallback(link => {
+    // PERF: cache de colores por arista - invalidar cuando cambian selección/hover
+    const cacheKey = `${selectedNode?.id || ''}_${highlighted.size}_${hoverLink?.__id || ''}`;
+    if (cacheKey !== _linkColorCacheKey) {
+      _linkColorCache.clear();
+      _linkColorCacheKey = cacheKey;
+    }
+    const linkId = `${link.source?.id ?? link.source}_${link.target?.id ?? link.target}`;
+    const isHover = hoverLink && link === hoverLink;
+    const fullKey = `${linkId}_${isHover ? 'h' : ''}`;
+    const cached = _linkColorCache.get(fullKey);
+    if (cached) return cached;
+
     const nodoOrigen = typeof link.source === 'object' ? link.source : null;
     const nodoDestino = typeof link.target === 'object' ? link.target : null;
     const s = link.source?.id ?? link.source;
@@ -1212,51 +1389,42 @@ export default function Graph3D({
 
     const issue = nodoOrigen?.is_issue || nodoDestino?.is_issue;
 
-    // Regla de las referencias: la arista DENTRO de un grupo toma su color y lo
-    // hace legible como estrella; la arista ENTRE grupos es gris y discreta, y es
-    // justamente eso lo que hace que los grupos se distingan como islas.
     const gkO = nodoOrigen ? groupKey(nodoOrigen) : null;
     const gkD = nodoDestino ? groupKey(nodoDestino) : null;
     const mismoGrupo = gkO != null && gkO === gkD;
 
+    // Aristas GRIS NEUTRO por defecto - el color está en los nodos, no en las líneas
+    // Solo resaltamos con color en hover/selección
     let rgb, alphaBase;
-    if (link.spoke) {
-      // Radio de la estrella: hereda el color del tema, muy tenue. Son miles;
-      // con alfa alto la pantalla se vuelve una masa solida.
-      const gk = nodoDestino ? groupKey(nodoDestino) : (nodoOrigen ? groupKey(nodoOrigen) : null);
-      rgb = hexToRgb(oscurecer(groupColor(gk), 0.45)); alphaBase = 0.16;
-    }
-    else if (issue) { rgb = hexToRgb(NODE.issue); alphaBase = 0.5; }
-    else if (mismoGrupo) { rgb = hexToRgb(oscurecer(groupColor(gkO), 0.45)); alphaBase = 0.34; }
-    else { rgb = '150,160,180'; alphaBase = 0.075; }  // puente entre grupos: gris muy tenue
-    // Son mayoria y, al ser grises, competian con los nodos por atencion.
-
-    // La relacion senalada se enciende con su color VIVO y a opacidad plena: es
-    // la senal de "a esto le vas a pegar si hacés clic".
-    if (hoverLink && link === hoverLink) {
-      // Dentro del grupo: su propio color, sin oscurecer y a opacidad plena.
-      // Entre grupos: el mismo gris de siempre, sólo encendido. El blanco puro
-      // que habia antes cortaba la escena como un tajo.
-      return mismoGrupo
-        ? `rgba(${hexToRgb(groupColor(gkO))},0.95)`
-        : 'rgba(198,212,226,0.85)';
+    if (issue) { 
+      rgb = hexToRgb(NODE.issue); alphaBase = 0.5; 
+    } else {
+      // Gris neutro para TODAS las aristas (mismo grupo o no)
+      rgb = '120,135,160'; 
+      alphaBase = link.spoke ? 0.15 : (mismoGrupo ? 0.28 : 0.18);
     }
 
-    const alpha = !hayFoco ? alphaBase : (enFoco ? 0.95 : 0.02);
-    return `rgba(${rgb},${alpha})`;
+    let result;
+    if (isHover) {
+      // FIX: hover sutil — solo un poco más claro/opaco, no tubo neón
+      result = 'rgba(200,210,225,0.85)';  // blanco-gris suave, diferenciable pero no agresivo
+    } else {
+      // PERF: aplicar multiplicador de opacidad según zoom
+      const alpha = (!hayFoco ? alphaBase : (enFoco ? 1 : 0.04)) * LINK_ALPHA_MULT;
+      result = `rgba(${rgb},${Math.max(0.02, alpha)})`;
+    }
+    _linkColorCache.set(fullKey, result);
+    return result;
   }, [selectedNode, highlighted, hoverLink]);
 
-  /* SIEMPRE 0. Con cualquier valor > 0, react-force-graph deja de dibujar una
-     línea y pasa a construir un CILINDRO en unidades de mundo: al acercar la
-     cámara esos cilindros se agrandan y tapan el grafo (los "fideos" gigantes).
-     Con 0 dibuja THREE.Line, de 1px constante en pantalla a cualquier zoom, que
-     es lo que da el filamento fino. El énfasis se hace por color, no por grosor. */
-
-  /* SIEMPRE 0. Con linkWidth > 0, react-force-graph abandona THREE.Line —que da
-     un trazo de 1px constante en pantalla— y dibuja un cilindro en unidades del
-     mundo, que se engrosa a medida que te acercas. El resaltado del hover se hace
-     por COLOR, nunca por grosor. */
-  const linkWidth = useCallback(() => 0, []);
+  /* FIX: linkWidth 0 mantiene líneas finas 1px. El picking funciona gracias a
+     linkHoverPrecision=35. El resalte de hover es sutil (solo color más claro),
+     no un tubo neón grueso. */
+  const linkWidth = useCallback(link => {
+    // Hover sutil: ligeramente más ancha pero no gruesa (0.5 da línea ~2px sin cilindro 3D)
+    if (hoverLink && link === hoverLink) return 0.5;
+    return 0;  // el resto sigue siendo 1px
+  }, [hoverLink]);
 
   /* Curvatura: las líneas rectas leen como diagrama de ingeniería; las curvas
      leen como filamento. Es el cambio que más acerca el grafo a una red neuronal.
@@ -1272,7 +1440,7 @@ export default function Graph3D({
 
   // Hover: anillo tenue del color del grupo. Distinto de la selección (anillo blanco
   // y opaco), para que se distinga "lo que estoy señalando" de "lo que elegí".
-  const hoverIdRef = useRef(null);
+  // FIX: también mostrar caption y agrandar tarjeta en hover para identificar el documento
   const paintHover = useCallback((id, on) => {
     const ud = spriteMap.current.get(id)?.userData;
     if (!ud?.ring) return;
@@ -1281,9 +1449,45 @@ export default function Graph3D({
     ud.ring.visible = false;
     ud.ring.material.opacity = 0;
     if (ud.dot) ud.dot.scale.setScalar(on ? ud.dotBase * 1.2 : ud.dotBase);
+    // FIX: agrandar tarjeta en hover para ver mejor el preview
+    if (ud.face && ud.baseFW && ud.baseFH) {
+      const hoverBoost = on ? 1.15 : 1;  // +15% en hover
+      ud.face.scale.set(ud.baseFW * hoverBoost, ud.baseFH * hoverBoost, 1);
+    }
+    // FIX: mostrar caption en hover incluso en modo puntos para identificar el documento
+    if (ud.caption) {
+      ud.caption.visible = on || !LOD_FAR || !!ud.forzarCaption;
+      ud.caption.material.opacity = on ? 1 : (ud.forzarCaption ? 0.95 : 0.62);
+    }
   }, [selectedNode]);
 
-  const handleHover = useCallback(node => {
+  // FIX: proyectar posición 3D del nodo a coordenadas de pantalla para el tooltip
+  const projectNodeToScreen = useCallback((node) => {
+    if (!node || !fgRef.current) return null;
+    const fg = fgRef.current;
+    const camera = fg.camera();
+    const renderer = fg.renderer();
+    if (!camera || !renderer) return null;
+    
+    const pos = new THREE.Vector3(node.x || 0, node.y || 0, node.z || 0);
+    pos.project(camera);
+    
+    const rect = stageRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    
+    // Convertir de coordenadas normalizadas (-1 a 1) a píxeles
+    const x = (pos.x * 0.5 + 0.5) * rect.width;
+    const y = (-pos.y * 0.5 + 0.5) * rect.height;
+    
+    // Solo mostrar si está frente a la cámara
+    if (pos.z > 1) return null;
+    
+    return { x, y };
+  }, []);
+
+  // PERF: throttle del hover para reducir recálculos en mousemove
+  // FIX: tooltip sigue al nodo (proyección 3D → 2D)
+  const handleHoverRaw = useCallback((node) => {
     document.body.style.cursor = node ? (synthMode ? 'crosshair' : 'pointer') : 'default';
     const prev = hoverIdRef.current;
     const next = node?.id ?? null;
@@ -1292,19 +1496,45 @@ export default function Graph3D({
       if (next) paintHover(next, true);
       hoverIdRef.current = next;
       wakeRef.current();
+      
+      // FIX: tooltip anclado al nodo (proyección 3D)
+      if (node && node.label) {
+        const screenPos = projectNodeToScreen(node);
+        if (screenPos) {
+          setNodeTooltip({
+            text: node.label,
+            x: screenPos.x + 20,  // offset a la derecha del nodo
+            y: screenPos.y - 10,  // ligeramente arriba
+            nodeId: node.id,      // para actualizar posición en render
+          });
+        } else {
+          setNodeTooltip({ text: node.label, x: 20, y: 20, nodeId: node.id });
+        }
+      } else {
+        setNodeTooltip(null);
+      }
     }
     if (onNodeHover) onNodeHover(node || null);
-  }, [onNodeHover, synthMode, paintHover]);
+  }, [onNodeHover, synthMode, paintHover, projectNodeToScreen]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleHover = useMemo(() => throttle(handleHoverRaw, 32), [handleHoverRaw]);
 
-  const handleLinkHover = useCallback(link => {
+  // PERF: throttle del hover de links para reducir recálculos
+  const handleLinkHoverRaw = useCallback(link => {
     document.body.style.cursor = link ? 'pointer' : 'default';
     setHoverLink(link || null);
     wakeRef.current?.();
   }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleLinkHover = useMemo(() => throttle(handleLinkHoverRaw, 48), [handleLinkHoverRaw]);
 
+  // PERF: skipea el recálculo de posiciones de etiquetas si no son visibles
   const handleEngineTick = useCallback(() => {
     wakeRef.current();  // mantiene el render vivo mientras la física corre
-    if (!clusterLabelSprites.current.length) return;
+    // Skip cluster updates if no labels/hulls or labels are hidden
+    if (!clusterLabelSprites.current.length && !clusterHulls.current.length) return;
+    if (!SHOW_CLUSTER_LABELS && !clusterHulls.current.some(h => h.visible)) return;
+
     const clusterGroups = {};
     graphData.nodes.forEach(n => {
       const k = groupKey(n);
@@ -1312,6 +1542,7 @@ export default function Graph3D({
       (clusterGroups[k] ??= []).push(n);
     });
     clusterHulls.current.forEach(hull => {
+      if (!hull.visible) return;
       const members = clusterGroups[hull.userData.cid];
       if (!members || !members.length) return;
       const cx = members.reduce((a, n) => a + (n.x || 0), 0) / members.length;
@@ -1319,7 +1550,9 @@ export default function Graph3D({
       const cz = members.reduce((a, n) => a + (n.z || 0), 0) / members.length;
       hull.position.set(cx, cy, cz);
     });
+    if (!SHOW_CLUSTER_LABELS) return;
     clusterLabelSprites.current.forEach(sprite => {
+      if (!sprite.visible) return;
       const cid = sprite.userData.cid;
       const members = clusterGroups[cid];
       if (!members || !members.length) return;
@@ -1431,9 +1664,9 @@ export default function Graph3D({
         onNodeClick={onNodeClick}
         onNodeHover={handleHover}
         onLinkClick={onLinkClick}
-        /* Una linea de 1px es casi imposible de acertar. Esto ensancha SOLO el area
-           de deteccion del puntero, sin engrosar el trazo dibujado. */
-        linkHoverPrecision={12}
+        /* FIX: área de detección más generosa para facilitar selección de aristas.
+           Una línea de 1px es casi imposible de acertar. Aumentado a 35. */
+        linkHoverPrecision={35}
         onLinkHover={handleLinkHover}
         onEngineTick={handleEngineTick}
         onEngineStop={handleEngineStop}
@@ -1447,6 +1680,22 @@ export default function Graph3D({
         cooldownTicks={esPesado ? 0 : (layoutMode === 'force' ? 30 : 6)}
         cooldownTime={esPesado ? 0 : (layoutMode === 'force' ? 800 : 600)}
       />
+      
+      {/* FIX: Tooltip con nombre completo del documento */}
+      {nodeTooltip && (
+        <div 
+          className="graph-node-tooltip"
+          style={{
+            position: 'absolute',
+            left: nodeTooltip.x,
+            top: nodeTooltip.y,
+            pointerEvents: 'none',
+            zIndex: 1000,
+          }}
+        >
+          {nodeTooltip.text}
+        </div>
+      )}
     </div>
   );
 }
