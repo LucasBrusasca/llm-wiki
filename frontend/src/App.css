@@ -17,16 +17,16 @@
   --glass:       rgba(18,22,28,0.85);
   --glass-hi:    rgba(26,32,42,0.88);
 
-  /* Acento primario: gris-azul desaturado, no cyan neón */
-  --gold:        #7A8FA8;
-  --gold-dim:    rgba(122,143,168,0.28);
-  --accent:      #7A8FA8;
-  --accent-hi:   #9AAFC4;
-  --accent-glow: rgba(122,143,168,0.08);
+  /* Acento primario: azul suave pero visible */
+  --gold:        #6A9AC8;
+  --gold-dim:    rgba(106,154,200,0.3);
+  --accent:      #6A9AC8;
+  --accent-hi:   #8AB4E0;
+  --accent-glow: rgba(106,154,200,0.12);
 
-  /* Acento secundario: teal muy apagado */
-  --data:        #6B9B92;
-  --data-dim:    rgba(107,155,146,0.24);
+  /* Acento secundario: teal visible */
+  --data:        #5AA898;
+  --data-dim:    rgba(90,168,152,0.28);
 
   /* Estados */
   --warn:        #C9A25E;

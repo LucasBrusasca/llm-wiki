@@ -15,20 +15,20 @@ import VaultBadge from './components/VaultBadge.jsx';
 import { computeDiscoveries } from './discoveries.js';
 import { pedirClave, avisarClaveIncorrecta } from './security.js';
 
-// ── Paleta: GRISES NEUTROS CON VARIACIÓN SUTIL ───────────────────────────────
-// Todos los clusters son variantes de gris/slate con leve sesgo de tono.
-// La diferenciación es sutil: no compite con el contenido.
+// ── Paleta: COLORES SUAVES PERO DISTINGUIBLES ────────────────────────────────
+// Saturación media: ni neón candy ni gris muerto. Cada cluster es reconocible
+// sin competir con el contenido. Tonos cálidos y fríos alternados.
 export const CLUSTER_PALETTE = [
-  '#5A5E66', // slate neutro
-  '#525A62', // slate azulado
-  '#5E5A58', // slate cálido
-  '#585E5A', // slate verdoso
-  '#5C5860', // slate violáceo
-  '#5E5C56', // slate arena
-  '#565C5E', // slate frío
-  '#5A5656', // slate rosado
-  '#585C56', // slate oliva
-  '#5C5A5E', // slate lavanda
+  '#5B8A9A', // teal suave
+  '#7A8FC4', // azul lavanda
+  '#C4A06A', // ámbar dorado
+  '#9A7AB4', // violeta suave
+  '#6AAA8A', // verde menta
+  '#C48A7A', // coral apagado
+  '#8AC4B4', // turquesa claro
+  '#B4A47A', // ocre suave
+  '#8A7A9A', // malva
+  '#7AAAB4', // cyan apagado
 ];
 
 // Reservado: sólo para lo excepcional (issues, alertas). Si aparece, significa algo.

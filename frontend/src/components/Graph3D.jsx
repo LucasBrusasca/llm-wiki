@@ -23,13 +23,13 @@ function throttle(fn, ms) {
 
 /* ── Mapa plano de documentos (constelación de miniaturas) ── */
 const NODE = {
-  bg:      '#0A0B0E', // fondo casi negro
-  card:    '#12141850', // relleno de tarjeta neutra (translúcido oscuro)
-  border:  'rgba(90,95,105,0.35)', // borde fino gris neutro
-  label:   'rgba(180,185,195,0.9)',  // texto de etiqueta gris claro
-  line:    '70,75,85',               // conexiones: gris oscuro neutro (rgb base)
-  issue:   '#8A7A60',                // marrón apagado: reservado para lo excepcional
-  sel:     '#9099A5',                // selección: gris azulado suave, no blanco
+  bg:      '#080A10', // fondo casi negro con tinte azul
+  card:    '#14181F60', // relleno de tarjeta (translúcido)
+  border:  'rgba(100,120,150,0.4)', // borde visible pero sutil
+  label:   'rgba(210,220,235,0.95)',  // texto de etiqueta claro, legible
+  line:    '130,150,180',             // conexiones: gris azulado VISIBLE (rgb base)
+  issue:   '#D4A55A',                // ámbar: reservado para lo excepcional
+  sel:     '#A8C0E0',                // selección: azul claro suave
 };
 
 // "#7C8CFF" → "124,140,255". Se cachea porque linkColor corre por arista y por frame.
@@ -116,19 +116,19 @@ const GLYPHS = {
   ppt: 'PPT', youtube: '▶', image: '▣', video: '▶', concepto: '◇',
 };
 
-// Tarjeta neutra (sin miniatura): rectángulo oscuro + borde fino gris + glyph del tipo.
-// SIN barras de color - todo gris neutro.
+// Tarjeta neutra (sin miniatura): rectángulo oscuro + borde del color del cluster + glyph.
 function makeNeutralCardTexture(node, accent) {
   const cw = 128, ch = 96;
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = '#151820'; ctx.fillRect(0, 0, cw, ch);
-  // Borde fino gris neutro, sin barra de color
-  ctx.strokeStyle = 'rgba(80,85,95,0.5)'; ctx.lineWidth = 2;
-  ctx.strokeRect(1, 1, cw - 2, ch - 2);
+  ctx.fillStyle = '#101418'; ctx.fillRect(0, 0, cw, ch);
+  // Borde en el color del cluster (suave, visible)
+  const borderColor = accent || 'rgba(100,120,150,0.5)';
+  ctx.strokeStyle = borderColor; ctx.lineWidth = 2.5;
+  ctx.strokeRect(1.25, 1.25, cw - 2.5, ch - 2.5);
   const glyph = GLYPHS[(node.fuente || '').toLowerCase()] || '◇';
-  ctx.fillStyle = 'rgba(130,140,155,0.6)';
+  ctx.fillStyle = accent ? aclarar(accent, 0.2) : 'rgba(150,165,185,0.7)';
   ctx.font = `${glyph.length > 1 ? 26 : 40}px 'JetBrains Mono', 'Courier New', monospace`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(glyph, cw / 2, ch / 2);
@@ -137,8 +137,7 @@ function makeNeutralCardTexture(node, accent) {
   return { tex, aspect: cw / ch };
 }
 
-// Tarjeta con miniatura real: imagen + borde fino gris. Leve atenuación para que las
-// páginas blancas no superen el umbral del bloom. SIN barras de color.
+// Tarjeta con miniatura real: imagen + borde del color del cluster.
 function makeThumbCardTexture(img, accent) {
   const ar = (img.naturalWidth / img.naturalHeight) || 1;
   const M = 128; let w, h;
@@ -148,12 +147,13 @@ function makeThumbCardTexture(img, accent) {
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  ctx.fillStyle = '#0E1016'; ctx.fillRect(0, 0, cw, ch);
+  ctx.fillStyle = '#0C1014'; ctx.fillRect(0, 0, cw, ch);
   ctx.drawImage(img, pad, pad, w, h);
-  ctx.fillStyle = 'rgba(8,10,14,0.15)'; ctx.fillRect(pad, pad, w, h); // dim sutil
-  // Borde fino gris neutro, SIN barra de color
-  ctx.strokeStyle = 'rgba(75,80,90,0.45)'; ctx.lineWidth = 2;
-  ctx.strokeRect(1, 1, cw - 2, ch - 2);
+  ctx.fillStyle = 'rgba(8,10,14,0.12)'; ctx.fillRect(pad, pad, w, h); // dim sutil
+  // Borde en el color del cluster
+  const borderColor = accent || 'rgba(100,120,150,0.5)';
+  ctx.strokeStyle = borderColor; ctx.lineWidth = 2.5;
+  ctx.strokeRect(1.25, 1.25, cw - 2.5, ch - 2.5);
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
   return { tex, aspect: cw / ch };
@@ -196,11 +196,11 @@ function buildCaption(text) {
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  // Placa carbón oscuro con borde hairline gris (sin colores brillantes).
-  ctx.fillStyle = 'rgba(18,20,26,0.88)';
+  // Placa oscura con borde sutil
+  ctx.fillStyle = 'rgba(12,16,22,0.9)';
   roundRect(ctx, 0.5, 0.5, cw - 1, ch - 1, 5);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(70,75,85,0.35)'; ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(100,120,150,0.4)'; ctx.lineWidth = 1;
   ctx.stroke();
   ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   // Contorno oscuro para contraste sobre fondos claros (páginas blancas).
@@ -733,7 +733,7 @@ export default function Graph3D({
     const fg = fgRef.current;
     if (!fg || !graphData.nodes.length) return;
 
-    const SCALE = 30;
+    const SCALE = 42;  // aumentado para más separación entre nodos
 
     fg.d3Force('cluster', null);
     fg.d3Force('centroid', null);
@@ -794,9 +794,11 @@ export default function Graph3D({
         n.vx = 0; n.vy = 0; n.vz = 0;
       });
       const charge = fg.d3Force('charge');
-      if (charge) charge.strength(-230).distanceMax(SCALE * 12);  // separación amplia, sin explotar
+      // Repulsión más fuerte para separar clusters mejor
+      if (charge) charge.strength(-350).distanceMax(SCALE * 14);
       const link = fg.d3Force('link');
-      if (link) link.distance(SCALE * 1.4).strength(0.32);
+      // Links más largos y menos rígidos para más espacio entre nodos
+      if (link) link.distance(SCALE * 2.0).strength(0.25);
       fg.d3ReheatSimulation?.();
     }
 
@@ -1238,27 +1240,29 @@ export default function Graph3D({
 
     let rgb, alphaBase;
     if (link.spoke) {
-      // Radio de la estrella: hereda el color del tema, muy tenue. Son miles;
-      // con alfa alto la pantalla se vuelve una masa solida.
+      // Radio de la estrella: hereda el color del tema
       const gk = nodoDestino ? groupKey(nodoDestino) : (nodoOrigen ? groupKey(nodoOrigen) : null);
-      rgb = hexToRgb(oscurecer(groupColor(gk), 0.45)); alphaBase = 0.16;
+      rgb = hexToRgb(oscurecer(groupColor(gk), 0.25)); alphaBase = 0.25;
     }
-    else if (issue) { rgb = hexToRgb(NODE.issue); alphaBase = 0.5; }
-    else if (mismoGrupo) { rgb = hexToRgb(oscurecer(groupColor(gkO), 0.45)); alphaBase = 0.34; }
-    else { rgb = '150,160,180'; alphaBase = 0.075; }  // puente entre grupos: gris muy tenue
-    // Son mayoria y, al ser grises, competian con los nodos por atencion.
+    else if (issue) { rgb = hexToRgb(NODE.issue); alphaBase = 0.6; }
+    else if (mismoGrupo) {
+      // MISMO GRUPO: color del cluster, visible
+      rgb = hexToRgb(oscurecer(groupColor(gkO), 0.20)); alphaBase = 0.45;
+    }
+    else {
+      // PUENTE entre grupos: gris azulado claro, visible
+      rgb = NODE.line; alphaBase = 0.35;
+    }
 
-    // La relación señalada se ilumina ligeramente, sin colores brillantes.
-    // Es una señal sutil, no un destello neón.
+    // Hover: se ilumina claramente (sigue siendo delgada, sin glow)
     if (hoverLink && link === hoverLink) {
-      // Hover: un gris más claro pero no brillante. Línea delgada, no cable grueso.
       return mismoGrupo
-        ? `rgba(${hexToRgb(oscurecer(groupColor(gkO), 0.20))},0.75)`
-        : 'rgba(140,150,165,0.65)';
+        ? `rgba(${hexToRgb(aclarar(groupColor(gkO), 0.35))},0.9)`
+        : 'rgba(180,200,230,0.85)';
     }
 
-    // Edges conectadas al nodo seleccionado: solo un poco más visibles, no brillantes
-    const alpha = !hayFoco ? alphaBase : (enFoco ? 0.45 : 0.04);
+    // Edges conectadas al nodo seleccionado: más visibles, resto atenuado
+    const alpha = !hayFoco ? alphaBase : (enFoco ? 0.75 : 0.15);
     return `rgba(${rgb},${alpha})`;
   }, [selectedNode, highlighted, hoverLink]);
 
