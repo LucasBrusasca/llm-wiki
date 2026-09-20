@@ -1,7 +1,5 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { clusterColor, ytId } from '../App.jsx';
-
-const CYAN = '#00d4ff';
+import React, { useRef, useState, useCallback } from 'react';
+import { ytId } from '../App.jsx';
 
 /* ── Helpers de tipo de medio ── */
 function fileExt(node) {
@@ -101,10 +99,10 @@ function AudioIntercept({ src }) {
     const W = cv.width, H = cv.height;
     ctx.clearRect(0, 0, W, H);
     // línea media
-    ctx.strokeStyle = 'rgba(0,212,255,0.18)'; ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(122,143,168,0.15)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); ctx.stroke();
     const n = data.length, bw = W / n;
-    ctx.fillStyle = 'rgba(0,212,255,0.9)';
+    ctx.fillStyle = 'rgba(122,143,168,0.7)';
     for (let i = 0; i < n; i++) {
       const h = Math.max(1, data[i] * H * 0.92);
       ctx.fillRect(i * bw + 0.5, (H - h) / 2, Math.max(1, bw - 1.2), h);
@@ -168,14 +166,14 @@ function RichPreviewModal({ node, html, onClose }) {
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div style={{ width: '90vw', maxWidth: 1100, height: '90vh', background: '#f5f1e8',
-        borderRadius: 5, border: '1px solid rgba(0,212,255,0.35)',
+        borderRadius: 5, border: '1px solid rgba(122,143,168,0.25)',
         overflow: 'hidden', display: 'flex', flexDirection: 'column',
-        boxShadow: '0 0 60px rgba(0,212,255,0.12)' }}>
+        boxShadow: '0 8px 40px rgba(0,0,0,0.5)' }}>
         <div style={{ padding: '10px 16px', background: '#060b16', flexShrink: 0,
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          borderBottom: '1px solid rgba(0,212,255,0.25)' }}>
+          borderBottom: '1px solid rgba(122,143,168,0.18)' }}>
           <span style={{ fontFamily: "'Courier New', monospace", fontSize: 10,
-            color: '#00d4ff', letterSpacing: 2 }}>
+            color: '#7A8FA8', letterSpacing: 2 }}>
             ✦ APUNTE IA · {node.label.slice(0, 55)}{node.label.length > 55 ? '…' : ''}
           </span>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -183,7 +181,7 @@ function RichPreviewModal({ node, html, onClose }) {
               <button onClick={() => window.open(srcUrl, '_blank')}
                 style={{ fontFamily: "'Courier New', monospace", fontSize: 9, letterSpacing: 2,
                   padding: '4px 10px', background: 'transparent',
-                  border: '1px solid rgba(0,212,255,0.4)', color: '#00d4ff', cursor: 'pointer', borderRadius: 2 }}>
+                  border: '1px solid rgba(122,143,168,0.28)', color: '#7A8FA8', cursor: 'pointer', borderRadius: 2 }}>
                 → FUENTE ORIGINAL
               </button>
             )}
@@ -262,23 +260,15 @@ const FUENTE_ICONS = {
   word: '⬡ WORD', ppt: '◳ PPT', concepto: '◈ CONCEPTO', video: '▶ VIDEO', image: '▣ IMAGEN',
 };
 
-const MIN_W = 320, MIN_H = 220, DEFAULT_W = 600;
-
 export default function NodePanel({
   node, allNodes, allLinks, onClose, onOpenAgent, onOpenReport, onNavigate, onDelete,
   onFocus, initialPos, containerRef,
 }) {
-  const color    = CYAN;
+  const color    = '#7A8FA8'; // gris-azul apagado, consistente con la nueva paleta
   const isMobile = window.innerWidth < 900;
 
-  const isDragging = useRef(false);
-  const resizing   = useRef(null);
-  const dragOffset = useRef({ x: 0, y: 0 });
   const internalRef = useRef(null);
-  const panelRef   = containerRef || internalRef; // compartido con el conector
-
-  const [pos,  setPos]  = useState(initialPos || { x: 60, y: 80 });
-  const [size, setSize] = useState({ w: null, h: null });
+  const panelRef   = containerRef || internalRef;
 
   // Apunte IA (rich-preview)
   const [richHtml, setRichHtml]       = useState(null);
@@ -298,54 +288,6 @@ export default function NodePanel({
     finally { setLoadingRich(false); }
   }, [node.id, richHtml]);
 
-  const onMouseDownDrag = useCallback(e => {
-    if (isMobile) return;
-    isDragging.current = true;
-    dragOffset.current = { x: e.clientX - pos.x, y: e.clientY - pos.y };
-    e.preventDefault();
-  }, [pos, isMobile]);
-
-  const onResizeStart = useCallback((e, edge) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const rect = panelRef.current.getBoundingClientRect();
-    resizing.current = { edge, startX: e.clientX, startY: e.clientY,
-      startW: rect.width, startH: rect.height, startLeft: rect.left };
-  }, [panelRef]);
-
-  useEffect(() => {
-    const onMove = e => {
-      if (isDragging.current) {
-        const vw = window.innerWidth, vh = window.innerHeight;
-        const pw = panelRef.current?.offsetWidth  || DEFAULT_W;
-        const ph = panelRef.current?.offsetHeight || 400;
-        setPos({
-          x: Math.min(Math.max(e.clientX - dragOffset.current.x, 0), vw - pw),
-          y: Math.min(Math.max(e.clientY - dragOffset.current.y, 0), vh - ph),
-        });
-        return;
-      }
-      if (resizing.current) {
-        const { edge, startX, startY, startW, startH, startLeft } = resizing.current;
-        const dx = e.clientX - startX;
-        const dy = e.clientY - startY;
-        if (edge === 'right') {
-          setSize(s => ({ ...s, w: Math.max(MIN_W, startW + dx) }));
-        } else if (edge === 'left') {
-          const newW = Math.max(MIN_W, startW - dx);
-          setPos(p => ({ ...p, x: startLeft + (startW - newW) }));
-          setSize(s => ({ ...s, w: newW }));
-        } else if (edge === 'bottom') {
-          setSize(s => ({ ...s, h: Math.max(MIN_H, startH + dy) }));
-        }
-      }
-    };
-    const onUp = () => { isDragging.current = false; resizing.current = null; };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup',  onUp);
-    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-  }, [panelRef]);
-
   const connected = allLinks
     .filter(l => {
       const s = l.source?.id ?? l.source, t = l.target?.id ?? l.target;
@@ -357,15 +299,7 @@ export default function NodePanel({
       return allNodes.find(n => n.id === otherId);
     }).filter(Boolean);
 
-  const currentW = size.w || (isMobile ? window.innerWidth : DEFAULT_W);
-  const isTwoCol = !isMobile && currentW >= 500;
-
-  const panelStyle = isMobile ? {} : {
-    left: pos.x, top: pos.y,
-    ...(size.w ? { width: size.w } : {}),
-    ...(size.h ? { height: size.h, maxHeight: 'none' } : {}),
-  };
-
+  // Side panel fijo - no necesita posición dinámica
   const url = fileUrl(node);
   const openLarge = () => {
     const target = url || node.fuente_url || (node.fuente_path ? `/doc?p=${encodeURIComponent(node.fuente_path)}` : null);
@@ -376,19 +310,11 @@ export default function NodePanel({
   return (
     <aside
       ref={panelRef}
-      className={`node-tooltip poi-panel${isMobile ? ' mobile' : ''}${isTwoCol ? ' two-col' : ''}`}
-      style={panelStyle}
+      className={`node-tooltip${isMobile ? ' mobile' : ''}`}
     >
-      {/* Resize handles */}
-      {!isMobile && <>
-        <div className="rh rh--left"   onMouseDown={e => onResizeStart(e, 'left')} />
-        <div className="rh rh--right"  onMouseDown={e => onResizeStart(e, 'right')} />
-        <div className="rh rh--bottom" onMouseDown={e => onResizeStart(e, 'bottom')} />
-      </>}
-
-      {/* Header técnico mono (estilo etiqueta clasificada) */}
-      <div className="tooltip-header poi-header" onMouseDown={onMouseDownDrag}
-        style={{ cursor: isMobile ? 'default' : 'grab' }}>
+      {/* Header del side panel */}
+      <div className="tooltip-header"
+        style={{ cursor: 'default' }}>
         <div className="poi-header-l">
           <span className="poi-tag">{(FUENTE_ICONS[node.fuente] || '◈ CONCEPTO')}</span>
           <span className="poi-title">{node.label}</span>
@@ -401,9 +327,9 @@ export default function NodePanel({
       </div>
 
       {/* Body */}
-      <div className={`tooltip-body${isTwoCol ? ' tooltip-body-grid' : ''}`}>
+      <div className="tooltip-body">
 
-        <div className="tooltip-col-left">
+        <div>
           {/* Preview redimensionable: arrastrá la esquina inferior-derecha. */}
           <div className="poi-preview">
             <ContentPreview node={node} />
@@ -426,7 +352,7 @@ export default function NodePanel({
           )}
         </div>
 
-        <div className="tooltip-col-right">
+        <div style={{ marginTop: '16px' }}>
           {node.autor && (
             <p className="panel-autor">
               {node.fuente === 'youtube' ? '▶ Canal: ' : '✎ Autor: '}{node.autor}
@@ -544,8 +470,8 @@ export default function NodePanel({
                 ▤ INFORME
               </button>
             )}
-            <div style={{ borderTop: '1px solid rgba(90,110,160,0.12)', marginTop: 2 }} />
-            <button className="btn-secondary" style={{ borderColor: '#ff606033', color: '#ff6060aa', fontSize: 10, minHeight: 34, opacity: 0.75 }}
+            <div style={{ borderTop: '1px solid rgba(100,115,135,0.15)', marginTop: 2 }} />
+            <button className="btn-secondary" style={{ borderColor: 'rgba(196,97,110,0.25)', color: 'rgba(196,97,110,0.75)', fontSize: 10, minHeight: 34, opacity: 0.75 }}
               onClick={() => {
                 if (window.confirm(`¿Eliminar "${node.label}" del grafo?`)) onDelete?.(node.id);
               }}>

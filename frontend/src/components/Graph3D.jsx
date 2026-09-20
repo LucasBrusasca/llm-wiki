@@ -7,13 +7,13 @@ import { clusterColor, CLUSTER_PALETTE } from '../App.jsx';
 
 /* ── Mapa plano de documentos (constelación de miniaturas) ── */
 const NODE = {
-  bg:      '#000000', // negro con sesgo azul: el fondo de un instrumento, no violeta
-  card:    '#0B121B60', // relleno de tarjeta neutra (translúcido)
-  border:  'rgba(150,200,230,0.34)', // borde fino de tarjeta
-  label:   'rgba(214,232,244,0.9)',  // texto de etiqueta
-  line:    '90,200,250',             // conexiones: cian del instrumento (rgb base)
-  issue:   '#FFB44D',                // ámbar: reservado para lo excepcional
-  sel:     '#FFFFFF',                // retícula de selección
+  bg:      '#08090C', // fondo casi negro
+  card:    '#0D101460', // relleno de tarjeta neutra (translúcido)
+  border:  'rgba(130,145,165,0.28)', // borde fino de tarjeta, gris apagado
+  label:   'rgba(200,210,220,0.85)',  // texto de etiqueta
+  line:    '100,115,135',             // conexiones: gris azulado apagado (rgb base)
+  issue:   '#C9A25E',                // ámbar apagado: reservado para lo excepcional
+  sel:     '#B0BCC8',                // retícula de selección, no blanco puro
 };
 
 // "#7C8CFF" → "124,140,255". Se cachea porque linkColor corre por arista y por frame.
@@ -182,11 +182,11 @@ function buildCaption(text) {
   const cv = document.createElement('canvas');
   cv.width = cw; cv.height = ch;
   const ctx = cv.getContext('2d');
-  // Placa oscura con leve tinte cian + borde fino cian (identidad sin saturar).
-  ctx.fillStyle = 'rgba(12,12,24,0.72)';
+  // Placa oscura con borde gris sutil (sin colores brillantes).
+  ctx.fillStyle = 'rgba(14,16,22,0.82)';
   roundRect(ctx, 0.5, 0.5, cw - 1, ch - 1, 5);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(124,140,255,0.34)'; ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(100,115,135,0.30)'; ctx.lineWidth = 1;
   ctx.stroke();
   ctx.font = font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   // Contorno oscuro para contraste sobre fondos claros (páginas blancas).
@@ -1231,15 +1231,13 @@ export default function Graph3D({
     else { rgb = '150,160,180'; alphaBase = 0.075; }  // puente entre grupos: gris muy tenue
     // Son mayoria y, al ser grises, competian con los nodos por atencion.
 
-    // La relacion senalada se enciende con su color VIVO y a opacidad plena: es
-    // la senal de "a esto le vas a pegar si hacés clic".
+    // La relación señalada se ilumina ligeramente, sin colores brillantes.
+    // Es una señal sutil, no un destello neón.
     if (hoverLink && link === hoverLink) {
-      // Dentro del grupo: su propio color, sin oscurecer y a opacidad plena.
-      // Entre grupos: el mismo gris de siempre, sólo encendido. El blanco puro
-      // que habia antes cortaba la escena como un tajo.
+      // Hover: un gris más claro pero no brillante. Línea delgada, no cable grueso.
       return mismoGrupo
-        ? `rgba(${hexToRgb(groupColor(gkO))},0.95)`
-        : 'rgba(198,212,226,0.85)';
+        ? `rgba(${hexToRgb(oscurecer(groupColor(gkO), 0.20))},0.75)`
+        : 'rgba(140,150,165,0.65)';
     }
 
     const alpha = !hayFoco ? alphaBase : (enFoco ? 0.95 : 0.02);

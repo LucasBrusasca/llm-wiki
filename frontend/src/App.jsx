@@ -15,31 +15,24 @@ import VaultBadge from './components/VaultBadge.jsx';
 import { computeDiscoveries } from './discoveries.js';
 import { pedirClave, avisarClaveIncorrecta } from './security.js';
 
-// ── Paleta: TONOS JOYA ───────────────────────────────────────────────────────
-// Ni neon ni apagado. Los dos extremos que probamos fallaban por el mismo eje:
-// el neon tiene luminosidad muy alta y se lee estridente; el apagado tiene croma
-// bajo y se lee sucio. El registro elegante esta en el medio: SATURACION alta con
-// LUMINOSIDAD contenida (~50-65%). Es la formula de las piedras preciosas —
-// rubi, esmeralda, zafiro, amatista— y por eso lee como algo caro y no como una
-// pantalla de videojuego.
-//
-// Cada uno conserva al menos un canal RGB bajo, que es lo que mantiene la
-// identidad del matiz y evita el aspecto lavado.
+// ── Paleta: TONOS SOBRIOS ─────────────────────────────────────────────────────
+// Colores desaturados con baja luminosidad. No compiten por atención visual.
+// Cada cluster se distingue por matiz, no por brillo ni saturación.
 export const CLUSTER_PALETTE = [
-  '#C41E3A', // rubí
-  '#0E9594', // turquesa profundo
-  '#0F52BA', // zafiro
-  '#00A86B', // esmeralda
-  '#9B59B6', // amatista
-  '#D4AF37', // oro viejo
-  '#B03A5B', // granate
-  '#3E7CB1', // azul acero
-  '#6A8D3F', // oliva
-  '#C1553C', // terracota
+  '#8B5A5A', // borgoña apagado
+  '#4A7A7A', // teal oscuro
+  '#4A5A7A', // azul grisáceo
+  '#4A7A5A', // verde musgo
+  '#6A5A7A', // lavanda oscuro
+  '#8A7A5A', // ocre apagado
+  '#7A5A6A', // malva oscuro
+  '#5A6A7A', // acero azulado
+  '#5A7A5A', // oliva apagado
+  '#7A5A5A', // terracota apagado
 ];
 
 // Reservado: sólo para lo excepcional (issues, alertas). Si aparece, significa algo.
-export const ALERT_COLOR = '#FFB44D';
+export const ALERT_COLOR = '#C9A25E';
 
 export function clusterColor(cluster) {
   // Sin grupo: gris frío y apagado, para que el ruido retroceda en vez de competir.
