@@ -23,7 +23,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.connection import get_async_session, get_sync_session
-from database.models import AuditLog, Chunk, Document, Edge, GraphStat, Node, Source
+from database.models import AuditLog, Chunk, Document, Edge, GraphStat, Node, ScriptRun, Source
 
 load_dotenv()
 
@@ -3435,6 +3435,415 @@ def reset_issue():
     with _issue_lock:
         _issue_state = {"state": "idle", "message": "", "progress": 0, "result": None}
     return {"ok": True}
+
+
+# ── Scripts como nodos ────────────────────────────────────────────────
+# Registry de scripts tipados que el agente puede proponer y el usuario confirmar.
+# Los scripts son nodos de primera clase en el grafo, vinculables a documentos.
+
+SCRIPTS_REGISTRY_PATH = BASE / "scripts_registry" / "registry.json"
+
+
+def _load_scripts_registry() -> dict:
+    """Carga el registry de scripts desde el JSON."""
+    if not SCRIPTS_REGISTRY_PATH.exists():
+        return {"version": "1.0.0", "scripts": []}
+    try:
+        return json.loads(SCRIPTS_REGISTRY_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"version": "1.0.0", "scripts": []}
+
+
+def _get_script_by_id(script_id: str) -> dict | None:
+    """Busca un script por ID en el registry."""
+    registry = _load_scripts_registry()
+    for script in registry.get("scripts", []):
+        if script.get("id") == script_id:
+            return script
+    return None
+
+
+@app.get("/api/scripts")
+async def list_scripts():
+    """Lista todos los scripts disponibles en el registry."""
+    registry = _load_scripts_registry()
+    return {
+        "version": registry.get("version", "1.0.0"),
+        "scripts": registry.get("scripts", []),
+        "count": len(registry.get("scripts", []))
+    }
+
+
+class ScriptNodeCreate(BaseModel):
+    script_id: str
+    seccion: str = "personal"
+    link_to_nodes: list[str] = []
+
+
+@app.post("/api/scripts/nodes")
+async def create_script_node(
+    payload: ScriptNodeCreate,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Crea un nodo de tipo script en el grafo a partir de un script del registry."""
+    script = _get_script_by_id(payload.script_id)
+    if not script:
+        raise HTTPException(404, f"Script '{payload.script_id}' no encontrado en el registry")
+    
+    node_id = f"script-{payload.script_id}-{uuid4().hex[:8]}"
+    
+    node = Node(
+        id=node_id,
+        label=script.get("name", payload.script_id),
+        type="SCRIPT",
+        desc=script.get("description", ""),
+        dominio=payload.seccion,
+        fuente="script",
+        tags=script.get("tags", []),
+        conceptos=script.get("tags", []),
+    )
+    db.add(node)
+    
+    edges_created = []
+    for target_id in payload.link_to_nodes:
+        target = (await db.execute(select(Node).where(Node.id == target_id))).scalar_one_or_none()
+        if target:
+            edge = Edge(
+                source=node_id,
+                target=target_id,
+                label=f"script: {script.get('name', '')}",
+                description=f"Script vinculado al documento",
+                is_manual=True,
+                metodo="manual",
+                base_relacion="manual",
+            )
+            db.add(edge)
+            edges_created.append(target_id)
+    
+    await db.commit()
+    
+    return {
+        "node_id": node_id,
+        "script_id": payload.script_id,
+        "label": node.label,
+        "seccion": payload.seccion,
+        "edges_created": edges_created
+    }
+
+
+class ScriptPropose(BaseModel):
+    query: str = ""
+    node_ids: list[str] = []
+    limit: int = 3
+
+
+@app.post("/api/scripts/propose")
+async def propose_scripts(
+    payload: ScriptPropose,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Propone scripts relevantes basándose en la consulta o los nodos seleccionados.
+    Usa matching por tags/keywords. MVP sin LLM (puede extenderse).
+    """
+    registry = _load_scripts_registry()
+    scripts = registry.get("scripts", [])
+    
+    if not scripts:
+        return {"proposals": [], "reason": "No hay scripts en el registry"}
+    
+    context_keywords = set()
+    query_lower = payload.query.lower()
+    
+    if query_lower:
+        context_keywords.update(query_lower.split())
+    
+    if payload.node_ids:
+        nodes = (await db.execute(
+            select(Node).where(Node.id.in_(payload.node_ids))
+        )).scalars().all()
+        for node in nodes:
+            if node.label:
+                context_keywords.update(node.label.lower().split())
+            for tag in (node.tags or []):
+                context_keywords.add(tag.lower())
+            for concept in (node.conceptos or [])[:5]:
+                context_keywords.add(concept.lower())
+    
+    scored = []
+    for script in scripts:
+        score = 0
+        matches = []
+        
+        script_tags = [t.lower() for t in script.get("tags", [])]
+        script_name = script.get("name", "").lower()
+        script_desc = script.get("description", "").lower()
+        
+        for kw in context_keywords:
+            if len(kw) < 3:
+                continue
+            if kw in script_tags:
+                score += 3
+                matches.append(f"tag:{kw}")
+            if kw in script_name:
+                score += 2
+                matches.append(f"nombre:{kw}")
+            if kw in script_desc:
+                score += 1
+                matches.append(f"desc:{kw}")
+        
+        if "resumen" in query_lower or "resumir" in query_lower:
+            if "resumen" in script_tags or "resumir" in script_name:
+                score += 5
+                matches.append("match:resumen")
+        if "lista" in query_lower or "listar" in query_lower:
+            if "consulta" in script_tags or "inventario" in script_tags:
+                score += 5
+                matches.append("match:listar")
+        if "json" in query_lower or "validar" in query_lower:
+            if "json" in script_tags or "validación" in script_tags:
+                score += 5
+                matches.append("match:validar")
+        if "huérfano" in query_lower or "sin conexión" in query_lower or "auditoría" in query_lower:
+            if "auditoría" in script_tags or "huérfano" in script_name.lower():
+                score += 5
+                matches.append("match:auditoría")
+        
+        scored.append({
+            "script": script,
+            "score": score,
+            "matches": matches[:5],
+            "reason": f"Coincidencias: {', '.join(matches[:3])}" if matches else "Script disponible"
+        })
+    
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    top = scored[:payload.limit]
+    
+    proposals = []
+    for item in top:
+        s = item["script"]
+        proposals.append({
+            "script_id": s.get("id"),
+            "name": s.get("name"),
+            "description": s.get("description"),
+            "tags": s.get("tags", []),
+            "score": item["score"],
+            "reason": item["reason"],
+            "inputs_schema": s.get("inputs", {}),
+        })
+    
+    return {
+        "proposals": proposals,
+        "context_keywords": list(context_keywords)[:10],
+        "total_scripts": len(scripts)
+    }
+
+
+class ScriptRunRequest(BaseModel):
+    script_id: str
+    inputs: dict = {}
+    confirm: bool = False
+    context_node_ids: list[str] = []
+
+
+@app.post("/api/scripts/run")
+async def run_script(
+    payload: ScriptRunRequest,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """
+    Ejecuta un script del registry. Requiere confirm=true.
+    Guarda el resultado en el log de ejecuciones.
+    """
+    if not payload.confirm:
+        script = _get_script_by_id(payload.script_id)
+        if not script:
+            raise HTTPException(404, f"Script '{payload.script_id}' no encontrado")
+        return {
+            "needs_confirmation": True,
+            "script_id": payload.script_id,
+            "name": script.get("name"),
+            "description": script.get("description"),
+            "inputs": payload.inputs,
+            "message": "Este script requiere confirmación. Envía confirm=true para ejecutarlo."
+        }
+    
+    script = _get_script_by_id(payload.script_id)
+    if not script:
+        raise HTTPException(404, f"Script '{payload.script_id}' no encontrado")
+    
+    script_path = BASE / "scripts_registry" / script.get("path", "")
+    if not script_path.exists():
+        raise HTTPException(404, f"Archivo de script no encontrado: {script.get('path')}")
+    
+    import time
+    start_time = time.time()
+    
+    async def get_nodes(ids: list[str]) -> list[dict]:
+        nodes = (await db.execute(select(Node).where(Node.id.in_(ids)))).scalars().all()
+        return [{
+            "id": n.id, "label": n.label, "desc": n.desc,
+            "fragmento": n.fragmento, "conceptos": n.conceptos or [],
+            "fuente": n.fuente, "autor": n.autor, "tags": n.tags or [],
+        } for n in nodes]
+    
+    async def list_section_nodes(seccion: str) -> list[dict]:
+        nodes = (await db.execute(
+            select(Node).where(Node.dominio == seccion, Node.is_centroid == False, Node.is_issue == False)
+        )).scalars().all()
+        return [{
+            "id": n.id, "label": n.label, "desc": n.desc,
+            "fuente": n.fuente, "autor": n.autor, "conceptos": n.conceptos or [],
+            "created_at": str(n.created_at) if n.created_at else None,
+        } for n in nodes]
+    
+    async def get_edges(seccion: str) -> list[dict]:
+        nodes = (await db.execute(
+            select(Node.id).where(Node.dominio == seccion)
+        )).scalars().all()
+        node_ids = set(nodes)
+        edges = (await db.execute(
+            select(Edge).where(Edge.source.in_(node_ids) | Edge.target.in_(node_ids))
+        )).scalars().all()
+        return [{"source": e.source, "target": e.target, "score": e.score} for e in edges]
+    
+    context = {
+        "get_nodes": lambda ids: __import__("asyncio").get_event_loop().run_until_complete(get_nodes(ids)),
+        "list_section_nodes": lambda s: __import__("asyncio").get_event_loop().run_until_complete(list_section_nodes(s)),
+        "get_edges": lambda s: __import__("asyncio").get_event_loop().run_until_complete(get_edges(s)),
+    }
+    
+    import importlib.util
+    try:
+        spec = importlib.util.spec_from_file_location("script_module", script_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        
+        if hasattr(module, "run"):
+            result = module.run(payload.inputs, context)
+        else:
+            result = {"error": "El script no tiene función 'run'"}
+        
+        status = "completed"
+        error_message = None
+    except Exception as e:
+        result = {"error": str(e)}
+        status = "error"
+        error_message = str(e)
+    
+    duration_ms = int((time.time() - start_time) * 1000)
+    
+    run_log = ScriptRun(
+        script_id=payload.script_id,
+        script_version=script.get("version", "1.0.0"),
+        inputs=payload.inputs,
+        outputs=result,
+        status=status,
+        error_message=error_message,
+        context_nodes=payload.context_node_ids,
+        duration_ms=duration_ms,
+    )
+    db.add(run_log)
+    await db.commit()
+    await db.refresh(run_log)
+    
+    return {
+        "run_id": run_log.id,
+        "script_id": payload.script_id,
+        "status": status,
+        "outputs": result,
+        "duration_ms": duration_ms,
+        "error": error_message,
+    }
+
+
+@app.get("/api/scripts/runs")
+async def list_script_runs(
+    limit: int = 20,
+    script_id: str = None,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Lista las últimas ejecuciones de scripts."""
+    stmt = select(ScriptRun).order_by(ScriptRun.created_at.desc()).limit(limit)
+    if script_id:
+        stmt = stmt.where(ScriptRun.script_id == script_id)
+    
+    runs = (await db.execute(stmt)).scalars().all()
+    
+    return {
+        "runs": [{
+            "id": r.id,
+            "script_id": r.script_id,
+            "script_version": r.script_version,
+            "status": r.status,
+            "inputs": r.inputs,
+            "outputs": r.outputs,
+            "error_message": r.error_message,
+            "duration_ms": r.duration_ms,
+            "context_nodes": r.context_nodes,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        } for r in runs],
+        "count": len(runs)
+    }
+
+
+class ScriptLinkRequest(BaseModel):
+    script_node_id: str
+    target_node_id: str
+
+
+@app.post("/api/scripts/link")
+async def link_script_to_node(
+    payload: ScriptLinkRequest,
+    db: AsyncSession = Depends(get_async_session)
+):
+    """Crea un enlace entre un nodo script y un documento."""
+    script_node = (await db.execute(
+        select(Node).where(Node.id == payload.script_node_id)
+    )).scalar_one_or_none()
+    
+    if not script_node:
+        raise HTTPException(404, f"Nodo script '{payload.script_node_id}' no encontrado")
+    
+    if script_node.type != "SCRIPT":
+        raise HTTPException(400, "El nodo origen debe ser de tipo SCRIPT")
+    
+    target_node = (await db.execute(
+        select(Node).where(Node.id == payload.target_node_id)
+    )).scalar_one_or_none()
+    
+    if not target_node:
+        raise HTTPException(404, f"Nodo destino '{payload.target_node_id}' no encontrado")
+    
+    existing = (await db.execute(
+        select(Edge).where(
+            ((Edge.source == payload.script_node_id) & (Edge.target == payload.target_node_id)) |
+            ((Edge.source == payload.target_node_id) & (Edge.target == payload.script_node_id))
+        )
+    )).scalar_one_or_none()
+    
+    if existing:
+        return {"message": "El enlace ya existe", "edge_id": existing.id}
+    
+    edge = Edge(
+        source=payload.script_node_id,
+        target=payload.target_node_id,
+        label=f"script: {script_node.label}",
+        description=f"Script vinculado manualmente",
+        is_manual=True,
+        metodo="manual",
+        base_relacion="manual",
+    )
+    db.add(edge)
+    await db.commit()
+    await db.refresh(edge)
+    
+    return {
+        "edge_id": edge.id,
+        "source": payload.script_node_id,
+        "target": payload.target_node_id,
+        "message": "Enlace creado"
+    }
 
 
 # ── Static frontend (production) ──────────────────────────────────────

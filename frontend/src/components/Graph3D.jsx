@@ -29,6 +29,7 @@ const NODE = {
   label:   'rgba(210,220,235,0.95)',  // texto de etiqueta claro, legible
   line:    '130,150,180',             // conexiones: gris azulado VISIBLE (rgb base)
   issue:   '#D4A55A',                // ámbar: reservado para lo excepcional
+  script:  '#00CED1',                // turquesa: scripts automatizados
   sel:     '#A8C0E0',                // selección: azul claro suave
 };
 
@@ -113,7 +114,7 @@ function cardDims(faceH, aspect) {
 
 const GLYPHS = {
   pdf: 'PDF', tesis: 'PDF', excel: 'XLS', audio: '♫', html: '◍', word: 'DOC',
-  ppt: 'PPT', youtube: '▶', image: '▣', video: '▶', concepto: '◇',
+  ppt: 'PPT', youtube: '▶', image: '▣', video: '▶', concepto: '◇', script: '⚙',
 };
 
 // Tarjeta neutra (sin miniatura): rectángulo oscuro + borde del color del cluster + glyph.
@@ -347,6 +348,8 @@ function groupColor(key) {
 
 function nodeDotColor(node) {
   if (node.is_issue) return NODE.issue;
+  // Scripts tienen color turquesa distintivo para identificarlos fácilmente.
+  if (node.type === 'SCRIPT' || node.fuente === 'script') return NODE.script;
   // El HUB se sobreexpone a blanco. Es lo que produce los nucleos brillantes de las
   // referencias: no es un color mas de la paleta, es luz saturada en el centro de la
   // estrella. El color del tema lo siguen aportando los fragmentos que lo rodean.

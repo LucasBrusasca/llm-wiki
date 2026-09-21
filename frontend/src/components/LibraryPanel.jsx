@@ -6,6 +6,7 @@ import { pedirClave, avisarClaveIncorrecta } from '../security.js';
 const FUENTE_ICON = {
   youtube: '▶', pdf: '⬛', tesis: '⬛', excel: '⊞', html: '⊡',
   word: '⬛', ppt: '◳', image: '▣', audio: '♫', video: '▶', concepto: '◈',
+  script: '⚙',
 };
 
 function fechaCorta(iso) {
