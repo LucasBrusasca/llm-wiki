@@ -521,6 +521,19 @@ export default function App() {
   return (
     <div className="app">
       <VaultBadge onGraphChanged={loadGraph} />
+      
+      {/* ── Context Bar: info contextual sobre el grafo ── */}
+      <div className="context-bar">
+        <span className="context-bar-section">{seccion}</span>
+        <span className="context-bar-sep" />
+        <span className="context-bar-stats">
+          {graphView.nodes.length} nodos · {graphView.links.length} relaciones
+        </span>
+        <div className="context-bar-filters">
+          {/* Placeholder para filtros futuros */}
+        </div>
+      </div>
+
       <header className="header">
         <div className="header-brand">
           <span className="header-brand-icon">◈</span>
@@ -671,8 +684,12 @@ export default function App() {
             </>)}
           </div>
 
+        </div>
+
+        {/* ── Footer del rail: stats ── */}
+        <div className="rail-footer">
           {fetchError
-            ? <span className="header-stat header-stat--error">Backend no conectado</span>
+            ? <span className="header-stat header-stat--error">Sin conexión</span>
             : <span className="header-stat">{graphView.nodes.length} nodos · {graphView.links.length} relaciones</span>
           }
         </div>

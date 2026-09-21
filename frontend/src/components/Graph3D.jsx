@@ -307,23 +307,38 @@ function makeRingTexture() {
 }
 const RING_TEX = makeRingTexture();
 
-/* ── Nivel de detalle (LOD) ──
-   Lejos: cada nodo es un punto de color por cluster (constelación limpia).
-   Cerca: vuelve a ser la tarjeta con miniatura. LOD_FAR es estado global del zoom. */
-let LOD_FAR = true; // arranca en "puntos" (vista general); las tarjetas aparecen al acercarse
+/* ── Nivel de detalle (LOD) AGRESIVO ──
+   FAR  (zoom lejano): SÓLO puntos de color, SIN etiquetas, SIN miniaturas.
+   MID  (zoom medio):  puntos + etiquetas SOLO para hubs (max ~8-12).
+   NEAR (zoom cercano/selección): tarjetas con miniaturas.
+   El grafo arranca en FAR para que se vea limpio, no como spaghetti. */
+let LOD_LEVEL = 'far'; // 'far' | 'mid' | 'near'
 
-function setNodeLOD(ud, far) {
+function setNodeLOD(ud, level, isHub = false) {
   if (!ud) return;
   if (ud.esFragmento) return;   // siempre punto
-  if (ud.face)    ud.face.visible = !far;
-  // El nodo elegido y sus vecinos conservan el nombre aunque el LOD los pase a punto.
-  if (ud.caption) ud.caption.visible = !far || !!ud.forzarCaption;
-  if (ud.halo)    ud.halo.visible = !far;
-  if (ud.dot)     ud.dot.visible = far;
-  // El anillo acompaña el LOD: rodea el punto de lejos y la tarjeta de cerca.
+
+  const isFar  = level === 'far';
+  const isMid  = level === 'mid';
+  const isNear = level === 'near';
+
+  // Tarjeta: SÓLO visible en near
+  if (ud.face) ud.face.visible = isNear;
+  // Halo: SÓLO visible en near
+  if (ud.halo) ud.halo.visible = isNear;
+  // Punto: visible en far y mid
+  if (ud.dot) ud.dot.visible = !isNear;
+  
+  // Caption: visible en near, o en mid SÓLO si es hub, o si está forzado (selección)
+  if (ud.caption) {
+    const showCaption = isNear || (isMid && isHub) || !!ud.forzarCaption;
+    ud.caption.visible = showCaption;
+  }
+
+  // Anillo de selección
   if (ud.ring) {
     ud.ring.scale.setScalar(
-      far ? ud.dotBase * 2.4 : Math.max(ud.baseFW, ud.baseFH) * 1.32
+      isNear ? Math.max(ud.baseFW, ud.baseFH) * 1.32 : ud.dotBase * 2.4
     );
   }
 }
@@ -477,7 +492,7 @@ function buildNode(node, degree, maxDegree, texReg) {
     face, caption, dot, halo: clusterHalo, ring,
     dotColor, dotBase, baseFW: fw, baseFH: fh,
   };
-  setNodeLOD(group.userData, LOD_FAR); // estado inicial según el zoom actual
+  setNodeLOD(group.userData, LOD_LEVEL, false); // estado inicial: far (puntos limpios)
 
   // ── Miniatura real (lazy-load): reemplaza la tarjeta neutra al cargar ──
   if (hasThumb(node)) {
@@ -685,7 +700,7 @@ export default function Graph3D({
   useEffect(() => {
     if (!stageSize.w || !stageSize.h) return;
     if (userInteracted.current) return;
-    const t = setTimeout(() => { fgRef.current?.zoomToFit(500, 40); wakeRef.current(); }, 180);
+    const t = setTimeout(() => { fgRef.current?.zoomToFit(500, 80); wakeRef.current(); }, 180);
     return () => clearTimeout(t);
   }, [stageSize.w, stageSize.h]);
   const spriteMap             = useRef(new Map()); // id -> THREE.Group del nodo
@@ -966,7 +981,7 @@ export default function Graph3D({
         const vecino = selectedNode ? conectados.has(id) : false;
         /* `conectados` son los VECINOS, no incluye al nodo elegido: sin isSel aca,
            el documento en foco era el unico sin nombre visible. */
-        ud.caption.visible = isSel || vecino || (!isDim && !LOD_FAR);
+        ud.caption.visible = isSel || vecino || (!isDim && LOD_LEVEL === 'near');
         if (isSel) ud.caption.material.opacity = 1;
         else if (vecino) ud.caption.material.opacity = 0.95;
         ud.forzarCaption = isSel || vecino;
@@ -1133,13 +1148,11 @@ export default function Graph3D({
     if (controls) controls.addEventListener('change', wake);
     wake(); // arranque (la simulación inicial mantiene vivo vía onEngineTick)
 
-    /* ── NIVEL DE DETALLE (LOD) por zoom ──────────────────────────────
-       VISTA POR DEFECTO = TARJETAS (archivos). Los puntos ("luces") aparecen
-       SÓLO cuando te alejás mucho → vista panorámica para corpus grandes.
-       El umbral es RELATIVO al tamaño del grafo (no números mágicos): así
-       funciona igual con 25 o 500 nodos. Histéresis para que no parpadee. */
+    /* ── NIVEL DE DETALLE (LOD) AGRESIVO por zoom ──────────────────────
+       TRES NIVELES: far (sólo puntos), mid (puntos + etiquetas de hubs), near (tarjetas).
+       El grafo ARRANCA en FAR para que se vea limpio como una constelación.
+       Las tarjetas aparecen SÓLO al acercarse mucho. */
     const graphRadius = () => {
-      // Desde spriteMap (ref → siempre actual, posiciones vivas de los grupos de nodos).
       const groups = spriteMap.current;
       if (!groups || groups.size === 0) return 100;
       let cx = 0, cy = 0, cz = 0, k = 0;
@@ -1152,54 +1165,81 @@ export default function Graph3D({
       });
       return m || 100;
     };
+
     const updateLOD = () => {
       const cam = fgRef.current?.camera();
       const ctr = fgRef.current?.controls();
       if (!cam || !ctr) return;
       const R = graphRadius();
-      // Bien sesgado a tarjetas: hay que alejarse a ~3-4× el radio para ver puntos.
-      // Puntos en la vista general; tarjetas SÓLO al acercarse (zoom < ~1.6× el radio).
-      // Umbral mas exigente: las tarjetas aparecen recien bien cerca, cuando hay
-      // pocos documentos en cuadro y hay lugar para leerlas.
-      const FAR_IN = R * 2.0, FAR_OUT = R * 1.45;
       const d = cam.position.distanceTo(ctr.target);
-      let far = LOD_FAR;
-      if (d > FAR_IN) far = true; else if (d < FAR_OUT) far = false;
-      const changed = far !== LOD_FAR;
-      if (changed) LOD_FAR = far;
-      if (true) {
-        // En modo lejos, escalar los puntos ∝ distancia → tamaño ~constante en pantalla
-        // (un sprite normal se achica con la distancia y desaparecería). El coeficiente
-        // 0.02 es el look original; el Math.min(...) es un TOPE para que al alejarte mucho
-        // no crezcan sin límite y se vuelvan blobs brillantes (era el "brilla al zoom").
-        const dotScale = Math.min(7, Math.max(2.5, d * 0.02));
 
-        // TOPE DE TARJETAS. Antes, al acercarse, TODOS los nodos mostraban su
-        // tarjeta con titulo: 65 tarjetas superpuestas eran ilegibles (y con miles
-        // seria imposible). Ahora solo las N mas cercanas a la camara se abren;
-        // el resto queda como punto. Es tambien lo que hace viable escalar.
-        // Reducido a 8 para mejor performance con ~100 nodos.
-        const MAX_TARJETAS = 8;
-        let cercanos = null;
-        if (!far) {
-          cercanos = new Set(
-            [...spriteMap.current.entries()]
-              .map(([id, obj]) => [id, cam.position.distanceToSquared(obj.position)])
-              .sort((a, b) => a[1] - b[1])
-              .slice(0, MAX_TARJETAS)
-              .map(([id]) => id),
-          );
-        }
-        spriteMap.current.forEach((obj, id) => {
-          const ud = obj.userData;
-          const comoPunto = far || (cercanos ? !cercanos.has(id) : false);
-          setNodeLOD(ud, comoPunto);
-          if (comoPunto && ud.dot) ud.dot.scale.setScalar(far ? dotScale : ud.dotBase);
-        });
-        // NO llamar a wake() acá: este handler corre dentro del evento 'change' de los
-        // controles; el otro listener ya despierta el loop. Llamar resumeAnimation acá
-        // re-dispara 'change' → recursión infinita.
+      // Umbrales AGRESIVOS: tarjetas sólo MUY cerca, etiquetas en rango medio
+      const NEAR_THRESHOLD = R * 0.8;   // muy cerca: tarjetas
+      const MID_THRESHOLD  = R * 1.8;   // medio: puntos + etiquetas de hubs
+      // > MID_THRESHOLD = far: sólo puntos, sin etiquetas
+
+      let newLevel;
+      if (d < NEAR_THRESHOLD) newLevel = 'near';
+      else if (d < MID_THRESHOLD) newLevel = 'mid';
+      else newLevel = 'far';
+
+      const changed = newLevel !== LOD_LEVEL;
+      if (changed) LOD_LEVEL = newLevel;
+
+      // Escala de puntos proporcional a distancia (tamaño ~constante en pantalla)
+      const dotScale = Math.min(6, Math.max(2, d * 0.018));
+
+      // MÁXIMO de tarjetas visibles en near (evita spaghetti)
+      const MAX_TARJETAS = 6;
+      // MÁXIMO de etiquetas de hubs en mid
+      const MAX_HUB_LABELS = 10;
+
+      // Identificar hubs (nodos con más conexiones)
+      const hubIds = new Set();
+      if (newLevel === 'mid') {
+        const sorted = [...spriteMap.current.entries()]
+          .map(([id]) => [id, degreeMap.get(id) || 0])
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, MAX_HUB_LABELS);
+        sorted.forEach(([id]) => hubIds.add(id));
       }
+
+      // En near, sólo los N más cercanos tienen tarjeta
+      let cercanos = null;
+      if (newLevel === 'near') {
+        cercanos = new Set(
+          [...spriteMap.current.entries()]
+            .map(([id, obj]) => [id, cam.position.distanceToSquared(obj.position)])
+            .sort((a, b) => a[1] - b[1])
+            .slice(0, MAX_TARJETAS)
+            .map(([id]) => id),
+        );
+      }
+
+      spriteMap.current.forEach((obj, id) => {
+        const ud = obj.userData;
+        if (!ud) return;
+
+        const isHub = hubIds.has(id);
+        let effectiveLevel = newLevel;
+
+        // En near, si no está entre los cercanos, tratarlo como mid
+        if (newLevel === 'near' && cercanos && !cercanos.has(id)) {
+          effectiveLevel = 'mid';
+        }
+
+        setNodeLOD(ud, effectiveLevel, isHub);
+
+        // Escalar puntos según distancia
+        if (ud.dot && effectiveLevel !== 'near') {
+          ud.dot.scale.setScalar(dotScale);
+        }
+      });
+
+      // Ocultar etiquetas de cluster en zoom lejano (vista limpia)
+      clusterLabelSprites.current.forEach(sprite => {
+        sprite.visible = newLevel !== 'far';
+      });
     };
     // Throttle LOD update para evitar cálculos excesivos durante zoom/pan rápido
     const throttledLOD = throttle(updateLOD, 32); // ~30fps máximo para LOD checks
@@ -1390,9 +1430,11 @@ export default function Graph3D({
       // seguia expandiendo el grafo despues del primero; ahora el layout llega ya
       // asentado desde warmupTicks, asi que reencuadrar de nuevo solo se veia como
       // una camara que no termina de decidirse.
-      const margen = layoutMode === 'density' ? 20
-                   : layoutMode === 'force'   ? 55
-                   : 45;
+      // Margen ALTO para que el grafo quede alejado (vista de constelación).
+      // El usuario entra viendo el panorama, no metido entre las tarjetas.
+      const margen = layoutMode === 'density' ? 80
+                   : layoutMode === 'force'   ? 100
+                   : 90;
       setTimeout(() => {
         if (userInteracted.current) return;
         fgRef.current?.zoomToFit(600, margen);
