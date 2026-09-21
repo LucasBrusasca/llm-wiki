@@ -148,3 +148,19 @@ class Chunk(Base):
     embedding      = Column(Vector(384) if HAS_PGVECTOR else JSON)
     chunk_metadata = Column(JSON, default=dict)
     created_at     = Column(DateTime, server_default=func.now())
+
+
+class ScriptRun(Base):
+    """Log de ejecución de scripts del registry."""
+    __tablename__ = "script_runs"
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    script_id      = Column(String, nullable=False)
+    script_version = Column(String)
+    inputs         = Column(JSON, default=dict)
+    outputs        = Column(JSON, default=dict)
+    status         = Column(String, default="completed")  # completed | error
+    error_message  = Column(Text)
+    node_id        = Column(String, ForeignKey("nodes.id", ondelete="SET NULL"))
+    context_nodes  = Column(JSON, default=list)
+    duration_ms    = Column(Integer)
+    created_at     = Column(DateTime, server_default=func.now())

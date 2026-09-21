@@ -12,6 +12,7 @@ import DiscoveriesPanel from './components/DiscoveriesPanel.jsx';
 import ProcessPanel from './components/ProcessPanel.jsx';
 import ArchitectPanel from './components/ArchitectPanel.jsx';
 import VaultBadge from './components/VaultBadge.jsx';
+import ScriptsPanel from './components/ScriptsPanel.jsx';
 import { computeDiscoveries } from './discoveries.js';
 import { pedirClave, avisarClaveIncorrecta } from './security.js';
 
@@ -139,6 +140,7 @@ export default function App() {
   const [discoveriesOpen, setDiscoveriesOpen] = useState(false);
   const [processOpen, setProcessOpen]   = useState(false);
   const [architectOpen, setArchitectOpen] = useState(false);
+  const [scriptsOpen, setScriptsOpen]   = useState(false);
   const [relayouting, setRelayouting]   = useState(false);
   const [verificando, setVerificando]   = useState(false);
   const [vigenciaResumen, setVigenciaResumen] = useState(null);
@@ -588,6 +590,15 @@ export default function App() {
             ⊞ Biblioteca
           </button>
 
+          {/* ── Scripts: automatización con nodos script ── */}
+          <button
+            className={`btn-synth${scriptsOpen ? ' active' : ''}`}
+            onClick={() => setScriptsOpen(o => !o)}
+            title="Scripts — automatiza con scripts tipados vinculables al grafo"
+          >
+            ⚙ Scripts
+          </button>
+
           <span className="hdr-sep" />
 
           {/* ── Secundario: herramientas avanzadas ── */}
@@ -894,6 +905,17 @@ export default function App() {
           seccion={seccion}
         />
       </div>
+
+      {scriptsOpen && (
+        <ScriptsPanel
+          seccion={seccion}
+          allNodes={graphData.nodes}
+          selectedNodeIds={synthMode ? [...synthSelected] : (fixedNode ? [fixedNode.id] : [])}
+          onClose={() => setScriptsOpen(false)}
+          onRefresh={() => { loadGraph(); loadSections(); }}
+          onNavigate={node => { setFixedNode(node); setHoverNode(null); setScriptsOpen(false); }}
+        />
+      )}
 
       <Footer />
     </div>

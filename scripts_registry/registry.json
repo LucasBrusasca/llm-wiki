@@ -1,0 +1,150 @@
+{
+  "version": "1.0.0",
+  "scripts": [
+    {
+      "id": "summarize-nodes",
+      "name": "Resumir nodos seleccionados",
+      "version": "1.0.0",
+      "description": "Genera un resumen de los nodos indicados, extrayendo sus títulos, descripciones y conceptos clave.",
+      "path": "examples/summarize_nodes.py",
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "node_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Lista de IDs de nodos a resumir"
+          },
+          "max_length": {
+            "type": "integer",
+            "default": 500,
+            "description": "Longitud máxima del resumen en caracteres"
+          }
+        },
+        "required": ["node_ids"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "summary": {"type": "string"},
+          "node_count": {"type": "integer"}
+        }
+      },
+      "tags": ["análisis", "resumen", "documentos"],
+      "safe": true,
+      "created_at": "2024-01-15T10:00:00Z"
+    },
+    {
+      "id": "list-section-docs",
+      "name": "Listar documentos de sección",
+      "version": "1.0.0",
+      "description": "Lista todos los documentos de una sección del grafo con sus metadatos básicos (tipo, autor, fecha).",
+      "path": "examples/list_section_docs.py",
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "seccion": {
+            "type": "string",
+            "default": "personal",
+            "description": "Nombre de la sección a listar"
+          },
+          "include_concepts": {
+            "type": "boolean",
+            "default": false,
+            "description": "Incluir conceptos extraídos de cada documento"
+          }
+        },
+        "required": []
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "documents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {"type": "string"},
+                "label": {"type": "string"},
+                "fuente": {"type": "string"},
+                "autor": {"type": "string"}
+              }
+            }
+          },
+          "total": {"type": "integer"}
+        }
+      },
+      "tags": ["consulta", "inventario", "sección"],
+      "safe": true,
+      "created_at": "2024-01-15T10:00:00Z"
+    },
+    {
+      "id": "validate-json",
+      "name": "Validar estructura JSON",
+      "version": "1.0.0",
+      "description": "Valida que un texto sea JSON válido y opcionalmente verifica que contenga campos requeridos. Útil para verificar exports o configuraciones.",
+      "path": "examples/validate_json.py",
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "json_text": {
+            "type": "string",
+            "description": "Texto JSON a validar"
+          },
+          "required_fields": {
+            "type": "array",
+            "items": {"type": "string"},
+            "default": [],
+            "description": "Campos que deben existir en el objeto raíz"
+          }
+        },
+        "required": ["json_text"]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "valid": {"type": "boolean"},
+          "error": {"type": "string"},
+          "missing_fields": {"type": "array"}
+        }
+      },
+      "tags": ["validación", "json", "utilidad"],
+      "safe": true,
+      "created_at": "2024-01-15T10:00:00Z"
+    },
+    {
+      "id": "find-orphan-nodes",
+      "name": "Detectar nodos huérfanos",
+      "version": "1.0.0",
+      "description": "Encuentra nodos sin conexiones en el grafo (sin aristas hacia otros documentos). Útil para auditoría y mantenimiento.",
+      "path": "examples/find_orphan_nodes.py",
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "seccion": {
+            "type": "string",
+            "default": "personal",
+            "description": "Sección del grafo a analizar"
+          },
+          "exclude_recent": {
+            "type": "boolean",
+            "default": true,
+            "description": "Excluir nodos creados en las últimas 24 horas"
+          }
+        },
+        "required": []
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "orphan_nodes": {"type": "array"},
+          "total_nodes": {"type": "integer"},
+          "orphan_count": {"type": "integer"}
+        }
+      },
+      "tags": ["auditoría", "grafo", "mantenimiento"],
+      "safe": true,
+      "created_at": "2024-01-15T10:00:00Z"
+    }
+  ]
+}
