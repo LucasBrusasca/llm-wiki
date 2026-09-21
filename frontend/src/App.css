@@ -1511,18 +1511,18 @@ body::before {
 .proc-fund-btn:hover { background: rgba(122,143,168,0.10); }
 
 .app-footer {
-  position: fixed; bottom: 0; left: 0; right: 0; z-index: 80;
+  position: fixed; bottom: 0; left: var(--rail-w); right: 0; z-index: 80;
   height: var(--footer-h);
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0 20px;
-  background: linear-gradient(to top, rgba(0,0,0,0.9), rgba(0,0,0,0.7));
+  padding: 0 16px;
+  background: rgba(8,9,12,0.9);
   border-top: 1px solid var(--border);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
 
 .footer-left {
-  display: flex; align-items: center; gap: 14px;
+  display: flex; align-items: center; gap: 12px;
 }
 
 .footer-name {
@@ -2265,117 +2265,123 @@ body::before {
    originales sin borrarlas, para que el diff sea legible.
    ══════════════════════════════════════════════════════════════════════════ */
 
-/* ── Modo de layout: segmentado horizontal, no una pila de cajas ── */
+/* ── Modo de layout: píldora compacta Linear-style ── */
 .layout-controls {
   flex-direction: row;
   gap: 0;
-  left: 22px;
-  bottom: calc(var(--bottom-h) + 22px);
-  padding: 3px;
-  border-radius: 999px;
+  left: calc(var(--rail-w) + 16px);
+  bottom: calc(var(--bottom-h) + 16px);
+  padding: 2px;
+  border-radius: 6px;
   border: 1px solid var(--border);
-  background: var(--glass);
-  backdrop-filter: var(--blur);
-  -webkit-backdrop-filter: var(--blur);
-  box-shadow: var(--shadow-soft);
+  background: rgba(13,16,20,0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
 }
 .layout-btn {
   min-width: 0; width: auto;
-  gap: 7px;
-  padding: 7px 15px;
+  gap: 6px;
+  padding: 5px 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 4px;
   background: transparent;
   backdrop-filter: none; -webkit-backdrop-filter: none;
   box-shadow: none;
+  color: var(--text-dim);
 }
 .layout-btn:hover {
-  background: rgba(255,255,255,0.05);
-  color: var(--text);
+  background: rgba(255,255,255,0.04);
+  color: var(--text-mid);
   border: 0; box-shadow: none;
 }
 .layout-btn.active {
-  color: #07070E;
-  background: var(--grad);
+  color: var(--text);
+  background: rgba(106,154,200,0.12);
   border: 0;
-  box-shadow: 0 2px 12px rgba(122,143,168,0.20);
+  box-shadow: none;
 }
-.layout-btn-icon { font-size: 13px; opacity: 1; }
+.layout-btn-icon { font-size: 11px; opacity: 0.7; }
+.layout-btn.active .layout-btn-icon { opacity: 1; }
 .layout-btn-label {
-  font-size: 11px; letter-spacing: 0.4px; font-weight: 600;
+  font-size: 10px; letter-spacing: 0.2px; font-weight: 500;
 }
 
-/* El tooltip pasa ARRIBA: a la derecha se salía de pantalla y tapaba el grafo. */
+/* Tooltip arriba */
 .layout-btn-tooltip {
   left: 50%; right: auto;
-  top: auto; bottom: calc(100% + 12px);
+  top: auto; bottom: calc(100% + 10px);
   transform: translateX(-50%);
-  width: 250px;
-  background: var(--glass-hi);
-  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-  border: 1px solid var(--border-mid);
-  border-radius: var(--radius-sm);
-  padding: 10px 13px;
-  font-size: 11px; line-height: 1.55; letter-spacing: 0;
-  color: var(--text-mid);
-  box-shadow: var(--shadow-panel);
+  width: 200px;
+  background: rgba(13,16,20,0.95);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 10px; line-height: 1.45; letter-spacing: 0;
+  color: var(--text-dim);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
 }
 .layout-btn-tooltip::before {
   right: auto; left: 50%; top: 100%;
   transform: translateX(-50%);
-  border: 6px solid transparent;
+  border: 5px solid transparent;
   border-right-color: transparent;
-  border-top-color: var(--border-mid);
+  border-top-color: var(--border);
 }
 
-/* ── Zoom: esquina inferior derecha, base de la columna ── */
+/* ── Zoom: esquina inferior derecha, compacto ── */
 .zoom-controls {
-  right: 22px;
-  bottom: calc(var(--bottom-h) + 22px);
+  right: 16px;
+  bottom: calc(var(--bottom-h) + 16px);
+  border-radius: 6px;
+  background: rgba(13,16,20,0.92);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+}
+.zoom-btn {
+  width: 32px; height: 30px;
+  font-size: 14px;
 }
 
-/* ── Agente: FAB flotante estilo Intercom/ChatGPT (burbuja de chat) ── */
+/* ── Agente: FAB flotante compacto ── */
 .agent-fab {
-  right: 22px !important;
-  bottom: calc(var(--bottom-h) + 132px);
-  width: 48px; height: 48px;
+  right: 16px !important;
+  bottom: calc(var(--bottom-h) + 110px);
+  width: 42px; height: 42px;
   border-radius: 999px;
-  background: linear-gradient(135deg, rgba(90,100,115,0.25), rgba(70,80,95,0.15));
-  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-  border: 1px solid rgba(100,110,130,0.4);
-  color: #b8c4d4;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  background: rgba(13,16,20,0.9);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
   justify-content: center;
-  transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
+  transition: transform 0.15s, box-shadow 0.15s, background 0.15s, color 0.15s;
 }
 .agent-fab:hover {
-  width: 48px;
-  background: linear-gradient(135deg, rgba(100,115,135,0.35), rgba(80,95,115,0.25));
-  border-color: rgba(120,135,160,0.5);
-  transform: scale(1.08);
-  box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+  width: 42px;
+  background: rgba(106,154,200,0.15);
+  border-color: var(--border-mid);
+  color: var(--accent);
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
 }
-.agent-fab-icon { font-size: 20px; width: auto; }
+.agent-fab-icon { font-size: 18px; width: auto; }
 
 @media (max-width: 780px) {
   .layout-controls { left: 12px; bottom: calc(var(--bottom-h) + 12px); }
   .zoom-controls   { right: 12px; bottom: calc(var(--bottom-h) + 12px); }
-  .agent-fab       { right: 12px !important; bottom: calc(var(--bottom-h) + 122px); }
+  .agent-fab       { right: 12px !important; bottom: calc(var(--bottom-h) + 100px); }
   .layout-btn-label { display: none; }
-  .layout-btn { padding: 8px 12px; }
+  .layout-btn { padding: 6px 10px; }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   BARRA LATERAL IZQUIERDA
-   La navegación pasa de una cinta superior a un riel vertical. Dos razones:
-   el recorrido Contexto → Explorar → Decidir se lee de arriba abajo como lo
-   que es (una secuencia), y el grafo recupera toda la altura de la pantalla.
-
-   Se reutiliza el marcado del header: sólo cambia su eje. Así ningún
-   componente necesita saber que ahora es un riel.
+   BARRA LATERAL IZQUIERDA — DENSIDAD LINEAR
+   Rail vertical DENSO: sin huecos, navegación compacta, footer pegado abajo.
+   Inspirado en Linear/Heptabase: cada píxel tiene propósito.
    ══════════════════════════════════════════════════════════════════════════ */
 
-:root { --rail-w: 244px; }
+:root { --rail-w: 224px; }
 
 .header {
   top: 0; left: 0; right: auto; bottom: 0;
@@ -2383,78 +2389,132 @@ body::before {
   flex-direction: column;
   align-items: stretch;
   gap: 0;
-  padding: 20px 14px 14px;
+  padding: 0;
   border-bottom: 0;
   border-right: 1px solid var(--border);
-  box-shadow: 1px 0 0 rgba(255,255,255,0.03), 18px 0 50px rgba(0,0,0,0.5);
+  box-shadow: 1px 0 0 rgba(255,255,255,0.02);
   overflow-y: auto; overflow-x: hidden;
+  background: var(--bg-elev);
 }
-/* El filo de identidad pasa a ser vertical, sobre el borde derecho. */
+/* Filo de identidad: hairline sutil */
 .header::after {
   left: auto; right: -1px; top: 0; bottom: 0;
   width: 1px; height: auto;
-  background: linear-gradient(180deg, var(--accent) 0%, var(--data) 55%, transparent 100%);
-  opacity: .6;
+  background: linear-gradient(180deg, var(--accent) 0%, transparent 40%);
+  opacity: .35;
 }
 
+/* ── Brand: compacto en la parte superior ── */
 .header-brand {
-  font-size: 14px; letter-spacing: 4.5px;
-  padding: 0 6px 16px; margin-bottom: 14px;
+  font-size: 12px; letter-spacing: 4px;
+  padding: 14px 14px 10px;
   border-right: 0;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  gap: 8px;
+}
+.header-brand-icon { font-size: 15px; }
+
+/* ── Selector de sección: inmediatamente después del brand ── */
+.hdr-menu-wrap:first-of-type {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.seccion-btn {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+  justify-content: flex-start;
 }
 
+/* ── Search: compacto ── */
 .search-input {
-  width: 100%; height: 34px; font-size: 12.5px;
-  margin-bottom: 4px; flex-shrink: 0;
+  width: calc(100% - 20px);
+  height: 32px;
+  font-size: 12px;
+  margin: 8px 10px 4px;
+  flex-shrink: 0;
+  border-radius: 6px;
 }
 
+/* ── Navegación: botones pegados sin gaps ── */
 .header-actions {
   margin-left: 0;
   flex-direction: column;
   align-items: stretch;
-  gap: 2px;
+  gap: 0;
   flex: 1 1 auto;
   min-height: 0;
+  padding: 4px 0;
 }
 
-/* Los botones de módulo pasan a fila completa, alineados a la izquierda. */
 .header-actions .btn-synth {
   width: 100%;
-  height: 34px;
+  height: 32px;
   justify-content: flex-start;
   text-align: left;
-  padding: 0 12px;
-  display: flex; align-items: center;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  border-radius: 0;
+  font-size: 12px;
+  letter-spacing: 0.2px;
+  border: none;
 }
-/* El indicador de activo pasa de filo inferior a barra lateral izquierda:
-   en un riel, el borde que importa es el que toca el contenido. */
-.header-actions .btn-synth.active::after {
-  left: -14px; right: auto; top: 6px; bottom: 6px;
-  width: 3px; height: auto;
-  border-radius: 0 3px 3px 0;
+.header-actions .btn-synth:hover {
+  background: rgba(255,255,255,0.03);
 }
+.header-actions .btn-synth.active {
+  background: rgba(106,154,200,0.08);
+  border-left: 2px solid var(--accent);
+  padding-left: 12px;
+}
+.header-actions .btn-synth.active::after { display: none; }
 
-/* Etiqueta de etapa: encabezado de grupo del riel. */
+/* Etiqueta de grupo: pequeña, tenue */
 .hdr-stage {
-  padding: 16px 12px 6px;
-  font-size: 9px; letter-spacing: .18em;
+  padding: 12px 14px 4px;
+  font-size: 9px;
+  letter-spacing: .12em;
+  opacity: 0.5;
 }
-.header-actions > .hdr-stage:first-child { padding-top: 4px; }
+.header-actions > .hdr-stage:first-child { padding-top: 8px; }
 
-/* Los separadores horizontales del header no aportan en vertical. */
+/* Separadores ocultos en vertical */
 .header-actions .hdr-sep { display: none; }
 
-/* Herramientas (⋯) y contador quedan al pie del riel. */
-.hdr-menu-wrap { margin-top: auto; padding-top: 12px; }
-.header-actions .btn-reload { width: 100%; }
-.hdr-menu { left: 0; right: auto; top: auto; bottom: calc(100% + 8px); }
+/* ── Footer del rail: menú + stats pegados abajo ── */
+.rail-footer {
+  margin-top: auto;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.hdr-menu-wrap {
+  margin-top: 0;
+  padding-top: 0;
+}
+.header-actions .btn-reload {
+  width: 100%;
+  height: 32px;
+  border-radius: 6px;
+}
+.hdr-menu {
+  left: 0; right: auto;
+  top: auto; bottom: calc(100% + 8px);
+}
 
 .header-stat {
-  padding: 10px 12px 0; margin-top: 8px;
-  border-left: 0; border-top: 1px solid var(--border);
-  font-size: 11px; flex-shrink: 0;
+  padding: 8px 4px 0;
+  margin-top: 6px;
+  border-left: 0;
+  border-top: none;
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.7;
+  text-align: center;
+  flex-shrink: 0;
 }
 
 /* ── El lienzo empieza donde termina el riel ── */
@@ -2463,44 +2523,115 @@ body::before {
   top: 0; right: 0; bottom: 0; left: var(--rail-w);
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   CONTEXT BAR — barra superior sobre el grafo
+   Info contextual: sección actual, contadores, filtros rápidos (placeholder).
+   ══════════════════════════════════════════════════════════════════════════ */
+.context-bar {
+  position: fixed;
+  top: 0;
+  left: var(--rail-w);
+  right: 0;
+  height: 36px;
+  z-index: 85;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: rgba(8,9,12,0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.context-bar-section {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-mid);
+  letter-spacing: 0.3px;
+  text-transform: capitalize;
+}
+.context-bar-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+}
+.context-bar-stats {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.3px;
+}
+.context-bar-filters {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.context-bar-filter {
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.context-bar-filter:hover {
+  color: var(--text-mid);
+  border-color: var(--border-mid);
+}
+
+/* Ajustar el grafo para el context bar */
+.graph-stage { top: 36px; }
+
 /* Elementos flotantes: se refieren al área del grafo, no a la ventana. */
-.layout-controls { left: calc(var(--rail-w) + 22px); }
+.layout-controls { left: calc(var(--rail-w) + 16px); }
 .footer { left: var(--rail-w); }
-.synth-banner { left: var(--rail-w); top: 0; }
+.synth-banner { left: var(--rail-w); top: 36px; }
 
 /* Paneles que asumían un header superior de 66px. */
-.disc-panel { top: 0; }
-.legend { top: 16px; left: calc(var(--rail-w) + 16px); }
+.disc-panel { top: 36px; }
+.legend { top: 52px; left: calc(var(--rail-w) + 16px); }
 
 /* En pantallas angostas el riel vuelve a ser una cinta superior compacta. */
 @media (max-width: 900px) {
   :root { --rail-w: 0px; }
   .header {
-    right: 0; bottom: auto; width: auto; height: 56px;
-    flex-direction: row; align-items: center; gap: 10px;
-    padding: 0 14px; overflow-x: auto; overflow-y: hidden;
+    right: 0; bottom: auto; width: auto; height: 52px;
+    flex-direction: row; align-items: center; gap: 8px;
+    padding: 0 12px; overflow-x: auto; overflow-y: hidden;
     border-right: 0; border-bottom: 1px solid var(--border);
+    background: var(--bg-elev);
   }
   .header::after { left: 0; right: 0; top: auto; bottom: -1px; width: auto; height: 1px;
-    background: var(--grad); }
-  .header-brand { padding: 0 14px 0 0; margin: 0; border-bottom: 0;
-    border-right: 1px solid var(--border); }
-  .search-input { width: 180px; margin: 0; }
-  .header-actions { flex-direction: row; align-items: center; flex: 0 0 auto; }
-  .header-actions .btn-synth { width: auto; height: 32px; }
+    background: var(--grad); opacity: 0.3; }
+  .header-brand { padding: 0 12px 0 0; margin: 0; border-bottom: 0;
+    border-right: 1px solid var(--border); font-size: 11px; }
+  .search-input { width: 140px; height: 30px; margin: 0; }
+  .header-actions { flex-direction: row; align-items: center; flex: 0 0 auto; gap: 2px; }
+  .header-actions .btn-synth { width: auto; height: 30px; padding: 0 10px; border-radius: 4px; }
+  .header-actions .btn-synth.active {
+    border-left: none; padding-left: 10px;
+    background: rgba(106,154,200,0.12);
+  }
   .header-actions .btn-synth.active::after {
-    left: 12px; right: 12px; top: auto; bottom: -1px; width: auto; height: 2px; border-radius: 2px; }
-  .hdr-stage { padding: 0 2px 0 8px; }
+    display: block;
+    left: 8px; right: 8px; top: auto; bottom: -1px; width: auto; height: 2px; border-radius: 2px;
+  }
+  .hdr-stage { padding: 0 2px 0 6px; font-size: 8px; }
   .hdr-menu-wrap { margin-top: 0; padding-top: 0; }
-  .header-actions .btn-reload { width: 32px; }
+  .hdr-menu-wrap:first-of-type { padding: 0; border-bottom: none; }
+  .seccion-btn { height: 30px; font-size: 11px; }
+  .header-actions .btn-reload { width: 30px; height: 30px; }
   .hdr-menu { top: calc(100% + 8px); bottom: auto; left: auto; right: 0; }
-  .header-stat { padding: 0 0 0 12px; margin: 0;
-    border-top: 0; border-left: 1px solid var(--border); }
-  .graph-stage { left: 0; top: 56px; }
+  .header-stat { display: none; }
+  .context-bar { display: none; }
+  .graph-stage { left: 0; top: 52px; }
   .layout-controls { left: 12px; }
   .footer { left: 0; }
-  .disc-panel { top: 56px; }
-  .legend { top: 72px; left: 12px; }
+  .disc-panel { top: 52px; }
+  .legend { top: 68px; left: 12px; }
 }
 
 /* ── Admisión conversacional de Architect ────────────────────────────────
