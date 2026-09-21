@@ -36,7 +36,7 @@ function Fila({ activa, onClick, icon: Icon, label, count, marca, title, menu })
       onClick={onClick}
       title={title}
       className={cn(
-        'group flex h-7 items-center gap-2 rounded-sm px-1.5 text-left text-[12.5px] transition-colors',
+        'group flex h-7 w-full items-center gap-2 rounded-sm px-1.5 text-left text-[12.5px] transition-colors',
         activa ? 'bg-surface-3 text-ink' : 'text-ink-muted hover:bg-surface-2 hover:text-ink',
       )}
     >

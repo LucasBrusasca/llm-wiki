@@ -80,11 +80,15 @@ export default function App() {
     }
   }, [sections, seccion]);
 
+  // Al cambiar de sección se vacía la vista: nunca mostrar los documentos de un
+  // silo bajo el nombre de otro mientras llega la respuesta.
+  const seccionCargada = useRef(null);
   useEffect(() => {
     const ctrl = new AbortController();
+    if (seccionCargada.current !== seccion) setGraph({ nodes: [], edges: [] });
     setStatus('loading');
     fetchGraph(seccion, { signal: ctrl.signal })
-      .then((g) => { setGraph(g); setStatus('ok'); })
+      .then((g) => { seccionCargada.current = seccion; setGraph(g); setStatus('ok'); })
       .catch((e) => { if (e.name !== 'AbortError') setStatus('error'); });
     return () => ctrl.abort();
   }, [seccion, reloadKey]);
