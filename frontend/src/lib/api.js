@@ -64,6 +64,23 @@ export function normalizeGraph(data) {
   return { nodes, edges };
 }
 
+/** Renombrar / eliminar sección. Devuelve el Response para que el llamador vea el 403. */
+export function renameSection(from, to, password) {
+  return fetch('/api/sections/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from, to, password }),
+  });
+}
+
+export function deleteSection(nombre, password) {
+  return fetch('/api/sections/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nombre, password }),
+  });
+}
+
 export async function searchSemantic(q, max = 24) {
   const d = await fetch(`/api/search?q=${encodeURIComponent(q)}&max_n=${max}`).then(jsonOrThrow);
   return Array.isArray(d.ids) ? d.ids : [];

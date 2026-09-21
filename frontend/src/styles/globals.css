@@ -110,3 +110,5 @@
 .algedi-flow .react-flow__node { cursor: pointer; }
 .algedi-flow .react-flow__pane { cursor: default; }
 .algedi-flow .react-flow__pane.dragging { cursor: grabbing; }
+/* Aristas de 1px en pantalla a cualquier zoom: nunca gruesas, nunca invisibles. */
+.algedi-flow .react-flow__edge-path { vector-effect: non-scaling-stroke; }

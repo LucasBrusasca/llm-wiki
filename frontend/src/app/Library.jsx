@@ -81,9 +81,9 @@ function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, se
       ) : (
         <>
           <span className="truncate text-[11.5px] text-ink-dim" title={node.autor || ''}>
-            {node.autor || '—'}
+            {node.autor || ''}
           </span>
-          <span className="text-[11.5px] text-ink-dim">{fecha || '—'}</span>
+          <span className="text-[11.5px] text-ink-dim">{fecha || ''}</span>
           <span className="flex items-center justify-end gap-1 text-[11.5px] text-ink-dim" title={`${grado} relaciones`}>
             {grado > 0 && <Link2 className="size-3" />}
             {grado || ''}
@@ -241,7 +241,7 @@ export default function Library({
           {hayFiltros ? `${visibleCount} de ${totalNodes}` : totalNodes || ''}
         </span>
 
-        <div className="relative ml-3 max-w-[340px] flex-1">
+        <div className={cn('relative min-w-[120px] flex-1', compact ? 'ml-1' : 'ml-3 max-w-[340px]')}>
           <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-ink-dim" />
           <Input
             ref={searchRef}
@@ -263,7 +263,9 @@ export default function Library({
         <div className="ml-auto flex items-center gap-1">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="md"><Rows3 /> {AGRUPADORES[groupBy]?.label || 'Agrupar'}</Button>
+              <Button variant="ghost" size={compact ? 'icon' : 'md'} aria-label="Agrupar" title={`Agrupar por ${AGRUPADORES[groupBy]?.label || ''}`}>
+                <Rows3 />{!compact && (AGRUPADORES[groupBy]?.label || 'Agrupar')}
+              </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuLabel>Agrupar por</DropdownMenuLabel>
@@ -276,7 +278,9 @@ export default function Library({
           </DropdownMenu>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="md"><ArrowDownUp /> {compact ? '' : ORDENES[sortBy]}</Button>
+              <Button variant="ghost" size={compact ? 'icon' : 'md'} aria-label="Ordenar" title={ORDENES[sortBy]}>
+                <ArrowDownUp />{!compact && ORDENES[sortBy]}
+              </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuLabel>Ordenar</DropdownMenuLabel>

@@ -1,5 +1,10 @@
 import React, { useState } from 'react';
-import { Plus, Upload, Terminal, Hash, ChevronDown } from 'lucide-react';
+import { Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
+import { renameSection, deleteSection } from '@/lib/api';
+import { pedirClave, avisarClaveIncorrecta } from '@/security.js';
 import { Button } from '@/components/ui/button';
 import { tipoMeta, fuenteLabel, iconoDe } from '@/lib/nodes';
 import { cn } from '@/lib/utils';
@@ -24,8 +29,8 @@ function Grupo({ titulo, children, accion, plegable = false }) {
   );
 }
 
-function Fila({ activa, onClick, icon: Icon, label, count, marca, title }) {
-  return (
+function Fila({ activa, onClick, icon: Icon, label, count, marca, title, menu }) {
+  const boton = (
     <button
       type="button"
       onClick={onClick}
@@ -38,8 +43,15 @@ function Fila({ activa, onClick, icon: Icon, label, count, marca, title }) {
       {marca}
       {Icon && <Icon className={cn('size-3.5 shrink-0', activa ? 'text-accent' : 'text-ink-dim group-hover:text-ink-muted')} />}
       <span className="flex-1 truncate">{label}</span>
-      {count != null && <span className="text-[11px] text-ink-dim">{count}</span>}
+      {count != null && <span className={cn('text-[11px] text-ink-dim', menu && 'group-hover/fila:hidden')}>{count}</span>}
     </button>
+  );
+  if (!menu) return boton;
+  return (
+    <div className="group/fila relative">
+      {boton}
+      <div className="absolute right-1 top-1/2 hidden -translate-y-1/2 group-hover/fila:block has-[[data-state=open]]:block">{menu}</div>
+    </div>
   );
 }
 
@@ -60,8 +72,30 @@ export default function Rail({
   sections, seccion, onSeccion,
   facetas, tipos, onToggleTipo, fuentes, onToggleFuente,
   topConceptos, conceptos, onToggleConcepto,
-  onIngest, onScripts,
+  onIngest, onScripts, onSeccionesCambiadas,
 }) {
+  async function renombrar(nombre) {
+    const nuevo = (window.prompt(`Nuevo nombre para «${nombre}»:`, nombre) || '').trim().toLowerCase();
+    if (!nuevo || nuevo === nombre) return;
+    const clave = await pedirClave(`renombrar «${nombre}»`);
+    if (!clave) return;
+    const r = await renameSection(nombre, nuevo, clave.password).catch(() => null);
+    if (r?.status === 403) { avisarClaveIncorrecta(); return; }
+    if (!r?.ok) { window.alert('No se pudo renombrar la sección.'); return; }
+    onSeccionesCambiadas(nombre === seccion ? nuevo : seccion);
+  }
+
+  async function eliminar(nombre, count) {
+    if (!window.confirm(`¿Eliminar la sección «${nombre}» y sus ${count} documentos? No se puede deshacer.`)) return;
+    const clave = await pedirClave(`eliminar «${nombre}»`);
+    if (!clave) return;
+    const r = await deleteSection(nombre, clave.password).catch(() => null);
+    if (r?.status === 403) { avisarClaveIncorrecta(); return; }
+    if (!r?.ok) { window.alert('No se pudo eliminar la sección.'); return; }
+    const otra = sections.find((s) => s.nombre !== nombre)?.nombre || 'personal';
+    onSeccionesCambiadas(nombre === seccion ? otra : seccion);
+  }
+
   const nuevaSeccion = () => {
     const nombre = (window.prompt('Nombre de la nueva sección (silo aparte):') || '').trim().toLowerCase();
     if (nombre) onSeccion(nombre);
@@ -101,6 +135,22 @@ export default function Rail({
               label={<span className="capitalize">{s.nombre}</span>}
               count={s.count}
               marca={<span className={cn('size-1.5 shrink-0 rounded-full', s.nombre === seccion ? 'bg-accent' : 'bg-hair-strong')} />}
+              menu={s.count > 0 && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button type="button" aria-label={`Opciones de ${s.nombre}`} className="grid size-5 place-items-center rounded-xs text-ink-dim hover:bg-surface-3 hover:text-ink">
+                      <MoreHorizontal className="size-3.5" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" side="right">
+                    <DropdownMenuItem onSelect={() => renombrar(s.nombre)}><Pencil /> Renombrar</DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => eliminar(s.nombre, s.count)} className="text-danger [&_svg]:text-danger">
+                      <Trash2 /> Eliminar sección
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
             />
           ))}
         </Grupo>

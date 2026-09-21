@@ -15,12 +15,26 @@ function cargar(seccion) {
   } catch { return []; }
 }
 
+/** Pasajes que la respuesta realmente cita (aparece su marcador [Cn] en el texto). */
+function citados(m) {
+  const txt = m.text || '';
+  return (m.citations || []).filter((c) => txt.includes(`[${c.marker}]`));
+}
+
 /** Qué respaldo tuvo la respuesta. Es lo primero que se ve, antes del texto. */
 function Evidencia({ m }) {
   if (m.evidenceMode === 'chunks') {
+    const n = citados(m).length;
+    if (n > 0) {
+      return (
+        <span className="flex items-center gap-1 text-[11px] text-accent-soft">
+          <Quote className="size-3" /> Citada · {n} {n === 1 ? 'pasaje' : 'pasajes'} · afinidad máx {pct(m.sim)}
+        </span>
+      );
+    }
     return (
-      <span className="flex items-center gap-1 text-[11px] text-accent-soft">
-        <Quote className="size-3" /> Citada · {m.citations.length} pasajes · afinidad máx {pct(m.sim)}
+      <span className="flex items-center gap-1 text-[11px] text-warn">
+        <ShieldAlert className="size-3" /> Sin citas en la respuesta · {m.citations.length} pasajes recuperados como contexto
       </span>
     );
   }
@@ -38,8 +52,34 @@ function Evidencia({ m }) {
   );
 }
 
+function Pasaje({ c, nodesById, onSelect }) {
+  const nodo = nodesById.get(c.node_id);
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => nodo && onSelect(nodo.id)}
+        disabled={!nodo}
+        className="group flex w-full gap-2 rounded-sm border border-hair bg-surface-2 px-2 py-1.5 text-left hover:border-hair-strong disabled:cursor-default"
+        title={nodo ? 'Abrir en el inspector' : 'Documento fuera de esta sección'}
+      >
+        <span className="shrink-0 text-[11px] font-medium text-accent-soft">{c.marker}</span>
+        <span className="min-w-0">
+          <span className="block truncate text-[11.5px] text-ink group-hover:underline">
+            {c.label}{c.page ? ` · pág. ${c.page}` : ''}
+          </span>
+          <span className="line-clamp-2 text-[11px] text-ink-dim">{c.excerpt}</span>
+        </span>
+      </button>
+    </li>
+  );
+}
+
 function Respuesta({ m, nodesById, onSelect, onHighlight }) {
   const html = useMemo(() => renderMarkdown(m.text), [m.text]);
+  const usados = citados(m);
+  const usadosSet = new Set(usados.map((c) => c.marker));
+  const resto = (m.citations || []).filter((c) => !usadosSet.has(c.marker));
   return (
     <div className="flex flex-col gap-2">
       {m.evidenceMode && <Evidencia m={m} />}
@@ -47,31 +87,20 @@ function Respuesta({ m, nodesById, onSelect, onHighlight }) {
         className="agent-md text-[12.5px] leading-relaxed text-ink/90"
         dangerouslySetInnerHTML={{ __html: html }}
       />
-      {m.citations?.length > 0 && (
+      {usados.length > 0 && (
         <ol className="flex flex-col gap-1">
-          {m.citations.map((c) => {
-            const nodo = nodesById.get(c.node_id);
-            return (
-              <li key={c.chunk_id || c.marker}>
-                <button
-                  type="button"
-                  onClick={() => nodo && onSelect(nodo.id)}
-                  disabled={!nodo}
-                  className="group flex w-full gap-2 rounded-sm border border-hair bg-surface-2 px-2 py-1.5 text-left hover:border-hair-strong disabled:cursor-default"
-                  title={nodo ? 'Abrir en el inspector' : 'Documento fuera de esta sección'}
-                >
-                  <span className="shrink-0 text-[11px] font-medium text-accent-soft">{c.marker}</span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-[11.5px] text-ink group-hover:underline">
-                      {c.label}{c.page ? ` · pág. ${c.page}` : ''}
-                    </span>
-                    <span className="line-clamp-2 text-[11px] text-ink-dim">{c.excerpt}</span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
+          {usados.map((c) => <Pasaje key={c.chunk_id || c.marker} c={c} nodesById={nodesById} onSelect={onSelect} />)}
         </ol>
+      )}
+      {resto.length > 0 && (
+        <details className="group/det">
+          <summary className="cursor-pointer list-none text-[11px] text-ink-dim hover:text-ink">
+            {usados.length ? 'Otros pasajes recuperados' : 'Pasajes recuperados'} ({resto.length}) ▸
+          </summary>
+          <ol className="mt-1 flex flex-col gap-1">
+            {resto.map((c) => <Pasaje key={c.chunk_id || c.marker} c={c} nodesById={nodesById} onSelect={onSelect} />)}
+          </ol>
+        </details>
       )}
       {m.fundamentos?.length > 0 && (
         <button

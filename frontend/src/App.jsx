@@ -243,7 +243,11 @@ export default function App() {
         return;
       }
       if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); return; }
-      if (e.key === 'Escape') { setSelectedId(null); return; }
+      if (e.key === 'Escape') {
+        // Si hay un diálogo Radix abierto, el Esc es para cerrarlo, no para soltar la selección.
+        if (!document.querySelector('[role="dialog"][data-state="open"]')) setSelectedId(null);
+        return;
+      }
       if (e.key === '1') setVista('lista');
       if (e.key === '2') setVista('split');
       if (e.key === '3') setVista('grafo');
@@ -306,6 +310,7 @@ export default function App() {
             onToggleConcepto={toggleIn(setConceptos)}
             onIngest={() => setIngestOpen(true)}
             onScripts={() => setScriptsOpen(true)}
+            onSeccionesCambiadas={(activa) => { cambiarSeccion(activa); recargar(); }}
           />
 
           <main className="flex min-w-0 flex-1">
