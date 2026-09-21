@@ -1,5 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+import path from 'node:path';
 
 // El proxy de Vite corre del lado del servidor (dentro del contenedor del frontend),
 // por lo que NO debe apuntar a "localhost" en Docker: ahí localhost es el propio
@@ -12,7 +14,10 @@ export default defineConfig({
   // Para GitHub Pages el sitio vive en /llm-wiki/. El build de Pages setea GH_PAGES=true;
   // en Docker/local queda en '/' (no afecta el dev normal).
   base: process.env.GH_PAGES === 'true' ? '/llm-wiki/' : '/',
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: { '@': path.resolve(process.cwd(), 'src') },
+  },
   server: {
     host: true,
     // Docker/Windows: el file-watcher nativo no detecta cambios en bind-mounts,

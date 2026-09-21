@@ -1,923 +1,405 @@
-import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import Graph3D from './components/Graph3D.jsx';
-import NodePanel from './components/NodePanel.jsx';
-import AgentPanel from './components/AgentPanel.jsx';
-import ReportPanel from './components/ReportPanel.jsx';
-import RelationPanel from './components/RelationPanel.jsx';
-import LibraryPanel from './components/LibraryPanel.jsx';
-import SynthesisPanel from './components/SynthesisPanel.jsx';
-import IssuePanel from './components/IssuePanel.jsx';
-import Footer from './components/Footer.jsx';
-import DiscoveriesPanel from './components/DiscoveriesPanel.jsx';
-import ProcessPanel from './components/ProcessPanel.jsx';
-import ArchitectPanel from './components/ArchitectPanel.jsx';
-import VaultBadge from './components/VaultBadge.jsx';
-import ScriptsPanel from './components/ScriptsPanel.jsx';
-import { computeDiscoveries } from './discoveries.js';
-import { pedirClave, avisarClaveIncorrecta } from './security.js';
+import React, { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import Topbar from '@/app/Topbar';
+import Rail from '@/app/Rail';
+import Library from '@/app/Library';
+import Inspector from '@/app/Inspector';
+import AgentFab from '@/app/AgentFab';
+import IngestDialog from '@/app/IngestDialog';
+import ScriptsSheet from '@/app/ScriptsSheet';
+import CommandPalette from '@/app/CommandPalette';
+import { fetchGraph, fetchSections, searchSemantic } from '@/lib/api';
+import { AGRUPADORES, indexarRelaciones } from '@/lib/nodes';
+import { normalizar } from '@/lib/utils';
 
-// ── Paleta: COLORES SUAVES PERO DISTINGUIBLES ────────────────────────────────
-// Saturación media: ni neón candy ni gris muerto. Cada cluster es reconocible
-// sin competir con el contenido. Tonos cálidos y fríos alternados.
-export const CLUSTER_PALETTE = [
-  '#5B8A9A', // teal suave
-  '#7A8FC4', // azul lavanda
-  '#C4A06A', // ámbar dorado
-  '#9A7AB4', // violeta suave
-  '#6AAA8A', // verde menta
-  '#C48A7A', // coral apagado
-  '#8AC4B4', // turquesa claro
-  '#B4A47A', // ocre suave
-  '#8A7A9A', // malva
-  '#7AAAB4', // cyan apagado
-];
+// React Flow pesa: sólo se carga cuando el usuario abre Split o Grafo.
+const GraphCanvas = lazy(() => import('@/app/GraphCanvas'));
 
-// Reservado: sólo para lo excepcional (issues, alertas). Si aparece, significa algo.
-export const ALERT_COLOR = '#C9A25E';
-
-export function clusterColor(cluster) {
-  // Sin grupo: gris frío y apagado, para que el ruido retroceda en vez de competir.
-  if (cluster === undefined || cluster === null || cluster < 0) return '#565A78';
-  return CLUSTER_PALETTE[cluster % CLUSTER_PALETTE.length];
-}
-
-export function ytId(url) {
-  const m = url?.match(/(?:youtu\.be\/|v=|embed\/)([a-zA-Z0-9_-]{11})/);
-  return m ? m[1] : null;
-}
-
-// Secciones conocidas localmente (incluye las VACÍAS recién creadas, que el backend aún
-// no lista porque no tienen documentos). Se mergean con las del backend.
-const SEC_KEY = 'algedi_secciones_known';
-const getKnownSecciones = () => {
-  try { const a = JSON.parse(localStorage.getItem(SEC_KEY) || '["personal"]'); return Array.isArray(a) && a.length ? a : ['personal']; }
-  catch { return ['personal']; }
-};
-const setKnownSecciones = (arr) => {
-  try { localStorage.setItem(SEC_KEY, JSON.stringify([...new Set(arr)])); } catch {}
+const LS = {
+  get(k, def) { try { const v = localStorage.getItem(k); return v == null ? def : v; } catch { return def; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* sin storage */ } },
 };
 
-// Poda de relaciones: con umbral bajo casi todo se conecta (telaraña). Conservamos
-// por nodo sus K relaciones MÁS FUERTES (por score = similitud coseno). Una arista
-// sobrevive si está en el top-K de CUALQUIERA de sus dos extremos (unión) → el grafo
-// queda conectado pero limpio, mostrando solo las conexiones que valen.
-const LINKS_POR_NODO = 3;
-function pruneLinks(links, K = LINKS_POR_NODO) {
-  const byNode = new Map();
-  links.forEach(l => {
-    const s = l.score ?? 0;
-    for (const id of [l.source, l.target]) {
-      if (!byNode.has(id)) byNode.set(id, []);
-      byNode.get(id).push({ l, s });
-    }
-  });
-  const keep = new Set();
-  byNode.forEach(arr => {
-    arr.sort((a, b) => b.s - a.s);
-    arr.slice(0, K).forEach(({ l }) => keep.add(l));
-  });
-  return links.filter(l => keep.has(l));
-}
+const VISTAS = ['lista', 'split', 'grafo'];
 
-function buildGraphData(data) {
-  const SCALE = 250;
-  const nodes = (data.nodos || []).map(n => {
-    const base = { ...n };
-    if (n.x3d !== undefined) {
-      base.x = n.x3d * SCALE;
-      base.y = n.y3d * SCALE;
-      base.z = n.z3d * SCALE;
-      // Se fija el nodo si tiene coordenadas reales. `pin` lo declara de forma
-      // explicita: los fragmentos se posicionan alrededor de su documento y no
-      // viajan con embedding (4.397 x 384 floats seria un payload absurdo).
-      if (n.embedding || n.pin) {
-        base.fx = n.x3d * SCALE;
-        base.fy = n.y3d * SCALE;
-        base.fz = n.z3d * SCALE;
-      }
-    }
-    return base;
-  });
-  const links = (data.relaciones || []).map(l => ({
-    source: l.source,
-    target: l.target,
-    score: l.score,
-    label: l.label,
-    shared_concepts: l.shared_concepts,
-    description: l.description,
-    metodo: l.metodo,
-    base_relacion: l.base_relacion,
-    evidencia: l.evidencia,
-    revision: l.revision,
-    is_manual: l.is_manual,
-  }));
-  return { nodes, links: pruneLinks(links) };
+function fechaOrden(n) {
+  return Date.parse(n.fecha_doc || n.created_at || 0) || 0;
 }
-
-const isTouchDevice = () =>
-  window.matchMedia('(hover: none)').matches || 'ontouchstart' in window;
 
 export default function App() {
-  const [graphData, setGraphData]       = useState({ nodes: [], links: [] });
-  const [fixedNode,  setFixedNode]      = useState(null);
-  const [hoverNode,  setHoverNode]      = useState(null);
-  const [tooltipPos, setTooltipPos]     = useState({ x: 60, y: 80 });
-  const [agentOpen,  setAgentOpen]      = useState(false);
-  const [highlighted, setHighlighted]   = useState(new Set());
-  const [searchQ, setSearchQ]           = useState('');
-  const [semanticIds, setSemanticIds]   = useState(null);
-  const [loading, setLoading]           = useState(true);
-  const [fetchError, setFetchError]     = useState(false);
-  // Synthesis mode
-  const [synthMode, setSynthMode]       = useState(false);
-  const [synthOpen, setSynthOpen]       = useState(false);
-  const [synthSelected, setSynthSelected] = useState(new Set());
-  const [reportOpen, setReportOpen]     = useState(false);
-  const [globalAgent, setGlobalAgent]   = useState(false);
-  const [selectedLink, setSelectedLink] = useState(null);
-  const [libraryOpen, setLibraryOpen]   = useState(false);
-  const [issueOpen, setIssueOpen]       = useState(false);
-  const [discoveriesOpen, setDiscoveriesOpen] = useState(false);
-  const [processOpen, setProcessOpen]   = useState(false);
-  const [architectOpen, setArchitectOpen] = useState(false);
-  const [scriptsOpen, setScriptsOpen]   = useState(false);
-  const [relayouting, setRelayouting]   = useState(false);
-  const [verificando, setVerificando]   = useState(false);
-  const [vigenciaResumen, setVigenciaResumen] = useState(null);
-  const [toolsOpen, setToolsOpen]       = useState(false);
-  // Secciones = grafos de conocimiento independientes (por `dominio`).
-  const [seccion, setSeccionState]      = useState(() => localStorage.getItem('algedi_seccion') || 'personal');
-  const [sections, setSections]         = useState([{ nombre: 'personal', count: 0 }]);
-  const [seccionOpen, setSeccionOpen]   = useState(false);
-  const [securityEnabled, setSecurityEnabled] = useState(false);
-  const [layoutMode, setLayoutMode]     = useState('components');
-  // Vista de FRAGMENTOS: cada documento se abre en la estrella de sus pasajes.
-  const [verFragmentos, setVerFragmentos] = useState(false);
-  const [focusTrigger, setFocusTrigger] = useState(0);  // botón "enfocar" del panel
-  const [fitTrigger, setFitTrigger]     = useState(0);  // botón "ver todo" (desenfocar)
+  // ── Sección activa (= silo) ─────────────────────────────────────────
+  const [seccion, setSeccion] = useState(() => LS.get('algedi_seccion', 'maestria'));
+  const [sections, setSections] = useState([]);
 
-  const hoverTimer = useRef(null);
-  const searchTimer = useRef(null);
-  const projectRef = useRef(null);   // proyección 3D→pantalla (la setea Graph3D)
-  const panelElRef = useRef(null);   // elemento del NodePanel (para el conector)
+  // ── Datos ───────────────────────────────────────────────────────────
+  const [graph, setGraph] = useState({ nodes: [], edges: [] });
+  const [status, setStatus] = useState('loading');      // loading | ok | error
+  const [reloadKey, setReloadKey] = useState(0);
 
-  const handleSearchChange = useCallback(e => {
-    const q = e.target.value;
-    setSearchQ(q.toLowerCase());
-    clearTimeout(searchTimer.current);
-    if (q.trim().length >= 3) {
-      searchTimer.current = setTimeout(async () => {
-        try {
-          const r = await fetch(`/api/search?q=${encodeURIComponent(q.trim())}`);
-          const d = await r.json();
-          setSemanticIds(d.ids?.length ? new Set(d.ids) : null);
-        } catch { setSemanticIds(null); }
-      }, 350);
-    } else {
-      setSemanticIds(null);
-    }
-  }, []);
+  // ── Vista / selección ──────────────────────────────────────────────
+  const [vista, setVista] = useState(() => {
+    const v = LS.get('algedi_vista', 'lista');
+    return VISTAS.includes(v) ? v : 'lista';
+  });
+  const [selectedId, setSelectedId] = useState(null);
+  const [highlightIds, setHighlightIds] = useState(() => new Set());   // lo que marca el agente
+
+  // ── Filtros ────────────────────────────────────────────────────────
+  const [query, setQuery] = useState('');
+  const [tipos, setTipos] = useState(() => new Set());
+  const [fuentes, setFuentes] = useState(() => new Set());
+  const [conceptos, setConceptos] = useState(() => new Set());
+  const [groupBy, setGroupBy] = useState(() => LS.get('algedi_agrupar', 'fuente'));
+  const [sortBy, setSortBy] = useState(() => LS.get('algedi_orden', 'reciente'));
+  const [semanticIds, setSemanticIds] = useState(null);
+
+  // ── Diálogos ───────────────────────────────────────────────────────
+  const [ingestOpen, setIngestOpen] = useState(false);
+  const [scriptsOpen, setScriptsOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [agentContext, setAgentContext] = useState(null);
+
+  const searchRef = useRef(null);
+
+  useEffect(() => LS.set('algedi_vista', vista), [vista]);
+  useEffect(() => LS.set('algedi_agrupar', groupBy), [groupBy]);
+  useEffect(() => LS.set('algedi_orden', sortBy), [sortBy]);
 
   const loadSections = useCallback(() => {
-    fetch('/api/sections')
-      .then(r => r.json())
-      .then(d => {
-        const backend = Array.isArray(d.secciones) ? d.secciones : [];
-        const map = new Map(backend.map(s => [s.nombre, s]));
-        // Mergear con las conocidas localmente (incluye vacías). La activa ya está en
-        // "conocidas" (la agrega cambiarSeccion) → no la re-agregamos acá con un nombre
-        // que podría ser el viejo tras un rename.
-        [...getKnownSecciones(), 'personal'].forEach(n => {
-          if (n && !map.has(n)) map.set(n, { nombre: n, count: 0 });
-        });
-        const list = [...map.values()].sort(
-          (a, b) => (a.nombre !== 'personal') - (b.nombre !== 'personal') || a.nombre.localeCompare(b.nombre)
-        );
-        setSections(list);
-        setKnownSecciones(list.map(s => s.nombre));
-      })
-      .catch(() => {});
+    fetchSections().then(setSections).catch(() => setSections([]));
   }, []);
+  useEffect(() => { loadSections(); }, [loadSections]);
+
+  // Si la sección guardada no existe en el backend, caer a la más poblada.
+  useEffect(() => {
+    if (!sections.length) return;
+    if (!sections.some((s) => s.nombre === seccion)) {
+      const mayor = [...sections].sort((a, b) => b.count - a.count)[0];
+      if (mayor) setSeccion(mayor.nombre);
+    }
+  }, [sections, seccion]);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    setStatus('loading');
+    fetchGraph(seccion, { signal: ctrl.signal })
+      .then((g) => { setGraph(g); setStatus('ok'); })
+      .catch((e) => { if (e.name !== 'AbortError') setStatus('error'); });
+    return () => ctrl.abort();
+  }, [seccion, reloadKey]);
+
+  const recargar = useCallback(() => {
+    setReloadKey((k) => k + 1);
+    loadSections();
+  }, [loadSections]);
 
   const cambiarSeccion = useCallback((nombre) => {
-    setSeccionState(nombre);
-    try { localStorage.setItem('algedi_seccion', nombre); } catch {}
-    setKnownSecciones([...getKnownSecciones(), nombre]);  // la activa siempre en conocidas
-    setSeccionOpen(false);
+    setSeccion(nombre);
+    LS.set('algedi_seccion', nombre);
+    setSelectedId(null);
+    setHighlightIds(new Set());
+    setTipos(new Set()); setFuentes(new Set()); setConceptos(new Set());
+    setQuery('');
   }, []);
 
-  const nuevaSeccion = useCallback(() => {
-    const n = window.prompt('Nombre de la nueva sección (un grafo aparte):');
-    const nombre = (n || '').trim();
-    if (!nombre) return;
-    setKnownSecciones([...getKnownSecciones(), nombre]);
-    setSections(prev => prev.some(s => s.nombre === nombre) ? prev : [...prev, { nombre, count: 0 }]);
-    cambiarSeccion(nombre);
-  }, [cambiarSeccion]);
+  // ── Índices derivados ──────────────────────────────────────────────
+  const nodesById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
+  const relIndex = useMemo(() => indexarRelaciones(graph.edges), [graph.edges]);
 
-  const loadGraph = useCallback(() => {
-    setLoading(true);
-    setFetchError(false);
-    const ruta = verFragmentos ? '/api/graph/chunks' : '/api/graph';
-    fetch(`${ruta}?seccion=${encodeURIComponent(seccion)}`)
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(data => { setGraphData(buildGraphData(data)); setLoading(false); })
-      .catch(() => {
-        // Sin backend (ej. GitHub Pages): cargar el snapshot estático de demo.
-        fetch(`${import.meta.env.BASE_URL}demo-graph.json`)
-          .then(r => { if (!r.ok) throw new Error('no demo'); return r.json(); })
-          .then(data => { setGraphData(buildGraphData(data)); setLoading(false); })
-          .catch(() => { setFetchError(true); setLoading(false); });
-      });
-  }, [seccion, verFragmentos]);
-
-  const renombrarSeccion = useCallback(async (nombre) => {
-    setSeccionOpen(false);
-    const nuevo = (window.prompt(`Nuevo nombre para «${nombre}»:`, nombre) || '').trim();
-    if (!nuevo || nuevo === nombre) return;
-    const clave = await pedirClave(`renombrar «${nombre}»`);
-    if (!clave) return;
-    try {
-      const r = await fetch('/api/sections/rename', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: nombre, to: nuevo, ...clave }),
-      });
-      if (r.status === 403) { avisarClaveIncorrecta(); return; }
-      if (!r.ok) { window.alert('No se pudo renombrar.'); return; }
-      setKnownSecciones(getKnownSecciones().map(x => x === nombre ? nuevo : x));
-      if (seccion === nombre) cambiarSeccion(nuevo);
-      loadGraph(); loadSections();
-    } catch { window.alert('Error de conexión.'); }
-  }, [seccion, cambiarSeccion, loadGraph, loadSections]);
-
-  const eliminarSeccion = useCallback(async (nombre) => {
-    setSeccionOpen(false);
-    if (!window.confirm(`¿Eliminar la sección «${nombre}» y TODOS sus documentos? No se puede deshacer.`)) return;
-    let password = null;
-    if (securityEnabled) {
-      password = window.prompt(`Clave de seguridad para eliminar «${nombre}»:`);
-      if (password == null) return;
+  // Texto indexado por nodo (sin acentos) para la búsqueda local.
+  const haystack = useMemo(() => {
+    const m = new Map();
+    for (const n of graph.nodes) {
+      m.set(n.id, normalizar([
+        n.label, n.desc, n.autor, n.fuente_label, n.tema,
+        ...(n.conceptos || []), ...(n.tags || []),
+      ].join('  ')));
     }
-    try {
-      const r = await fetch('/api/sections/delete', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nombre, password }),
-      });
-      if (r.status === 403) { window.alert('Clave de seguridad incorrecta. La sección está intacta.'); return; }
-      if (!r.ok) { window.alert('No se pudo eliminar.'); return; }
-      setKnownSecciones(getKnownSecciones().filter(x => x !== nombre));
-      if (seccion === nombre) cambiarSeccion('personal');
-      loadGraph(); loadSections();
-    } catch { window.alert('Error de conexión.'); }
-  }, [seccion, securityEnabled, cambiarSeccion, loadGraph, loadSections]);
+    return m;
+  }, [graph.nodes]);
 
-  useEffect(() => { loadGraph(); }, [loadGraph]);
-  useEffect(() => { loadSections(); }, [loadSections]);
+  // Conceptos más frecuentes de la sección: funcionan como tags navegables.
+  const topConceptos = useMemo(() => {
+    const cnt = new Map();
+    for (const n of graph.nodes) {
+      const vistos = new Set();
+      for (const c of n.conceptos || []) {
+        const k = normalizar(c);
+        if (!k || vistos.has(k)) continue;
+        vistos.add(k);
+        const cur = cnt.get(k) || { key: k, label: c, count: 0 };
+        cur.count += 1;
+        cnt.set(k, cur);
+      }
+    }
+    return [...cnt.values()].filter((c) => c.count > 1).sort((a, b) => b.count - a.count).slice(0, 14);
+  }, [graph.nodes]);
+
+  // Búsqueda semántica (backend) como complemento de la local.
   useEffect(() => {
-    fetch('/api/security').then(r => r.json()).then(d => setSecurityEnabled(!!d.enabled)).catch(() => {});
-  }, []);
+    const q = query.trim();
+    if (q.length < 3) { setSemanticIds(null); return undefined; }
+    const t = setTimeout(() => {
+      searchSemantic(q).then((ids) => setSemanticIds(new Set(ids))).catch(() => setSemanticIds(null));
+    }, 350);
+    return () => clearTimeout(t);
+  }, [query]);
 
-  // activeNode: solo click (para mostrar el panel)
-  // highlightNode: click O hover (para resaltar en el grafo)
-  const activeNode    = fixedNode;
-  const highlightNode = fixedNode || hoverNode;
-  const isFixed       = Boolean(fixedNode);
+  // ── Filtrado ───────────────────────────────────────────────────────
+  const pasaFacetas = useCallback((n) => {
+    if (tipos.size && !tipos.has(n.type)) return false;
+    if (fuentes.size && !fuentes.has((n.fuente || 'sin-origen').toLowerCase())) return false;
+    if (conceptos.size) {
+      const propios = new Set((n.conceptos || []).map(normalizar));
+      for (const c of conceptos) if (!propios.has(c)) return false;   // AND: cada concepto acota
+    }
+    return true;
+  }, [tipos, fuentes, conceptos]);
 
+  const { visibles, semanticos } = useMemo(() => {
+    const q = normalizar(query.trim());
+    const terms = q.split(/\s+/).filter(Boolean);
+    const vis = [];
+    const sem = [];
+    for (const n of graph.nodes) {
+      if (!pasaFacetas(n)) continue;
+      if (!terms.length) { vis.push(n); continue; }
+      const h = haystack.get(n.id) || '';
+      if (terms.every((t) => h.includes(t))) vis.push(n);
+      else if (semanticIds?.has(n.id)) sem.push(n);
+    }
+    const deg = (n) => relIndex.get(n.id)?.length || 0;
+    const cmp = {
+      reciente: (a, b) => fechaOrden(b) - fechaOrden(a),
+      titulo: (a, b) => (a.label || '').localeCompare(b.label || '', 'es'),
+      conexiones: (a, b) => deg(b) - deg(a),
+    }[sortBy] || (() => 0);
+    vis.sort(cmp);
+    return { visibles: vis, semanticos: sem };
+  }, [graph.nodes, pasaFacetas, query, haystack, semanticIds, sortBy, relIndex]);
+
+  const grupos = useMemo(() => {
+    const agr = AGRUPADORES[groupBy] || AGRUPADORES.fuente;
+    const map = new Map();
+    for (const n of visibles) {
+      const k = agr.keyOf(n);
+      if (!map.has(k)) map.set(k, { key: k, title: agr.titleOf(k), items: [] });
+      map.get(k).items.push(n);
+    }
+    const arr = [...map.values()].sort((a, b) => b.items.length - a.items.length);
+    if (semanticos.length) {
+      arr.push({ key: '__semantico', title: 'Por significado', semantic: true, items: semanticos });
+    }
+    return arr;
+  }, [visibles, semanticos, groupBy]);
+
+  const orden = useMemo(() => grupos.flatMap((g) => g.items.map((n) => n.id)), [grupos]);
+
+  // Conteos por faceta (sobre la sección entera, para que los números no bailen).
+  const facetas = useMemo(() => {
+    const tipo = new Map();
+    const fuente = new Map();
+    for (const n of graph.nodes) {
+      tipo.set(n.type, (tipo.get(n.type) || 0) + 1);
+      const f = (n.fuente || 'sin-origen').toLowerCase();
+      fuente.set(f, (fuente.get(f) || 0) + 1);
+    }
+    return { tipo, fuente };
+  }, [graph.nodes]);
+
+  // Si el nodo seleccionado desaparece (cambio de sección / borrado), limpiar.
   useEffect(() => {
-    if (synthMode) {
-      setHighlighted(new Set(synthSelected));
-      return;
-    }
-    if (selectedLink) {
-      setHighlighted(new Set([selectedLink.nodeA.id, selectedLink.nodeB.id]));
-      return;
-    }
-    if (!highlightNode) { setHighlighted(new Set()); return; }
-    const connected = new Set([highlightNode.id]);
-    graphData.links.forEach(l => {
-      const s = l.source?.id ?? l.source, t = l.target?.id ?? l.target;
-      if (s === highlightNode.id) connected.add(t);
-      if (t === highlightNode.id) connected.add(s);
-    });
-    setHighlighted(connected);
-  }, [highlightNode, graphData.links, synthMode, synthSelected, selectedLink]);
+    if (selectedId && status === 'ok' && !nodesById.has(selectedId)) setSelectedId(null);
+  }, [selectedId, nodesById, status]);
 
-  const handleLinkClick = useCallback((link, event) => {
-    if (synthMode) return;
-    const src = link.source?.id ?? link.source;
-    const tgt = link.target?.id ?? link.target;
-    const nodeA = graphData.nodes.find(n => n.id === src);
-    const nodeB = graphData.nodes.find(n => n.id === tgt);
-    if (!nodeA || !nodeB) return;
-    const vw = window.innerWidth, vh = window.innerHeight;
-    const W = 560, H = 520;
-    const cx = event?.clientX ?? vw / 2;
-    const cy = event?.clientY ?? vh / 2;
-    setTooltipPos({
-      x: Math.min(Math.max(cx - W / 2, 8), vw - W - 8),
-      y: Math.min(Math.max(cy - 60, 56), vh - H - 40),
-    });
-    setSelectedLink({
-      nodeA, nodeB,
-      linkMeta: {
-        score: link.score,
-        label: link.label,
-        shared_concepts: link.shared_concepts,
-        description: link.description,
-        // Procedencia: el panel muestra lo que el backend calculó, no una
-        // reconstrucción propia. `undefined` = arista sin procedencia registrada.
-        metodo: link.metodo,
-        base_relacion: link.base_relacion,
-        evidencia: link.evidencia,
-        revision: link.revision,
-        is_manual: link.is_manual,
-      },
-    });
-    setFixedNode(null);
-    setHoverNode(null);
-    setAgentOpen(false);
-    setReportOpen(false);
-    setGlobalAgent(false);
-  }, [synthMode, graphData.nodes]);
+  const seleccionar = useCallback((id) => setSelectedId(id), []);
 
-  // La revisión vuelve del backend ya persistida; acá sólo se refleja en el grafo en
-  // memoria para que reabrir la arista no muestre el estado viejo.
-  const handleRelationReviewed = useCallback((source, target, revision) => {
-    setGraphData(prev => ({
-      ...prev,
-      links: prev.links.map(l => {
-        const s = l.source?.id ?? l.source, t = l.target?.id ?? l.target;
-        const mismo = (s === source && t === target) || (s === target && t === source);
-        return mismo ? { ...l, revision } : l;
-      }),
-    }));
-    setSelectedLink(prev => prev && ({
-      ...prev, linkMeta: { ...prev.linkMeta, revision },
-    }));
+  const toggleIn = (setter) => (key) => setter((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  const limpiarFiltros = useCallback(() => {
+    setTipos(new Set()); setFuentes(new Set()); setConceptos(new Set()); setQuery('');
   }, []);
 
-  const handleNodeClick = useCallback((node, event) => {
-    setSelectedLink(null);
-    if (synthMode) {
-      setSynthSelected(prev => {
-        const next = new Set(prev);
-        next.has(node.id) ? next.delete(node.id) : next.add(node.id);
-        return next;
-      });
-      return;
-    }
-    // Posición consistente y siempre visible (zona derecha, debajo del header).
-    // En desktop el panel es two-col (~850px); uso ese ancho real para que entre completo.
-    const vw = window.innerWidth;
-    const W = vw >= 900 ? 850 : Math.min(vw - 24, 360);
-    setTooltipPos({
-      x: Math.max(16, vw - W - 24),
-      y: 84,
-    });
-    setFixedNode(node);
-    setHoverNode(null);
-    setAgentOpen(false);
-  }, [synthMode]);
-
-  const handleNodeHover = useCallback(node => {
-    if (synthMode || isTouchDevice()) return;
-    clearTimeout(hoverTimer.current);
-    if (!node) {
-      hoverTimer.current = setTimeout(() => setHoverNode(null), 120);
-    } else {
-      if (!fixedNode || fixedNode.id !== node.id) setHoverNode(node);
-    }
-  }, [fixedNode, synthMode]);
-
-  const handleClosePanel = useCallback(() => {
-    setFixedNode(null); setHoverNode(null);
-    setAgentOpen(false); setReportOpen(false); setHighlighted(new Set()); setSelectedLink(null);
+  const preguntarSobre = useCallback((node) => {
+    setAgentContext(node || null);
+    setAgentOpen(true);
   }, []);
 
-  const handleOpenAgent = useCallback(node => {
-    setFixedNode(node); setAgentOpen(true); setReportOpen(false); setGlobalAgent(false);
-  }, []);
+  // ── Atajos de teclado ──────────────────────────────────────────────
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = (e.target?.tagName || '').toLowerCase();
+      const escribiendo = tag === 'input' || tag === 'textarea' || e.target?.isContentEditable;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault(); setPaletteOpen((o) => !o); return;
+      }
+      if (escribiendo) {
+        if (e.key === 'Escape') e.target.blur();
+        return;
+      }
+      if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); return; }
+      if (e.key === 'Escape') { setSelectedId(null); return; }
+      if (e.key === '1') setVista('lista');
+      if (e.key === '2') setVista('split');
+      if (e.key === '3') setVista('grafo');
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'j' || e.key === 'k') {
+        if (!orden.length) return;
+        e.preventDefault();
+        const i = orden.indexOf(selectedId);
+        const dir = (e.key === 'ArrowDown' || e.key === 'j') ? 1 : -1;
+        const next = i < 0 ? 0 : Math.min(orden.length - 1, Math.max(0, i + dir));
+        setSelectedId(orden[next]);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [orden, selectedId]);
 
-  const handleOpenReport = useCallback(node => {
-    setFixedNode(node); setReportOpen(true); setAgentOpen(false); setGlobalAgent(false);
-  }, []);
+  const selected = selectedId ? nodesById.get(selectedId) : null;
+  const seccionInfo = sections.find((s) => s.nombre === seccion);
+  const visibleIds = useMemo(() => new Set(orden), [orden]);
 
-  const handleHighlight = useCallback(ids => setHighlighted(new Set(ids)), []);
-
-  const handleDeleteNode = useCallback(async (nodeId) => {
-    const clave = await pedirClave('eliminar este documento');
-    if (!clave) return;
-    const r = await fetch(`/api/node/${encodeURIComponent(nodeId)}`, {
-      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(clave),
-    });
-    if (r.status === 403) { avisarClaveIncorrecta(); return; }
-    setFixedNode(null); setHoverNode(null); setAgentOpen(false);
-    loadGraph();
-  }, [loadGraph]);
-
-  const descargarBackup = useCallback(async () => {
-    const resp = await fetch('/api/export');
-    if (!resp.ok) throw new Error('export falló');
-    const blob = await resp.blob();
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `algedi-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }, []);
-
-  const handleReset = useCallback(async () => {
-    // Con clave configurada → se pide la clave. Sin clave → hay que escribir "BORRAR".
-    let password = null;
-    if (securityEnabled) {
-      password = window.prompt('⚠️ Esto BORRA TODO de forma permanente y NO se puede deshacer.\n\nIngresá la CLAVE DE SEGURIDAD para confirmar:');
-      if (password == null) return;
-    } else {
-      const r = window.prompt('⚠️ ESTO BORRA TODO de forma permanente (documentos, relaciones, temas, issues) y NO se puede deshacer.\n\nEscribí BORRAR (en mayúsculas) para confirmar:');
-      if (r == null) return;
-      if (r.trim() !== 'BORRAR') { window.alert('Cancelado — no escribiste "BORRAR" exacto. El grafo está intacto.'); return; }
-    }
-    // Red de seguridad: descargar un backup ANTES de borrar. Si falla, preguntar.
-    try {
-      await descargarBackup();
-    } catch {
-      if (!window.confirm('No se pudo generar el backup automático. ¿Resetear IGUAL, sin respaldo?')) return;
-    }
-    const resp = await fetch('/api/reset', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
-    });
-    if (resp.status === 403) { window.alert('Clave de seguridad incorrecta. El grafo está intacto.'); return; }
-    if (!resp.ok) { window.alert('No se pudo resetear.'); return; }
-    setFixedNode(null); setHoverNode(null);
-    setAgentOpen(false); setSynthSelected(new Set()); setSelectedLink(null);
-    loadGraph(); loadSections();
-  }, [loadGraph, loadSections, securityEnabled, descargarBackup]);
-
-  const toggleSynth = useCallback(() => {
-    setSynthMode(m => {
-      const next = !m;
-      if (next) { setSynthOpen(true); setFixedNode(null); setAgentOpen(false); setReportOpen(false); setGlobalAgent(false); setSelectedLink(null); }
-      else      { setSynthOpen(false); }
-      return next;
-    });
-  }, []);
-
-  const handleOpenSynthesisFromRelation = useCallback((nodeIds) => {
-    setSynthSelected(new Set(nodeIds));
-    setSynthMode(true);
-    setSynthOpen(true);
-    setSelectedLink(null);
-    setFixedNode(null);
-    setAgentOpen(false);
-    setReportOpen(false);
-    setGlobalAgent(false);
-  }, []);
-
-  const toggleGlobalAgent = useCallback(() => {
-    setGlobalAgent(g => {
-      if (!g) { setAgentOpen(false); setReportOpen(false); setSynthMode(false); setSynthOpen(false); }
-      return !g;
-    });
-  }, []);
-
-  // Merge keyword filter with semantic results — useMemo avoids recomputing on unrelated re-renders
-  const filteredIds = useMemo(() => {
-    if (!searchQ) return null;
-    const keyword = new Set(graphData.nodes
-      .filter(n =>
-        n.label.toLowerCase().includes(searchQ) ||
-        (n.autor || '').toLowerCase().includes(searchQ) ||
-        (n.desc || '').toLowerCase().includes(searchQ) ||
-        (n.fragmento || '').toLowerCase().includes(searchQ) ||
-        (n.conceptos || []).some(c => c.toLowerCase().includes(searchQ))
-      )
-      .map(n => n.id));
-    if (!semanticIds) return keyword;
-    const merged = new Set([...keyword, ...semanticIds]);
-    return merged.size ? merged : keyword;
-  }, [searchQ, semanticIds, graphData.nodes]);
-
-  // Descubrimientos: se calcula sólo cuando el panel está abierto (O(n²) coseno; barato).
-  const discoveries = useMemo(
-    () => (discoveriesOpen ? computeDiscoveries(graphData.nodes, graphData.links) : []),
-    [discoveriesOpen, graphData],
+  const grafo = (
+    <Suspense fallback={<div className="grid h-full place-items-center text-[12px] text-ink-dim">Cargando grafo…</div>}>
+      <GraphCanvas
+        nodes={graph.nodes}
+        edges={graph.edges}
+        visibleIds={visibleIds}
+        selectedId={selectedId}
+        highlightIds={highlightIds}
+        onSelect={seleccionar}
+        relIndex={relIndex}
+      />
+    </Suspense>
   );
 
-  // El grafo 3D muestra SOLO conocimiento (documentos): los issues/procesos viven en su
-  // módulo y se fundamentan contra el grafo, no dentro de él. graphData completo sigue
-  // yendo a IssuePanel y demás paneles.
-  const graphView = useMemo(() => {
-    const issueIds = new Set(graphData.nodes.filter(n => n.is_issue).map(n => n.id));
-    if (!issueIds.size) return graphData;
-    const endId = e => (typeof e === 'object' && e !== null) ? e.id : e;
-    return {
-      nodes: graphData.nodes.filter(n => !n.is_issue),
-      links: graphData.links.filter(l => !issueIds.has(endId(l.source)) && !issueIds.has(endId(l.target))),
-    };
-  }, [graphData]);
-
   return (
-    <div className="app">
-      <VaultBadge onGraphChanged={loadGraph} />
-      <header className="header">
-        <div className="header-brand">
-          <span className="header-brand-icon">◈</span>
-          <span>ALGEDI</span>
-        </div>
-
-        {/* Selector de SECCIÓN (grafo de conocimiento activo) */}
-        <div className="hdr-menu-wrap">
-          <button className="seccion-btn"
-            onClick={() => { setSeccionOpen(o => !o); loadSections(); }}
-            title="Sección activa — cada sección es un grafo de conocimiento aparte">
-            <span className="seccion-dot" /> {seccion} <span className="seccion-caret">▾</span>
-          </button>
-          {seccionOpen && (<>
-            <div className="hdr-menu-backdrop" onClick={() => setSeccionOpen(false)} />
-            <div className="hdr-menu" style={{ left: 0, right: 'auto', minWidth: 290 }}>
-              <div className="hdr-menu-label">Secciones (grafos aparte)</div>
-              {sections.map(s => (
-                <div key={s.nombre} className={`seccion-row${s.nombre === seccion ? ' active' : ''}`}>
-                  <button className="seccion-row-main" onClick={() => cambiarSeccion(s.nombre)} title="Cambiar a esta sección">
-                    <span className="hdr-menu-ico">{s.nombre === seccion ? '●' : '○'}</span>
-                    <span className="seccion-row-name">{s.nombre}</span>
-                    <span className="seccion-row-count">{s.count}</span>
-                  </button>
-                  <button className="seccion-row-act" title={`Renombrar «${s.nombre}»`}
-                    onClick={() => renombrarSeccion(s.nombre)}>✎</button>
-                  <button className="seccion-row-act seccion-row-act--danger" title={`Eliminar «${s.nombre}»`}
-                    onClick={() => eliminarSeccion(s.nombre)}>🗑</button>
-                </div>
-              ))}
-              <div className="hdr-menu-sep" />
-              <button className="hdr-menu-item" onClick={nuevaSeccion}>
-                <span className="hdr-menu-ico">＋</span> Nueva sección…
-              </button>
-            </div>
-          </>)}
-        </div>
-
-        <input
-          className="search-input"
-          placeholder={semanticIds ? `⬡ ${semanticIds.size} resultados` : 'Buscar con IA…'}
-          value={searchQ}
-          onChange={handleSearchChange}
+    <TooltipProvider delayDuration={350}>
+      <div className="grid h-screen grid-rows-[44px_minmax(0,1fr)] bg-canvas">
+        <Topbar
+          seccion={seccion}
+          total={graph.nodes.length}
+          vista={vista}
+          onVista={setVista}
+          onOpenPalette={() => setPaletteOpen(true)}
+          onReload={recargar}
+          loading={status === 'loading'}
         />
-        <div className="header-actions">
-          {/* ── Inicio: volver al grafo limpio ── */}
-          <button
-            className={`btn-synth btn-inicio${!libraryOpen && !issueOpen && !processOpen && !architectOpen ? ' active' : ''}`}
-            onClick={() => {
-              setLibraryOpen(false);
-              setIssueOpen(false); setProcessOpen(false); setArchitectOpen(false);
-              setFixedNode(null); setHoverNode(null);
-            }}
-            title="Inicio — ver el grafo de conocimiento"
-          >
-            ◉ Inicio
-          </button>
 
-          <span className="hdr-sep" />
-
-          {/* ── Biblioteca: gestión de documentos ── */}
-          <button
-            className={`btn-synth${libraryOpen ? ' active' : ''}`}
-            onClick={() => setLibraryOpen(o => !o)}
-            title="Biblioteca — cargá y gestioná tus documentos"
-          >
-            ⊞ Biblioteca
-          </button>
-
-          {/* ── Scripts: automatización con nodos script ── */}
-          <button
-            className={`btn-synth${scriptsOpen ? ' active' : ''}`}
-            onClick={() => setScriptsOpen(o => !o)}
-            title="Scripts — automatiza con scripts tipados vinculables al grafo"
-          >
-            ⚙ Scripts
-          </button>
-
-          <span className="hdr-sep" />
-
-          {/* ── Secundario: herramientas avanzadas ── */}
-          <span className="hdr-stage hdr-stage--secondary">Avanzado</span>
-          <button
-            className={`btn-synth btn-secondary${issueOpen || processOpen ? ' active' : ''}`}
-            onClick={() => { setArchitectOpen(false); setIssueOpen(o => !o); }}
-            title="Issue — diagnosticá un problema o diseñá un proceso"
-          >
-            ⚑ Issue
-          </button>
-
-          <span className="hdr-sep" />
-
-          {/* ── Herramientas del grafo (fuera de la navegación, para no hacer ruido) ── */}
-          <div className="hdr-menu-wrap">
-            <button className={`btn-reload${toolsOpen ? ' active' : ''}`}
-              onClick={() => setToolsOpen(o => !o)} title="Herramientas del grafo">⋯</button>
-            {toolsOpen && (<>
-              <div className="hdr-menu-backdrop" onClick={() => setToolsOpen(false)} />
-              <div className="hdr-menu">
-                <div className="hdr-menu-label">Vista</div>
-                <button className="hdr-menu-item" onClick={() => { setFitTrigger(t => t + 1); setToolsOpen(false); }}>
-                  <span className="hdr-menu-ico">⊡</span> Ver todo (encuadrar)
-                </button>
-                <button className="hdr-menu-item" onClick={() => { loadGraph(); setToolsOpen(false); }}>
-                  <span className="hdr-menu-ico">↺</span> Recargar grafo
-                </button>
-                <div className="hdr-menu-sep" />
-                <div className="hdr-menu-label">Recalcular</div>
-                <button className="hdr-menu-item"
-                  onClick={async () => { setToolsOpen(false); await fetch('/api/recompute-relations', { method: 'POST' }); loadGraph(); }}>
-                  <span className="hdr-menu-ico">⟳</span> Recalcular relaciones
-                </button>
-                <button className="hdr-menu-item" disabled={relayouting}
-                  onClick={async () => {
-                    // Reagrupar reescribe el tema de TODOS los documentos.
-                    const clave = await pedirClave('reagrupar el grafo con IA');
-                    if (!clave) { setToolsOpen(false); return; }
-                    setRelayouting(true);
-                    try {
-                      const r = await fetch('/api/taxonomy?apply=true', {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(clave),
-                      });
-                      if (r.status === 403) { avisarClaveIncorrecta(); return; }
-                      await loadGraph();
-                    }
-                    finally { setRelayouting(false); setToolsOpen(false); }
-                  }}>
-                  <span className="hdr-menu-ico">✦</span> {relayouting ? 'Reagrupando con IA…' : 'Reagrupar con IA (temas)'}
-                </button>
-                <div className="hdr-menu-sep" />
-                <div className="hdr-menu-label">Fuentes</div>
-                <button className="hdr-menu-item" disabled={verificando}
-                  title="Compara cada archivo local contra la huella que se guardó al incorporarlo. Offline, sin IA. No usa la fecha de carga."
-                  onClick={async () => {
-                    setVerificando(true);
-                    try {
-                      const r = await fetch('/api/vigencia/verificar', { method: 'POST' });
-                      const data = await r.json();
-                      setVigenciaResumen(data);
-                      await loadGraph();
-                    } catch { setVigenciaResumen({ error: true }); }
-                    finally { setVerificando(false); setToolsOpen(false); }
-                  }}>
-                  <span className="hdr-menu-ico">⎔</span> {verificando ? 'Verificando fuentes…' : 'Verificar vigencia de fuentes'}
-                </button>
-              </div>
-            </>)}
-          </div>
-
-          {fetchError
-            ? <span className="header-stat header-stat--error">Backend no conectado</span>
-            : <span className="header-stat">{graphView.nodes.length} nodos · {graphView.links.length} relaciones</span>
-          }
-        </div>
-      </header>
-
-      {vigenciaResumen && (
-        <div className="vigencia-toast">
-          <button className="panel-close" onClick={() => setVigenciaResumen(null)}>✕</button>
-          {vigenciaResumen.error ? (
-            <div className="vigencia-toast__title">No se pudo verificar</div>
-          ) : (<>
-            <div className="vigencia-toast__title">
-              Vigencia · {vigenciaResumen.revisadas} fuentes revisadas
-            </div>
-            <ul className="vigencia-toast__list">
-              {Object.entries(vigenciaResumen.por_motivo || {}).map(([motivo, n]) => (
-                <li key={motivo}>
-                  <b>{n}</b> {(vigenciaResumen.lectura || {})[motivo] || motivo.replace(/_/g, ' ')}
-                </li>
-              ))}
-              {vigenciaResumen.grupos_duplicados > 0 && (
-                <li><b>{vigenciaResumen.grupos_duplicados}</b> grupos de fuentes con contenido idéntico</li>
-              )}
-            </ul>
-            <p className="vigencia-toast__note">{vigenciaResumen.advertencia}</p>
-          </>)}
-        </div>
-      )}
-
-      {loading && (
-        <div className="loading-overlay">
-          <div className="loading-text">Cargando grafo...</div>
-        </div>
-      )}
-
-      {synthMode && (
-        <div className="synth-banner">
-          ◈ Modo síntesis activo — clickeá nodos para seleccionarlos
-        </div>
-      )}
-
-      <Graph3D
-        graphData={graphView}
-        selectedNode={highlightNode}
-        highlighted={highlighted}
-        filteredIds={filteredIds}
-        onNodeClick={handleNodeClick}
-        onNodeHover={handleNodeHover}
-        onLinkClick={handleLinkClick}
-        synthMode={synthMode}
-        layoutMode={layoutMode}
-        projectRef={projectRef}
-        focusTrigger={focusTrigger}
-        fitTrigger={fitTrigger}
-      />
-
-      {/* Layout Mode Selector */}
-      <div className="layout-controls">
-        {[
-          { id: 'density',    icon: '⊞', label: 'Densidad',   tip: 'Dónde se concentra tu atención: agrupa los documentos por tema, revelando los focos del corpus (los atractores del espacio latente).' },
-          { id: 'components', icon: '⬡', label: 'UMAP',       tip: 'La forma real del conocimiento: proyecta los embeddings preservando la vecindad semántica. La distancia entre nodos refleja qué tan relacionados están.' },
-          { id: 'force',      icon: '⧉', label: 'Relacional', tip: 'La estructura de vínculos: las relaciones tiran de los nodos. Lo conectado se junta, lo suelto se aleja — quedan a la vista los hubs, los puentes y los aislados.' },
-        ].map(({ id, icon, label, tip }) => (
-          <div key={id} className="layout-btn-wrap">
-            <button
-              className={`layout-btn${layoutMode === id ? ' active' : ''}`}
-              /* Encuadrar en cada cambio de modo: cada layout deja el grafo con otra
-               forma y extension, asi que la camara anterior casi nunca sirve. */
-            onClick={() => { setLayoutMode(id); setFitTrigger(f => f + 1); }}
-            >
-              <span className="layout-btn-icon">{icon}</span>
-              <span className="layout-btn-label">{label}</span>
-            </button>
-            <div className="layout-btn-tooltip">{tip}</div>
-          </div>
-        ))}
-        {/* La vista de Fragmentos se retira del selector: mostraba densidad pero no
-            respondia ninguna pregunta. El endpoint /api/graph/chunks queda vivo para
-            cuando se conecte con las citas del agente, que es lo que la haria util. */}
-      </div>
-
-      {/* Botón flotante del Agente (estilo chatbot Intercom/ChatGPT).
-          Siempre visible excepto cuando el chat del agente ya está abierto. */}
-      {!globalAgent && (
-        <button className="agent-fab" onClick={toggleGlobalAgent}
-          aria-label="Abrir el Agente IA"
-          title="Preguntá sobre tu conocimiento — fundado en el grafo, con citas">
-          <span className="agent-fab-icon">⬡</span>
-        </button>
-      )}
-
-      {activeNode && !agentOpen && !reportOpen && !synthMode && !globalAgent && (
-        <>
-          <NodePanel
-            key={activeNode.id}
-            node={activeNode}
-            allNodes={graphData.nodes}
-            allLinks={graphData.links}
-            onClose={handleClosePanel}
-            onOpenAgent={handleOpenAgent}
-            onOpenReport={handleOpenReport}
-            onNavigate={node => { setFixedNode(node); setHoverNode(null); setReportOpen(false); }}
-            onDelete={handleDeleteNode}
-            onFocus={() => setFocusTrigger(t => t + 1)}
-            initialPos={tooltipPos}
-            containerRef={panelElRef}
-            fixed={isFixed}
+        <div className="flex min-h-0">
+          <Rail
+            sections={sections}
+            seccion={seccion}
+            onSeccion={cambiarSeccion}
+            facetas={facetas}
+            tipos={tipos}
+            onToggleTipo={toggleIn(setTipos)}
+            fuentes={fuentes}
+            onToggleFuente={toggleIn(setFuentes)}
+            topConceptos={topConceptos}
+            conceptos={conceptos}
+            onToggleConcepto={toggleIn(setConceptos)}
+            onIngest={() => setIngestOpen(true)}
+            onScripts={() => setScriptsOpen(true)}
           />
-        </>
-      )}
 
-      {fixedNode && agentOpen && !synthMode && (
-        <AgentPanel
-          node={fixedNode}
-          allNodes={graphData.nodes}
-          onClose={() => { setAgentOpen(false); setHighlighted(new Set()); }}
-          onHighlight={handleHighlight}
-          onNavigate={node => { setFixedNode(node); setHoverNode(null); }}
-        />
-      )}
+          <main className="flex min-w-0 flex-1">
+            {vista !== 'grafo' && (
+              <section className={vista === 'split' ? 'flex w-[46%] min-w-[380px] flex-col hairline-r' : 'flex min-w-0 flex-1 flex-col'}>
+                <Library
+                  status={status}
+                  seccion={seccion}
+                  seccionCount={seccionInfo?.count ?? null}
+                  totalNodes={graph.nodes.length}
+                  grupos={grupos}
+                  visibleCount={visibles.length}
+                  query={query}
+                  onQuery={setQuery}
+                  searchRef={searchRef}
+                  groupBy={groupBy}
+                  onGroupBy={setGroupBy}
+                  sortBy={sortBy}
+                  onSortBy={setSortBy}
+                  selectedId={selectedId}
+                  onSelect={seleccionar}
+                  highlightIds={highlightIds}
+                  onClearHighlight={() => setHighlightIds(new Set())}
+                  relIndex={relIndex}
+                  filtros={{ tipos, fuentes, conceptos, topConceptos }}
+                  onToggleTipo={toggleIn(setTipos)}
+                  onToggleFuente={toggleIn(setFuentes)}
+                  onToggleConcepto={toggleIn(setConceptos)}
+                  onLimpiar={limpiarFiltros}
+                  onRetry={recargar}
+                  onIngest={() => setIngestOpen(true)}
+                  compact={vista === 'split'}
+                />
+              </section>
+            )}
+            {vista !== 'lista' && <section className="relative min-w-0 flex-1">{grafo}</section>}
+          </main>
 
-      {fixedNode && reportOpen && !synthMode && (
-        <ReportPanel
-          node={fixedNode}
-          onClose={() => setReportOpen(false)}
-        />
-      )}
+          <Inspector
+            node={selected}
+            nodesById={nodesById}
+            relIndex={relIndex}
+            seccion={seccion}
+            seccionCount={graph.nodes.length}
+            edgesCount={graph.edges.length}
+            topConceptos={topConceptos}
+            onSelect={seleccionar}
+            onClose={() => setSelectedId(null)}
+            onAsk={preguntarSobre}
+            onConcepto={(k) => toggleIn(setConceptos)(k)}
+            onVerEnGrafo={() => setVista((v) => (v === 'lista' ? 'split' : v))}
+            vista={vista}
+          />
+        </div>
 
-      {globalAgent && (
-        <AgentPanel
-          node={null}
-          allNodes={graphData.nodes}
-          onClose={() => setGlobalAgent(false)}
-          onHighlight={handleHighlight}
-          onNavigate={node => { setFixedNode(node); setHoverNode(null); }}
-        />
-      )}
-
-      {discoveriesOpen && (
-        <DiscoveriesPanel
-          discoveries={discoveries}
-          onHighlight={handleHighlight}
-          onClose={() => setDiscoveriesOpen(false)}
-        />
-      )}
-
-      {processOpen && (
-        <ProcessPanel
-          allNodes={graphData.nodes}
-          onHighlight={handleHighlight}
-          onClose={() => { setProcessOpen(false); setIssueOpen(true); }}
-        />
-      )}
-
-      {architectOpen && (
-        <ArchitectPanel
+        <AgentFab
+          open={agentOpen}
+          onOpenChange={setAgentOpen}
           seccion={seccion}
-          /* Entrega del caso a Issue: Architect decidió la clase de intervención,
-             Issue la desarrolla. Es el paso 2 del mismo recorrido. */
-          onDesarrollar={() => { setArchitectOpen(false); setIssueOpen(true); }}
-          /* Los expedientes se siguen trabajando en el módulo Issue. Architect es
-             la puerta única; Issue sigue existiendo detrás, no desapareció. */
-          onAbrirExpediente={() => { setArchitectOpen(false); setIssueOpen(true); }}
-          onClose={() => setArchitectOpen(false)}
-          onNavigate={nodeId => {
-            const n = graphData.nodes.find(x => x.id === nodeId);
-            if (!n) return;
-            setArchitectOpen(false);
-            setFixedNode(n);
-            setHoverNode(null);
-          }}
+          context={agentContext}
+          onClearContext={() => setAgentContext(null)}
+          nodesById={nodesById}
+          onSelect={seleccionar}
+          onHighlight={(ids) => setHighlightIds(new Set(ids))}
         />
-      )}
 
-      {selectedLink && !synthMode && (
-        <RelationPanel
-          nodeA={selectedLink.nodeA}
-          nodeB={selectedLink.nodeB}
-          linkMeta={selectedLink.linkMeta}
-          onReviewed={handleRelationReviewed}
-          onClose={() => { setSelectedLink(null); setHighlighted(new Set()); }}
-          onOpenSynthesis={handleOpenSynthesisFromRelation}
-          onOpenNode={node => {
-            setSelectedLink(null);
-            setFixedNode(node);
-            setHoverNode(null);
-          }}
-          onFocusNode={node => {
-            setSelectedLink(null);
-            setFixedNode(node);
-            setHoverNode(null);
-            setFocusTrigger(t => t + 1);
-          }}
-        />
-      )}
-
-      {synthOpen && (
-        <SynthesisPanel
-          allNodes={graphData.nodes}
-          selectedIds={synthSelected}
-          onClose={() => { setSynthOpen(false); setSynthMode(false); setSynthSelected(new Set()); }}
-          onClearSelection={() => setSynthSelected(new Set())}
-        />
-      )}
-
-      {issueOpen && (
-        <IssuePanel
-          allNodes={graphData.nodes}
-          onClose={() => setIssueOpen(false)}
-          onRefresh={loadGraph}
-          onNavigate={node => { setFixedNode(node); setHoverNode(null); }}
-          onOpenProcess={() => { setIssueOpen(false); setProcessOpen(true); }}
-        />
-      )}
-
-      {/* Siempre montada (oculta con display:none): así una carga por lotes sigue
-          viva en segundo plano aunque cierres la Biblioteca. El progreso se ve en
-          un toast flotante que no bloquea la app. */}
-      <div style={{ display: libraryOpen ? 'contents' : 'none' }}>
-        <LibraryPanel
-          allNodes={graphData.nodes}
-          allLinks={graphData.links}
-          onClose={() => setLibraryOpen(false)}
-          onNavigate={node => { setFixedNode(node); setHoverNode(null); }}
-          onDelete={handleDeleteNode}
-          onRename={loadGraph}
-          onRefresh={() => { loadGraph(); loadSections(); }}
-          onReset={handleReset}
-          onExport={descargarBackup}
+        <IngestDialog open={ingestOpen} onOpenChange={setIngestOpen} seccion={seccion} onDone={recargar} />
+        <ScriptsSheet
+          open={scriptsOpen}
+          onOpenChange={setScriptsOpen}
           seccion={seccion}
+          selected={selected}
+          nodesById={nodesById}
+          onSelect={seleccionar}
+          onChanged={recargar}
+        />
+        <CommandPalette
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          nodes={graph.nodes}
+          haystack={haystack}
+          sections={sections}
+          seccion={seccion}
+          onSelect={(id) => { seleccionar(id); setPaletteOpen(false); }}
+          onSeccion={(s) => { cambiarSeccion(s); setPaletteOpen(false); }}
+          onAction={(a) => {
+            setPaletteOpen(false);
+            if (a === 'ingest') setIngestOpen(true);
+            if (a === 'scripts') setScriptsOpen(true);
+            if (a === 'agent') preguntarSobre(null);
+            if (VISTAS.includes(a)) setVista(a);
+          }}
         />
       </div>
-
-      {scriptsOpen && (
-        <ScriptsPanel
-          seccion={seccion}
-          allNodes={graphData.nodes}
-          selectedNodeIds={synthMode ? [...synthSelected] : (fixedNode ? [fixedNode.id] : [])}
-          onClose={() => setScriptsOpen(false)}
-          onRefresh={() => { loadGraph(); loadSections(); }}
-          onNavigate={node => { setFixedNode(node); setHoverNode(null); setScriptsOpen(false); }}
-        />
-      )}
-
-      <Footer />
-    </div>
+    </TooltipProvider>
   );
 }
