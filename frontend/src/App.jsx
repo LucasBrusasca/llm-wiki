@@ -1,5 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import Graph3D from './components/Graph3D.jsx';
+import Graph2D from './components/Graph2D.jsx';
+import DocumentList from './components/DocumentList.jsx';
 import NodePanel from './components/NodePanel.jsx';
 import AgentPanel from './components/AgentPanel.jsx';
 import ReportPanel from './components/ReportPanel.jsx';
@@ -155,6 +157,12 @@ export default function App() {
   const [verFragmentos, setVerFragmentos] = useState(false);
   const [focusTrigger, setFocusTrigger] = useState(0);  // botón "enfocar" del panel
   const [fitTrigger, setFitTrigger]     = useState(0);  // botón "ver todo" (desenfocar)
+  // Modo de grafo: 2D (ReactFlow, limpio) o 3D (force-graph-3d)
+  const [graphMode, setGraphMode]       = useState('2d');
+  // Vista principal: 'split' (docs + grafo), 'graph' (solo grafo), 'docs' (solo lista)
+  const [viewMode, setViewMode]         = useState('split');
+  // Búsqueda en DocumentList
+  const [docSearchQuery, setDocSearchQuery] = useState('');
 
   const hoverTimer = useRef(null);
   const searchTimer = useRef(null);
@@ -519,182 +527,253 @@ export default function App() {
   }, [graphData]);
 
   return (
-    <div className="app">
+    <div className={`app app--${viewMode}`}>
       <VaultBadge onGraphChanged={loadGraph} />
-      
-      {/* ── Context Bar: info contextual sobre el grafo ── */}
-      <div className="context-bar">
-        <span className="context-bar-section">{seccion}</span>
-        <span className="context-bar-sep" />
-        <span className="context-bar-stats">
-          {graphView.nodes.length} nodos · {graphView.links.length} relaciones
-        </span>
-        <div className="context-bar-filters">
-          {/* Placeholder para filtros futuros */}
-        </div>
-      </div>
 
-      <header className="header">
-        <div className="header-brand">
-          <span className="header-brand-icon">◈</span>
-          <span>ALGEDI</span>
-        </div>
+      {/* ══════════════════════════════════════════════════════════════════════
+          BARRA SUPERIOR — Compacta, estilo Linear/Notion
+          ══════════════════════════════════════════════════════════════════════ */}
+      <header className="topbar">
+        <div className="topbar-left">
+          <div className="topbar-brand">
+            <span className="topbar-brand-icon">◈</span>
+            <span className="topbar-brand-name">ALGEDI</span>
+          </div>
 
-        {/* Selector de SECCIÓN (grafo de conocimiento activo) */}
-        <div className="hdr-menu-wrap">
-          <button className="seccion-btn"
-            onClick={() => { setSeccionOpen(o => !o); loadSections(); }}
-            title="Sección activa — cada sección es un grafo de conocimiento aparte">
-            <span className="seccion-dot" /> {seccion} <span className="seccion-caret">▾</span>
-          </button>
-          {seccionOpen && (<>
-            <div className="hdr-menu-backdrop" onClick={() => setSeccionOpen(false)} />
-            <div className="hdr-menu" style={{ left: 0, right: 'auto', minWidth: 290 }}>
-              <div className="hdr-menu-label">Secciones (grafos aparte)</div>
-              {sections.map(s => (
-                <div key={s.nombre} className={`seccion-row${s.nombre === seccion ? ' active' : ''}`}>
-                  <button className="seccion-row-main" onClick={() => cambiarSeccion(s.nombre)} title="Cambiar a esta sección">
-                    <span className="hdr-menu-ico">{s.nombre === seccion ? '●' : '○'}</span>
-                    <span className="seccion-row-name">{s.nombre}</span>
-                    <span className="seccion-row-count">{s.count}</span>
-                  </button>
-                  <button className="seccion-row-act" title={`Renombrar «${s.nombre}»`}
-                    onClick={() => renombrarSeccion(s.nombre)}>✎</button>
-                  <button className="seccion-row-act seccion-row-act--danger" title={`Eliminar «${s.nombre}»`}
-                    onClick={() => eliminarSeccion(s.nombre)}>🗑</button>
-                </div>
-              ))}
-              <div className="hdr-menu-sep" />
-              <button className="hdr-menu-item" onClick={nuevaSeccion}>
-                <span className="hdr-menu-ico">＋</span> Nueva sección…
-              </button>
-            </div>
-          </>)}
-        </div>
-
-        <input
-          className="search-input"
-          placeholder={semanticIds ? `⬡ ${semanticIds.size} resultados` : 'Buscar con IA…'}
-          value={searchQ}
-          onChange={handleSearchChange}
-        />
-        <div className="header-actions">
-          {/* ── Inicio: volver al grafo limpio ── */}
-          <button
-            className={`btn-synth btn-inicio${!libraryOpen && !issueOpen && !processOpen && !architectOpen ? ' active' : ''}`}
-            onClick={() => {
-              setLibraryOpen(false);
-              setIssueOpen(false); setProcessOpen(false); setArchitectOpen(false);
-              setFixedNode(null); setHoverNode(null);
-            }}
-            title="Inicio — ver el grafo de conocimiento"
-          >
-            ◉ Inicio
-          </button>
-
-          <span className="hdr-sep" />
-
-          {/* ── Biblioteca: gestión de documentos ── */}
-          <button
-            className={`btn-synth${libraryOpen ? ' active' : ''}`}
-            onClick={() => setLibraryOpen(o => !o)}
-            title="Biblioteca — cargá y gestioná tus documentos"
-          >
-            ⊞ Biblioteca
-          </button>
-
-          {/* ── Scripts: automatización con nodos script ── */}
-          <button
-            className={`btn-synth${scriptsOpen ? ' active' : ''}`}
-            onClick={() => setScriptsOpen(o => !o)}
-            title="Scripts — automatiza con scripts tipados vinculables al grafo"
-          >
-            ⚙ Scripts
-          </button>
-
-          <span className="hdr-sep" />
-
-          {/* ── Secundario: herramientas avanzadas ── */}
-          <span className="hdr-stage hdr-stage--secondary">Avanzado</span>
-          <button
-            className={`btn-synth btn-secondary${issueOpen || processOpen ? ' active' : ''}`}
-            onClick={() => { setArchitectOpen(false); setIssueOpen(o => !o); }}
-            title="Issue — diagnosticá un problema o diseñá un proceso"
-          >
-            ⚑ Issue
-          </button>
-
-          <span className="hdr-sep" />
-
-          {/* ── Herramientas del grafo (fuera de la navegación, para no hacer ruido) ── */}
-          <div className="hdr-menu-wrap">
-            <button className={`btn-reload${toolsOpen ? ' active' : ''}`}
-              onClick={() => setToolsOpen(o => !o)} title="Herramientas del grafo">⋯</button>
-            {toolsOpen && (<>
-              <div className="hdr-menu-backdrop" onClick={() => setToolsOpen(false)} />
-              <div className="hdr-menu">
-                <div className="hdr-menu-label">Vista</div>
-                <button className="hdr-menu-item" onClick={() => { setFitTrigger(t => t + 1); setToolsOpen(false); }}>
-                  <span className="hdr-menu-ico">⊡</span> Ver todo (encuadrar)
-                </button>
-                <button className="hdr-menu-item" onClick={() => { loadGraph(); setToolsOpen(false); }}>
-                  <span className="hdr-menu-ico">↺</span> Recargar grafo
-                </button>
-                <div className="hdr-menu-sep" />
-                <div className="hdr-menu-label">Recalcular</div>
-                <button className="hdr-menu-item"
-                  onClick={async () => { setToolsOpen(false); await fetch('/api/recompute-relations', { method: 'POST' }); loadGraph(); }}>
-                  <span className="hdr-menu-ico">⟳</span> Recalcular relaciones
-                </button>
-                <button className="hdr-menu-item" disabled={relayouting}
-                  onClick={async () => {
-                    // Reagrupar reescribe el tema de TODOS los documentos.
-                    const clave = await pedirClave('reagrupar el grafo con IA');
-                    if (!clave) { setToolsOpen(false); return; }
-                    setRelayouting(true);
-                    try {
-                      const r = await fetch('/api/taxonomy?apply=true', {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(clave),
-                      });
-                      if (r.status === 403) { avisarClaveIncorrecta(); return; }
-                      await loadGraph();
-                    }
-                    finally { setRelayouting(false); setToolsOpen(false); }
-                  }}>
-                  <span className="hdr-menu-ico">✦</span> {relayouting ? 'Reagrupando con IA…' : 'Reagrupar con IA (temas)'}
-                </button>
-                <div className="hdr-menu-sep" />
-                <div className="hdr-menu-label">Fuentes</div>
-                <button className="hdr-menu-item" disabled={verificando}
-                  title="Compara cada archivo local contra la huella que se guardó al incorporarlo. Offline, sin IA. No usa la fecha de carga."
-                  onClick={async () => {
-                    setVerificando(true);
-                    try {
-                      const r = await fetch('/api/vigencia/verificar', { method: 'POST' });
-                      const data = await r.json();
-                      setVigenciaResumen(data);
-                      await loadGraph();
-                    } catch { setVigenciaResumen({ error: true }); }
-                    finally { setVerificando(false); setToolsOpen(false); }
-                  }}>
-                  <span className="hdr-menu-ico">⎔</span> {verificando ? 'Verificando fuentes…' : 'Verificar vigencia de fuentes'}
+          {/* Selector de sección */}
+          <div className="topbar-section">
+            <button className="topbar-section-btn" onClick={() => { setSeccionOpen(o => !o); loadSections(); }}>
+              <span className="topbar-section-dot" />
+              <span className="topbar-section-name">{seccion}</span>
+              <span className="topbar-section-caret">▾</span>
+            </button>
+            {seccionOpen && (<>
+              <div className="topbar-dropdown-backdrop" onClick={() => setSeccionOpen(false)} />
+              <div className="topbar-dropdown">
+                <div className="topbar-dropdown-label">Secciones</div>
+                {sections.map(s => (
+                  <div key={s.nombre} className={`topbar-dropdown-row ${s.nombre === seccion ? 'active' : ''}`}>
+                    <button className="topbar-dropdown-main" onClick={() => cambiarSeccion(s.nombre)}>
+                      <span className="topbar-dropdown-ico">{s.nombre === seccion ? '●' : '○'}</span>
+                      <span className="topbar-dropdown-name">{s.nombre}</span>
+                      <span className="topbar-dropdown-count">{s.count}</span>
+                    </button>
+                    <button className="topbar-dropdown-act" title="Renombrar" onClick={() => renombrarSeccion(s.nombre)}>✎</button>
+                    <button className="topbar-dropdown-act topbar-dropdown-act--danger" title="Eliminar" onClick={() => eliminarSeccion(s.nombre)}>🗑</button>
+                  </div>
+                ))}
+                <div className="topbar-dropdown-sep" />
+                <button className="topbar-dropdown-item" onClick={nuevaSeccion}>
+                  <span className="topbar-dropdown-ico">＋</span> Nueva sección…
                 </button>
               </div>
             </>)}
           </div>
-
         </div>
 
-        {/* ── Footer del rail: stats ── */}
-        <div className="rail-footer">
-          {fetchError
-            ? <span className="header-stat header-stat--error">Sin conexión</span>
-            : <span className="header-stat">{graphView.nodes.length} nodos · {graphView.links.length} relaciones</span>
-          }
+        <div className="topbar-center">
+          <input
+            className="topbar-search"
+            placeholder={semanticIds ? `⬡ ${semanticIds.size} resultados` : 'Buscar con IA…'}
+            value={searchQ}
+            onChange={handleSearchChange}
+          />
+        </div>
+
+        <div className="topbar-right">
+          {/* View mode toggle */}
+          <div className="topbar-view-toggle">
+            <button
+              className={`topbar-view-btn ${viewMode === 'split' ? 'active' : ''}`}
+              onClick={() => setViewMode('split')}
+              title="Vista dividida: documentos + grafo"
+            >⊟</button>
+            <button
+              className={`topbar-view-btn ${viewMode === 'docs' ? 'active' : ''}`}
+              onClick={() => setViewMode('docs')}
+              title="Solo documentos"
+            >☰</button>
+            <button
+              className={`topbar-view-btn ${viewMode === 'graph' ? 'active' : ''}`}
+              onClick={() => setViewMode('graph')}
+              title="Solo grafo"
+            >◈</button>
+          </div>
+
+          {/* Graph mode toggle */}
+          <div className="topbar-graph-toggle">
+            <button
+              className={`topbar-graph-btn ${graphMode === '2d' ? 'active' : ''}`}
+              onClick={() => setGraphMode('2d')}
+              title="Grafo 2D (limpio)"
+            >2D</button>
+            <button
+              className={`topbar-graph-btn ${graphMode === '3d' ? 'active' : ''}`}
+              onClick={() => setGraphMode('3d')}
+              title="Grafo 3D (inmersivo)"
+            >3D</button>
+          </div>
+
+          {/* Actions */}
+          <button
+            className={`topbar-btn ${scriptsOpen ? 'active' : ''}`}
+            onClick={() => setScriptsOpen(o => !o)}
+            title="Scripts"
+          >⚙</button>
+          <button
+            className={`topbar-btn ${libraryOpen ? 'active' : ''}`}
+            onClick={() => setLibraryOpen(o => !o)}
+            title="Gestión avanzada"
+          >⊕</button>
+          <button
+            className={`topbar-btn ${issueOpen ? 'active' : ''}`}
+            onClick={() => setIssueOpen(o => !o)}
+            title="Issues"
+          >⚑</button>
+
+          {/* Tools menu */}
+          <div className="topbar-menu-wrap">
+            <button className={`topbar-btn ${toolsOpen ? 'active' : ''}`} onClick={() => setToolsOpen(o => !o)}>⋯</button>
+            {toolsOpen && (<>
+              <div className="topbar-dropdown-backdrop" onClick={() => setToolsOpen(false)} />
+              <div className="topbar-dropdown topbar-dropdown--right">
+                <div className="topbar-dropdown-label">Vista</div>
+                <button className="topbar-dropdown-item" onClick={() => { setFitTrigger(t => t + 1); setToolsOpen(false); }}>
+                  <span className="topbar-dropdown-ico">⊡</span> Ver todo
+                </button>
+                <button className="topbar-dropdown-item" onClick={() => { loadGraph(); setToolsOpen(false); }}>
+                  <span className="topbar-dropdown-ico">↺</span> Recargar grafo
+                </button>
+                <div className="topbar-dropdown-sep" />
+                <div className="topbar-dropdown-label">IA</div>
+                <button className="topbar-dropdown-item" onClick={async () => { setToolsOpen(false); await fetch('/api/recompute-relations', { method: 'POST' }); loadGraph(); }}>
+                  <span className="topbar-dropdown-ico">⟳</span> Recalcular relaciones
+                </button>
+                <button className="topbar-dropdown-item" disabled={relayouting} onClick={async () => {
+                  const clave = await pedirClave('reagrupar el grafo con IA');
+                  if (!clave) { setToolsOpen(false); return; }
+                  setRelayouting(true);
+                  try {
+                    const r = await fetch('/api/taxonomy?apply=true', {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(clave),
+                    });
+                    if (r.status === 403) { avisarClaveIncorrecta(); return; }
+                    await loadGraph();
+                  } finally { setRelayouting(false); setToolsOpen(false); }
+                }}>
+                  <span className="topbar-dropdown-ico">✦</span> {relayouting ? 'Reagrupando…' : 'Reagrupar con IA'}
+                </button>
+                <div className="topbar-dropdown-sep" />
+                <button className="topbar-dropdown-item" disabled={verificando} onClick={async () => {
+                  setVerificando(true);
+                  try {
+                    const r = await fetch('/api/vigencia/verificar', { method: 'POST' });
+                    setVigenciaResumen(await r.json());
+                    await loadGraph();
+                  } catch { setVigenciaResumen({ error: true }); }
+                  finally { setVerificando(false); setToolsOpen(false); }
+                }}>
+                  <span className="topbar-dropdown-ico">⎔</span> {verificando ? 'Verificando…' : 'Verificar fuentes'}
+                </button>
+              </div>
+            </>)}
+          </div>
         </div>
       </header>
 
+      {/* ══════════════════════════════════════════════════════════════════════
+          ÁREA PRINCIPAL — Layout split (docs | grafo)
+          ══════════════════════════════════════════════════════════════════════ */}
+      <main className="main-area">
+        {/* ── Panel izquierdo: Lista de documentos (siempre visible en split/docs) ── */}
+        {(viewMode === 'split' || viewMode === 'docs') && (
+          <aside className="sidebar-docs">
+            <DocumentList
+              allNodes={graphData.nodes}
+              allLinks={graphData.links}
+              selectedNode={fixedNode}
+              highlighted={highlighted}
+              searchQuery={docSearchQuery}
+              onSearchChange={setDocSearchQuery}
+              onSelect={(node) => {
+                setFixedNode(node);
+                setHoverNode(null);
+                setHighlighted(new Set([node.id]));
+              }}
+              onFocus={(node) => {
+                setFixedNode(node);
+                setHoverNode(null);
+                setFocusTrigger(t => t + 1);
+              }}
+            />
+          </aside>
+        )}
+
+        {/* ── Panel derecho: Grafo (visible en split/graph) ── */}
+        {(viewMode === 'split' || viewMode === 'graph') && (
+          <section className="graph-area">
+            {/* Layout controls sobre el grafo */}
+            <div className="graph-layout-controls">
+              {[
+                { id: 'components', icon: '⬡', label: 'UMAP' },
+                { id: 'density',    icon: '⊞', label: 'Densidad' },
+                { id: 'force',      icon: '⧉', label: 'Relacional' },
+              ].map(({ id, icon, label }) => (
+                <button
+                  key={id}
+                  className={`graph-layout-btn ${layoutMode === id ? 'active' : ''}`}
+                  onClick={() => { setLayoutMode(id); setFitTrigger(f => f + 1); }}
+                  title={label}
+                >
+                  <span className="graph-layout-icon">{icon}</span>
+                  <span className="graph-layout-label">{label}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Stats */}
+            <div className="graph-stats">
+              <span>{graphView.nodes.length} nodos</span>
+              <span className="graph-stats-sep">·</span>
+              <span>{graphView.links.length} relaciones</span>
+            </div>
+
+            {graphMode === '2d' ? (
+              <Graph2D
+                graphData={graphView}
+                selectedNode={highlightNode}
+                highlighted={highlighted}
+                filteredIds={filteredIds}
+                onNodeClick={handleNodeClick}
+                onLinkClick={handleLinkClick}
+                layoutMode={layoutMode}
+              />
+            ) : (
+              <Graph3D
+                graphData={graphView}
+                selectedNode={highlightNode}
+                highlighted={highlighted}
+                filteredIds={filteredIds}
+                onNodeClick={handleNodeClick}
+                onNodeHover={handleNodeHover}
+                onLinkClick={handleLinkClick}
+                synthMode={synthMode}
+                layoutMode={layoutMode}
+                projectRef={projectRef}
+                focusTrigger={focusTrigger}
+                fitTrigger={fitTrigger}
+              />
+            )}
+          </section>
+        )}
+      </main>
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          ELEMENTOS FLOTANTES
+          ══════════════════════════════════════════════════════════════════════ */}
+
+      {/* Toast de vigencia */}
       {vigenciaResumen && (
         <div className="vigencia-toast">
           <button className="panel-close" onClick={() => setVigenciaResumen(null)}>✕</button>
@@ -710,69 +789,27 @@ export default function App() {
                   <b>{n}</b> {(vigenciaResumen.lectura || {})[motivo] || motivo.replace(/_/g, ' ')}
                 </li>
               ))}
-              {vigenciaResumen.grupos_duplicados > 0 && (
-                <li><b>{vigenciaResumen.grupos_duplicados}</b> grupos de fuentes con contenido idéntico</li>
-              )}
             </ul>
             <p className="vigencia-toast__note">{vigenciaResumen.advertencia}</p>
           </>)}
         </div>
       )}
 
+      {/* Loading */}
       {loading && (
         <div className="loading-overlay">
           <div className="loading-text">Cargando grafo...</div>
         </div>
       )}
 
+      {/* Synth mode banner */}
       {synthMode && (
         <div className="synth-banner">
           ◈ Modo síntesis activo — clickeá nodos para seleccionarlos
         </div>
       )}
 
-      <Graph3D
-        graphData={graphView}
-        selectedNode={highlightNode}
-        highlighted={highlighted}
-        filteredIds={filteredIds}
-        onNodeClick={handleNodeClick}
-        onNodeHover={handleNodeHover}
-        onLinkClick={handleLinkClick}
-        synthMode={synthMode}
-        layoutMode={layoutMode}
-        projectRef={projectRef}
-        focusTrigger={focusTrigger}
-        fitTrigger={fitTrigger}
-      />
-
-      {/* Layout Mode Selector */}
-      <div className="layout-controls">
-        {[
-          { id: 'density',    icon: '⊞', label: 'Densidad',   tip: 'Dónde se concentra tu atención: agrupa los documentos por tema, revelando los focos del corpus (los atractores del espacio latente).' },
-          { id: 'components', icon: '⬡', label: 'UMAP',       tip: 'La forma real del conocimiento: proyecta los embeddings preservando la vecindad semántica. La distancia entre nodos refleja qué tan relacionados están.' },
-          { id: 'force',      icon: '⧉', label: 'Relacional', tip: 'La estructura de vínculos: las relaciones tiran de los nodos. Lo conectado se junta, lo suelto se aleja — quedan a la vista los hubs, los puentes y los aislados.' },
-        ].map(({ id, icon, label, tip }) => (
-          <div key={id} className="layout-btn-wrap">
-            <button
-              className={`layout-btn${layoutMode === id ? ' active' : ''}`}
-              /* Encuadrar en cada cambio de modo: cada layout deja el grafo con otra
-               forma y extension, asi que la camara anterior casi nunca sirve. */
-            onClick={() => { setLayoutMode(id); setFitTrigger(f => f + 1); }}
-            >
-              <span className="layout-btn-icon">{icon}</span>
-              <span className="layout-btn-label">{label}</span>
-            </button>
-            <div className="layout-btn-tooltip">{tip}</div>
-          </div>
-        ))}
-        {/* La vista de Fragmentos se retira del selector: mostraba densidad pero no
-            respondia ninguna pregunta. El endpoint /api/graph/chunks queda vivo para
-            cuando se conecte con las citas del agente, que es lo que la haria util. */}
-      </div>
-
-      {/* Botón flotante del Agente (estilo chatbot Intercom/ChatGPT).
-          Siempre visible excepto cuando el chat del agente ya está abierto. */}
+      {/* FAB del agente */}
       {!globalAgent && (
         <button className="agent-fab" onClick={toggleGlobalAgent}
           aria-label="Abrir el Agente IA"
