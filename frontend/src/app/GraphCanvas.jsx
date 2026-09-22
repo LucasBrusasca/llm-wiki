@@ -227,7 +227,7 @@ const esPin = (e, pin) => !!pin && e.source === pin.source && e.target === pin.t
 
 function Lienzo({
   nodes, edges, visibleIds, selectedId, highlightIds, onSelect, relIndex,
-  pinnedEdge, onClearPin, colorMode, onColorMode, colorDe, temas,
+  pinnedEdge, onClearPin, colorMode, onColorMode, colorDe, temas, compacto,
 }) {
   const rf = useReactFlow();
   const [todas, setTodas] = useState(false);
@@ -392,8 +392,8 @@ function Lienzo({
         <Background gap={24} size={1} color="#141a2d" />
       </ReactFlow>
 
-      <div className="pointer-events-none absolute left-3 right-3 top-3 flex items-start gap-2 text-[11px] text-ink-dim">
-        <span className="rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
+      <div className="pointer-events-none absolute left-3 right-3 top-3 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">
+        <span className="whitespace-nowrap rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
           {rfNodes.length} nodos · {rfEdges.length} aristas{todas ? '' : ' fuertes'}
         </span>
         {pin && (
@@ -403,7 +403,7 @@ function Lienzo({
             <button type="button" onClick={onClearPin} className="text-ink-dim hover:text-ink" aria-label="Quitar pin"><X className="size-3" /></button>
           </span>
         )}
-        <ColorPanel modo={colorMode} onModo={onColorMode} leyenda={leyenda} />
+        <ColorPanel modo={colorMode} onModo={onColorMode} leyenda={leyenda} compacto={compacto} />
       </div>
 
       <div className="absolute bottom-3 left-3 flex flex-col overflow-hidden rounded-sm border border-hair bg-surface">

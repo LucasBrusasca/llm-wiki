@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph3D from 'react-force-graph-3d';
 import * as THREE from 'three';
-import { Maximize, Pin, X, RotateCcw } from 'lucide-react';
+import { Maximize, Pin, X } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
 import ColorPanel, { calcularLeyenda } from '@/app/ColorPanel';
 import { resolverColor, fuenteLabel } from '@/lib/nodes';
@@ -20,7 +20,7 @@ import { truncar } from '@/lib/utils';
 
 const ESCALA = 320;
 const K_FUERTES = 2;
-const MAX_ETIQUETAS = 12;
+const MAX_ETIQUETAS = 8;
 
 function podar(edges, k) {
   const por = new Map();
@@ -91,9 +91,12 @@ function spriteEtiqueta(texto, { fuerte, acento, fondo, tinta }) {
   g.fillText(texto, pad, h / 2 + 1);
   const tex = new THREE.CanvasTexture(c);
   tex.minFilter = THREE.LinearFilter;
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
-  const k = 0.16;
-  sp.scale.set(w * k, h * k, 1);
+  // sizeAttenuation=false: la etiqueta mide lo mismo en pantalla a cualquier distancia.
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthWrite: false, depthTest: false, sizeAttenuation: false,
+  }));
+  const alto = 0.022;                      // ≈ 2% del alto del lienzo
+  sp.scale.set(alto * (w / h), alto, 1);
   sp.renderOrder = 10;
   return sp;
 }
@@ -108,8 +111,11 @@ function spriteMiniatura(id) {
     texCache.set(id, tex);
   }
   if (tex.userData?.fallo) return null;
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
-  sp.scale.set(22, 28, 1);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthWrite: false, depthTest: false, sizeAttenuation: false,
+  }));
+  sp.scale.set(0.085, 0.11, 1);
+  sp.center.set(0.5, 0);
   sp.renderOrder = 9;
   return sp;
 }
@@ -120,7 +126,7 @@ function nombreSeguro(n) {
 
 export default function Graph3DView({
   nodes, edges, visibleIds, selectedId, highlightIds, onSelect, relIndex,
-  pinnedEdge, onClearPin, colorMode, onColorMode, colorDe: colorVar, temas,
+  pinnedEdge, onClearPin, colorMode, onColorMode, colorDe: colorVar, temas, compacto,
 }) {
   const fgRef = useRef(null);
   const cajaRef = useRef(null);
@@ -195,7 +201,7 @@ export default function Graph3DView({
       [...relIndex.entries()]
         .filter(([id]) => visibleIds.has(id))
         .sort((a, b) => b[1].length - a[1].length)
-        .slice(0, 6)
+        .slice(0, 4)
         .forEach(([id]) => out.add(id));
     }
     return out;
@@ -212,7 +218,7 @@ export default function Graph3DView({
     const estado = estadoDe(d.id);
     const fuerte = estado === 'sel' || estado === 'pin';
     const color = new THREE.Color(colorDe(d.node));
-    const r = 2.2 + Math.sqrt(grado(d.id)) * 0.9 + (fuerte ? 1.5 : 0);
+    const r = 4.5 + Math.sqrt(grado(d.id)) * 1.6 + (fuerte ? 3 : 0);
     const alpha = estado === 'tenue' ? 0.18 : 1;
 
     const g = new THREE.Group();
@@ -227,18 +233,18 @@ export default function Graph3DView({
       map: texturaHalo(),
       color: fuerte ? new THREE.Color(paleta.acento) : color,
       transparent: true,
-      opacity: estado === 'tenue' ? 0.05 : fuerte ? 0.9 : 0.35,
+      opacity: estado === 'tenue' ? 0.06 : fuerte ? 0.95 : 0.5,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     }));
-    const hs = r * (fuerte ? 7 : 4.5);
+    const hs = r * (fuerte ? 8 : 5.5);
     halo.scale.set(hs, hs, 1);
     g.add(halo);
 
     if (fuerte) {
       const mini = spriteMiniatura(d.id);
       if (mini) {
-        mini.position.set(0, r + 20, 0);
+        mini.position.set(0, r * 1.4, 0);
         g.add(mini);
       }
     }
@@ -246,8 +252,8 @@ export default function Graph3DView({
       const et = spriteEtiqueta(truncar(d.node.label, 38), {
         fuerte, acento: paleta.acento, fondo: paleta.superficie, tinta: paleta.tinta,
       });
-      et.center.set(0, 0.5);
-      et.position.set(r + 3, 0, 0);
+      et.center.set(-0.06, 0.5);   // un poco a la derecha del nodo, en unidades de pantalla
+      et.position.set(r * 1.3, 0, 0);
       g.add(et);
     }
     return g;
@@ -297,39 +303,69 @@ export default function Graph3DView({
     const fg = fgRef.current;
     if (!fg) return;
     const scene = fg.scene();
-    scene.fog = new THREE.FogExp2(paleta.fondo, 0.0011);
+    scene.fog = new THREE.FogExp2(paleta.fondo, 0.00045);
   }, [paleta]);
 
-  // Encuadre inicial y cuando cambia el conjunto visible.
-  const firma = `${data.nodes.length}:${visibleIds.size}`;
-  useEffect(() => {
-    const t = setTimeout(() => fgRef.current?.zoomToFit(700, 60), 250);
-    return () => clearTimeout(t);
-  }, [firma]);
+  // Encuadre calculado a mano: las posiciones son fijas y conocidas, así que no
+  // dependemos de cuándo el motor termina de ubicar los nodos (zoomToFit corría
+  // con todo en el origen y dejaba la cámara adentro de la nube).
+  const encuadrar = useCallback((ms = 700) => {
+    const fg = fgRef.current;
+    if (!fg || !data.nodes.length) return;
+    let cx = 0; let cy = 0; let cz = 0;
+    for (const d of data.nodes) { cx += d.fx; cy += d.fy; cz += d.fz; }
+    cx /= data.nodes.length; cy /= data.nodes.length; cz /= data.nodes.length;
+    let r = 0;
+    for (const d of data.nodes) r = Math.max(r, Math.hypot(d.fx - cx, d.fy - cy, d.fz - cz));
+    const fov = (fg.camera()?.fov || 50) * (Math.PI / 180);
+    const aspecto = tam.w && tam.h ? Math.min(1, tam.w / tam.h) : 1;
+    const dist = (r / Math.sin(fov / 2)) / aspecto * 0.95 + 40;
+    fg.cameraPosition({ x: cx, y: cy, z: cz + dist }, { x: cx, y: cy, z: cz }, ms);
+  }, [data.nodes, tam.w, tam.h]);
 
-  // Volar al elegido (o al punto medio del vínculo fijado).
+  const listo = tam.w > 0 && data.nodes.length > 0;
+  const firma = `${data.nodes.length}:${visibleIds.size}`;
+
+  // Una sola autoridad para la cámara: sin selección → vista de conjunto; con
+  // selección → volar al elegido (o al punto medio del vínculo fijado). Corre
+  // recién cuando el lienzo existe (listo), así no lo pisa un encuadre tardío.
   useEffect(() => {
     const fg = fgRef.current;
-    if (!fg || !selectedId) return;
-    const byId = new Map(data.nodes.map((d) => [d.id, d]));
-    const a = byId.get(selectedId);
-    if (!a) return;
-    const b = pinOtro ? byId.get(pinOtro) : null;
-    const foco = b ? { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 } : { x: a.x, y: a.y, z: a.z };
-    const sep = b ? Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) : 0;
-    const dist = Math.max(140, sep * 1.6);
-    const len = Math.hypot(foco.x, foco.y, foco.z) || 1;
-    fg.cameraPosition(
-      { x: foco.x + (foco.x / len) * dist, y: foco.y + (foco.y / len) * dist, z: foco.z + (foco.z / len) * dist + 40 },
-      foco,
-      900,
-    );
-  }, [selectedId, pinOtro, data.nodes]);
+    if (!listo || !fg) return undefined;
+    const t = setTimeout(() => {
+      if (!selectedId) { encuadrar(800); return; }
+      const byId = new Map(data.nodes.map((d) => [d.id, d]));
+      const a = byId.get(selectedId);
+      if (!a) { encuadrar(800); return; }
+      const b = pinOtro ? byId.get(pinOtro) : null;
+      const foco = b
+        ? { x: (a.fx + b.fx) / 2, y: (a.fy + b.fy) / 2, z: (a.fz + b.fz) / 2 }
+        : { x: a.fx, y: a.fy, z: a.fz };
+      const sep = b ? Math.hypot(a.fx - b.fx, a.fy - b.fy, a.fz - b.fz) : 0;
+      const dist = Math.max(380, sep * 1.8);
+      // Acercarse desde donde está la cámara ahora: no gira el mundo de golpe.
+      const cam = fg.camera().position;
+      const dx = cam.x - foco.x; const dy = cam.y - foco.y; const dz = cam.z - foco.z;
+      const len = Math.hypot(dx, dy, dz) || 1;
+      fg.cameraPosition(
+        { x: foco.x + (dx / len) * dist, y: foco.y + (dy / len) * dist, z: foco.z + (dz / len) * dist },
+        foco,
+        900,
+      );
+    }, 80);
+    return () => clearTimeout(t);
+  }, [listo, firma, selectedId, pinOtro]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const leyenda = useMemo(() => calcularLeyenda(nodes, visibleIds, colorMode, temas), [nodes, visibleIds, colorMode, temas]);
 
   return (
-    <div ref={cajaRef} className="relative size-full overflow-hidden" style={{ background: paleta.fondo }}>
+    <div
+      ref={cajaRef}
+      className="relative size-full overflow-hidden"
+      style={{
+        background: `radial-gradient(ellipse 70% 60% at 50% 45%, color-mix(in oklab, ${paleta.acento} 9%, #0a0f1f) 0%, ${paleta.fondo} 72%)`,
+      }}
+    >
       {!nodes.length && (
         <div className="absolute inset-0 grid place-items-center text-[12px] text-ink-dim">Sin nodos para graficar.</div>
       )}
@@ -339,7 +375,7 @@ export default function Graph3DView({
           width={tam.w}
           height={tam.h}
           graphData={data}
-          backgroundColor={paleta.fondo}
+          backgroundColor="rgba(0,0,0,0)"
           showNavInfo={false}
           controlType="orbit"
           enableNodeDrag={false}
@@ -357,8 +393,8 @@ export default function Graph3DView({
         />
       )}
 
-      <div className="pointer-events-none absolute left-3 right-3 top-3 flex items-start gap-2 text-[11px] text-ink-dim">
-        <span className="rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
+      <div className="pointer-events-none absolute left-3 right-3 top-3 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">
+        <span className="whitespace-nowrap rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
           Explorar 3D · {data.nodes.length} nodos · arrastrá para orbitar, rueda para acercar
         </span>
         {pin && (
@@ -368,23 +404,13 @@ export default function Graph3DView({
             <button type="button" onClick={onClearPin} className="text-ink-dim hover:text-ink" aria-label="Quitar pin"><X className="size-3" /></button>
           </span>
         )}
-        <ColorPanel modo={colorMode} onModo={onColorMode} leyenda={leyenda} />
+        <ColorPanel modo={colorMode} onModo={onColorMode} leyenda={leyenda} compacto={compacto} />
       </div>
 
       <div className="absolute bottom-3 left-3 flex flex-col overflow-hidden rounded-sm border border-hair bg-surface">
         <Hint texto="Encuadrar todo" side="right">
-          <button type="button" aria-label="Encuadrar todo" onClick={() => fgRef.current?.zoomToFit(600, 60)} className="grid size-7 place-items-center text-ink-muted hover:bg-surface-2 hover:text-ink">
+          <button type="button" aria-label="Encuadrar todo" onClick={() => encuadrar(600)} className="grid size-7 place-items-center text-ink-muted hover:bg-surface-2 hover:text-ink">
             <Maximize className="size-3.5" />
-          </button>
-        </Hint>
-        <Hint texto="Vista inicial" side="right">
-          <button
-            type="button"
-            aria-label="Vista inicial"
-            onClick={() => fgRef.current?.cameraPosition({ x: 0, y: 0, z: 700 }, { x: 0, y: 0, z: 0 }, 700)}
-            className="grid size-7 place-items-center text-ink-muted hover:bg-surface-2 hover:text-ink"
-          >
-            <RotateCcw className="size-3.5" />
           </button>
         </Hint>
       </div>

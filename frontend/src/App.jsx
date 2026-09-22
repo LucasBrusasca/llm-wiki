@@ -350,6 +350,7 @@ export default function App() {
     nodes: graph.nodes,
     colorDe,
     temas,
+    compacto: vista === 'split',
     edges: graph.edges,
     visibleIds,
     selectedId,
@@ -437,7 +438,7 @@ export default function App() {
                 />
               </section>
             )}
-            {vista !== 'lista' && <section className="relative min-w-0 flex-1">{grafo}</section>}
+            {vista !== 'lista' && <section className="relative min-w-0 flex-1 overflow-hidden">{grafo}</section>}
           </main>
 
           <Inspector

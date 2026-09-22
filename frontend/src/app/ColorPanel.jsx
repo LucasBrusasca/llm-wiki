@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { MODOS_COLOR, claveFuente, fuenteLabel, tipoMeta } from '@/lib/nodes';
 import { temaDe } from '@/lib/temas';
 import { cn } from '@/lib/utils';
@@ -26,9 +27,11 @@ export function calcularLeyenda(nodes, visibleIds, colorMode, temas, max = 8) {
 }
 
 /** Selector de "color por" + leyenda. Lo usan el grafo 2D y el 3D. */
-export default function ColorPanel({ modo, onModo, leyenda }) {
+export default function ColorPanel({ modo, onModo, leyenda, compacto = false }) {
+  // En columnas angostas (Split) la leyenda arranca plegada para no tapar el grafo.
+  const [abierta, setAbierta] = useState(!compacto);
   return (
-    <div className="pointer-events-auto ml-auto flex w-[250px] flex-col gap-1.5 rounded-sm border border-hair bg-surface/90 p-1.5 backdrop-blur">
+    <div className={cn('pointer-events-auto ml-auto flex shrink-0 flex-col gap-1.5 rounded-sm border border-hair bg-surface/90 p-1.5 backdrop-blur', abierta ? 'w-[250px]' : 'w-auto')}>
       <div className="flex items-center gap-1">
         <span className="px-1 text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Color</span>
         {Object.entries(MODOS_COLOR).map(([k, m]) => (
@@ -44,8 +47,18 @@ export default function ColorPanel({ modo, onModo, leyenda }) {
             {m.label}
           </button>
         ))}
+        {leyenda.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setAbierta((a) => !a)}
+            className="ml-auto grid size-5 place-items-center rounded-xs text-ink-dim hover:text-ink"
+            aria-label={abierta ? 'Plegar leyenda' : 'Ver leyenda'}
+          >
+            <ChevronDown className={cn('size-3 transition-transform', !abierta && '-rotate-90')} />
+          </button>
+        )}
       </div>
-      {leyenda.length > 0 && (
+      {abierta && leyenda.length > 0 && (
         <ul className="flex flex-col gap-0.5 px-1">
           {leyenda.map((l) => (
             <li key={l.k} className="flex min-w-0 items-center gap-1.5 text-[11px] text-ink-muted" style={{ '--c': l.color }}>
