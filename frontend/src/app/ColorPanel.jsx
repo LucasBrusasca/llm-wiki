@@ -33,7 +33,6 @@ export default function ColorPanel({ modo, onModo, leyenda, compacto = false }) 
   return (
     <div className={cn('pointer-events-auto ml-auto flex shrink-0 flex-col gap-1.5 rounded-sm border border-hair bg-surface/90 p-1.5 backdrop-blur', abierta ? 'w-[250px]' : 'w-auto')}>
       <div className="flex items-center gap-1">
-        <span className="px-1 text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Color</span>
         {Object.entries(MODOS_COLOR).map(([k, m]) => (
           <button
             key={k}

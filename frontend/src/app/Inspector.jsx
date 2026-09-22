@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   X, ExternalLink, MessageSquare, Share2, ArrowUpRight, ArrowDownLeft, ArrowRight, Copy, Check,
-  Hash, Link2, CornerDownRight, Pin, PinOff, Undo2, ChevronRight,
+  Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -88,7 +88,7 @@ function Relacion({ item, other, onAbrir, onConcepto, fijada, onPin }) {
     >
       <div className="flex items-center gap-1.5 text-[11.5px] text-ink-dim">
         {fijada
-          ? <Pin className="size-3 text-accent" />
+          ? <Link2 className="size-3 text-accent" />
           : dir === 'out' ? <ArrowUpRight className="size-3" /> : <ArrowDownLeft className="size-3" />}
         <span>
           {dir === 'out'
@@ -174,16 +174,16 @@ function Relaciones({ node, rels, nodesById, onAbrir, onConcepto, pinnedEdge, on
     <div className="px-4 pt-3">
       {pinnedEdge ? (
         <div className="mb-2 flex items-center gap-2 rounded-sm border border-accent/40 bg-accent/[0.07] px-2 py-1.5 text-[11.5px]">
-          <Pin className="size-3 shrink-0 text-accent" />
+          <Link2 className="size-3 shrink-0 text-accent" />
           <span className="min-w-0 flex-1 truncate text-ink-muted">
             Fijada: <span className="text-ink">{fijadaOtro?.label || '—'}</span>
           </span>
           <button type="button" onClick={onClearPin} className="flex shrink-0 items-center gap-1 text-ink-dim hover:text-ink">
-            <PinOff className="size-3" /> Quitar pin
+            <Unlink className="size-3" /> Soltar vínculo
           </button>
         </div>
       ) : (
-        <p className="mb-2 text-[11px] text-ink-dim">Clic en una relación para fijarla en el grafo · «Abrir» para ir al documento.</p>
+        <p className="mb-2 text-[11px] text-ink-dim">Clic en una relación para resaltar ese vínculo en el grafo · «Abrir» para ir al documento.</p>
       )}
       <div className="flex flex-wrap gap-1">
         {[['todas', rels.length], ...porTipo].map(([k, n]) => (
@@ -349,7 +349,7 @@ function Panorama({ seccion, seccionCount, edgesCount, relIndex, nodesById, topC
 export default function Inspector({
   node, nodesById, relIndex, seccion, seccionCount, edgesCount, topConceptos,
   onSelect, onClose, onAsk, onConcepto, onVerEnGrafo, vista, pinnedEdge, onPin, onClearPin,
-  onAbrir, camino = [], onVolver, temas, onTema,
+  onAbrir, camino = [], onVolver, temas, onTema, ego, onFijar, ancho = 420,
 }) {
   // Vista previa primero; si el documento no tiene nada que previsualizar, Resumen.
   const [tab, setTab] = useState('preview');
@@ -361,11 +361,11 @@ export default function Inspector({
     setTab(tienePreview(node) ? 'preview' : 'resumen');
   }, [node?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const shell = 'flex w-[370px] shrink-0 flex-col hairline-l bg-surface xl:w-[420px]';
+  const shell = 'flex shrink-0 flex-col hairline-l bg-surface';
 
   if (!node) {
     return (
-      <aside className={shell} aria-label="Detalle">
+      <aside className={shell} style={{ width: ancho }} aria-label="Detalle">
         <Panorama
           seccion={seccion}
           seccionCount={seccionCount}
@@ -392,10 +392,12 @@ export default function Inspector({
   };
 
   return (
-    <aside className={shell} aria-label="Detalle del documento">
-      {camino.length > 0 && (
+    <aside className={shell} style={{ width: ancho }} aria-label="Detalle del documento">
+      {(camino.length > 0 || ego) && (
         <nav aria-label="Camino" className="flex shrink-0 items-center gap-1 hairline-b bg-accent/[0.04] px-3 py-1.5 text-[11px]">
-          <span className="shrink-0 text-ink-dim">Camino</span>
+          <span className="flex shrink-0 items-center gap-1 text-ink-dim">
+            {ego ? <><Pin className="size-3 text-accent" /> Vecindario</> : 'Camino'}
+          </span>
           <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden">
             {camino.map((id, i) => (
               <React.Fragment key={`${id}-${i}`}>
@@ -475,8 +477,17 @@ export default function Inspector({
           {vista === 'lista' && (
             <Button variant="ghost" size="sm" onClick={onVerEnGrafo}><Share2 /> Ver en grafo</Button>
           )}
+          {ego ? (
+            <Button variant="outline" size="sm" onClick={onFijar} className="border-accent/50 text-accent-soft" title="Soltar el vecindario fijado · Esc">
+              <PinOff /> Desfijar
+            </Button>
+          ) : rels.length > 0 && (
+            <Button variant="outline" size="sm" onClick={onFijar} title="Fijar este documento y sus vecinos: explorás sin perder el origen">
+              <Pin /> Fijar relaciones
+            </Button>
+          )}
           {pinnedEdge && (
-            <Button variant="ghost" size="sm" onClick={onClearPin} title="Soltar la relación fijada"><PinOff /> Quitar pin</Button>
+            <Button variant="ghost" size="sm" onClick={onClearPin} title="Soltar el vínculo resaltado"><Unlink /> Soltar vínculo</Button>
           )}
         </div>
       </header>
@@ -487,7 +498,7 @@ export default function Inspector({
           <TabsTrigger value="resumen">Resumen</TabsTrigger>
           <TabsTrigger value="relaciones">
             Relaciones <span className="text-[11px] text-ink-dim">{rels.length}</span>
-            {pinnedEdge && <Pin className="size-3 text-accent" />}
+            {pinnedEdge && <Link2 className="size-3 text-accent" />}
           </TabsTrigger>
         </TabsList>
 
@@ -575,7 +586,7 @@ export default function Inspector({
                           <span className="block truncate text-[12.5px] text-ink">{o?.label || r.otherId}</span>
                           <span className="block truncate text-[11px] text-ink-dim">{relacionLabel(r.edge.label)} · {pct(r.edge.score)}</span>
                         </span>
-                        {fija && <Pin className="size-3 shrink-0 text-accent" />}
+                        {fija && <Link2 className="size-3 shrink-0 text-accent" />}
                       </button>
                     </li>
                   );

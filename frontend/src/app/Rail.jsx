@@ -71,11 +71,11 @@ function Check({ on }) {
 }
 
 export default function Rail({
-  sections, seccion, onSeccion,
+  sections, seccion, onSeccion, onNuevaSeccion,
   facetas, tipos, onToggleTipo, fuentes, onToggleFuente,
   topConceptos, conceptos, onToggleConcepto,
   temas, temasSel, onToggleTema, onNombrarTemas,
-  onIngest, onScripts, onSeccionesCambiadas,
+  onIngest, onScripts, onSeccionesCambiadas, ancho = 272,
 }) {
   async function renombrar(nombre) {
     const nuevo = (window.prompt(`Nuevo nombre para «${nombre}»:`, nombre) || '').trim().toLowerCase();
@@ -101,17 +101,17 @@ export default function Rail({
 
   const nuevaSeccion = () => {
     const nombre = (window.prompt('Nombre de la nueva sección (silo aparte):') || '').trim().toLowerCase();
-    if (nombre) onSeccion(nombre);
+    if (!nombre) return;
+    if (onNuevaSeccion) onNuevaSeccion(nombre);
+    else onSeccion(nombre);
   };
 
   const tiposOrden = [...facetas.tipo.entries()].sort((a, b) => b[1] - a[1]);
   const fuentesOrden = [...facetas.fuente.entries()].sort((a, b) => b[1] - a[1]);
-  const seccionesVista = sections.some((s) => s.nombre === seccion)
-    ? sections
-    : [...sections, { nombre: seccion, count: 0 }];
+  const seccionesVista = sections;
 
   return (
-    <aside className="flex w-[272px] shrink-0 flex-col hairline-r bg-surface">
+    <aside className="flex shrink-0 flex-col hairline-r bg-surface" style={{ width: ancho }}>
       <div className="flex gap-2 hairline-b p-2.5">
         <Button variant="default" size="lg" className="flex-1 glow-sel" onClick={onIngest}>
           <Upload /> Ingestar

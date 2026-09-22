@@ -12,6 +12,7 @@ import { fetchGraph, fetchSections, searchSemantic } from '@/lib/api';
 import { AGRUPADORES, MODOS_COLOR, indexarRelaciones } from '@/lib/nodes';
 import { construirTemas, temaKey, temaDe } from '@/lib/temas';
 import TaxonomiaDialog from '@/app/TaxonomiaDialog';
+import Splitter from '@/app/Splitter';
 import { normalizar } from '@/lib/utils';
 
 // React Flow pesa: sólo se carga cuando el usuario abre Split o Grafo.
@@ -24,7 +25,31 @@ const LS = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* sin storage */ } },
 };
 
+const EXTRA_SECCIONES_KEY = 'algedi_secciones_extra';
+function leerExtras() {
+  try {
+    const raw = LS.get(EXTRA_SECCIONES_KEY, '[]');
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string' && x.trim()) : [];
+  } catch { return []; }
+}
+function guardarExtras(arr) {
+  LS.set(EXTRA_SECCIONES_KEY, JSON.stringify([...new Set(arr.map((x) => x.trim().toLowerCase()).filter(Boolean))]));
+}
+
 const VISTAS = ['lista', 'split', 'grafo', '3d'];
+
+// Paneles redimensionables: ancho por defecto y límites (px, o % para el split).
+const PANELES = {
+  rail: { def: 272, min: 220, max: 420 },
+  insp: { def: 420, min: 330, max: 680 },
+  split: { def: 46, min: 25, max: 75 },
+};
+const acotar = (v, { min, max }) => Math.min(max, Math.max(min, v));
+function leerAncho(clave) {
+  const v = Number(LS.get(`algedi_ancho_${clave}`, NaN));
+  return Number.isFinite(v) ? acotar(v, PANELES[clave]) : PANELES[clave].def;
+}
 
 function fechaOrden(n) {
   return Date.parse(n.fecha_doc || n.created_at || 0) || 0;
@@ -54,6 +79,9 @@ export default function App() {
   // camino[0] es el origen. Se vacía al elegir algo "desde afuera" (lista, búsqueda).
   const [camino, setCamino] = useState([]);
   const pinAlLlegar = useRef(null);   // arista por la que se llegó: queda fijada en el destino
+  // Vecindario fijado (modo estudio): { origen, ids } — origen + sus vecinos quedan
+  // estáticos en el grafo; elegir un vecino sólo cambia el inspector.
+  const [ego, setEgo] = useState(null);
 
   // ── Apariencia ─────────────────────────────────────────────────────
   const [colorMode, setColorMode] = useState(() => LS.get('algedi_color', 'cluster'));
@@ -78,24 +106,59 @@ export default function App() {
   const [taxonomiaOpen, setTaxonomiaOpen] = useState(false);
 
   const searchRef = useRef(null);
+  const mainRef = useRef(null);
+
+  const [anchoRail, setAnchoRail] = useState(() => leerAncho('rail'));
+  const [anchoInsp, setAnchoInsp] = useState(() => leerAncho('insp'));
+  const [splitPct, setSplitPct] = useState(() => leerAncho('split'));
+  useEffect(() => LS.set('algedi_ancho_rail', String(Math.round(anchoRail))), [anchoRail]);
+  useEffect(() => LS.set('algedi_ancho_insp', String(Math.round(anchoInsp))), [anchoInsp]);
+  useEffect(() => LS.set('algedi_ancho_split', String(Math.round(splitPct))), [splitPct]);
 
   useEffect(() => LS.set('algedi_vista', vista), [vista]);
   useEffect(() => LS.set('algedi_agrupar', groupBy), [groupBy]);
   useEffect(() => LS.set('algedi_orden', sortBy), [sortBy]);
+
+  const [extrasSecciones, setExtrasSecciones] = useState(leerExtras);
 
   const loadSections = useCallback(() => {
     fetchSections().then(setSections).catch(() => setSections([]));
   }, []);
   useEffect(() => { loadSections(); }, [loadSections]);
 
-  // Si la sección guardada no existe en el backend, caer a la más poblada.
+  // Secciones vacías creadas por el usuario (aún sin nodos en la API).
+  const sectionsVista = useMemo(() => {
+    const known = new Set(sections.map((s) => s.nombre));
+    const merged = [...sections];
+    for (const n of extrasSecciones) {
+      if (!known.has(n)) merged.push({ nombre: n, count: 0 });
+    }
+    if (seccion && !merged.some((s) => s.nombre === seccion)) {
+      merged.push({ nombre: seccion, count: 0 });
+    }
+    return merged;
+  }, [sections, extrasSecciones, seccion]);
+
+  // Si la API ya tiene la sección, sacar del listado local de vacías.
   useEffect(() => {
     if (!sections.length) return;
-    if (!sections.some((s) => s.nombre === seccion)) {
+    const known = new Set(sections.map((s) => s.nombre));
+    setExtrasSecciones((prev) => {
+      const next = prev.filter((n) => !known.has(n));
+      if (next.length !== prev.length) guardarExtras(next);
+      return next;
+    });
+  }, [sections]);
+
+  // Si la sección guardada no existe ni como vacía local, caer a la más poblada.
+  useEffect(() => {
+    if (!sections.length) return;
+    const existe = sections.some((s) => s.nombre === seccion) || extrasSecciones.includes(seccion);
+    if (!existe) {
       const mayor = [...sections].sort((a, b) => b.count - a.count)[0];
       if (mayor) setSeccion(mayor.nombre);
     }
-  }, [sections, seccion]);
+  }, [sections, seccion, extrasSecciones]);
 
   // Al cambiar de sección se vacía la vista: nunca mostrar los documentos de un
   // silo bajo el nombre de otro mientras llega la respuesta.
@@ -121,11 +184,23 @@ export default function App() {
     setSelectedId(null);
     setPinnedEdge(null);
     setCamino([]);
+    setEgo(null);
     setHighlightIds(new Set());
     setTemasSel(new Set());
     setTipos(new Set()); setFuentes(new Set()); setConceptos(new Set());
     setQuery('');
   }, []);
+
+  const crearSeccion = useCallback((nombre) => {
+    const n = (nombre || '').trim().toLowerCase();
+    if (!n) return;
+    setExtrasSecciones((prev) => {
+      const next = prev.includes(n) ? prev : [...prev, n];
+      guardarExtras(next);
+      return next;
+    });
+    cambiarSeccion(n);
+  }, [cambiarSeccion]);
 
   // ── Índices derivados ──────────────────────────────────────────────
   const nodesById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
@@ -248,16 +323,21 @@ export default function App() {
   // Elegir "desde afuera" (lista, búsqueda, teclado): empieza un camino nuevo.
   const seleccionar = useCallback((id) => {
     setCamino([]);
+    setEgo((e) => (e && id && e.ids.has(id) ? e : null));
     setSelectedId(id);
   }, []);
 
   // Seguir un vínculo: el documento actual pasa al camino y la arista usada queda fijada.
   const abrirVinculo = useCallback((id, edge) => {
     if (!id || id === selectedId) return;
+    if (ego) {
+      if (ego.ids.has(id)) { setSelectedId(id); return; }
+      setEgo(null);
+    }
     if (selectedId) setCamino((c) => [...c, selectedId]);
     pinAlLlegar.current = edge ? { source: edge.source, target: edge.target, label: edge.label } : null;
     setSelectedId(id);
-  }, [selectedId]);
+  }, [selectedId, ego]);
 
   // Volver a un punto del camino (0 = origen). Lo que venía después se descarta.
   const volverA = useCallback((i) => {
@@ -269,9 +349,21 @@ export default function App() {
 
   // En el grafo, clic en un vecino del elegido = seguir ese vínculo; en otro nodo = empezar de nuevo.
   const elegirEnGrafo = useCallback((id) => {
+    if (ego) {
+      if (ego.ids.has(id)) { setSelectedId(id); return; }
+      setEgo(null);
+    }
     const r = selectedId && (relIndex.get(selectedId) || []).find((x) => x.otherId === id);
     if (r) abrirVinculo(id, r.edge); else seleccionar(id);
-  }, [selectedId, relIndex, abrirVinculo, seleccionar]);
+  }, [selectedId, relIndex, abrirVinculo, seleccionar, ego]);
+
+  const fijarVecindario = useCallback(() => {
+    if (ego) { setEgo(null); return; }
+    if (!selectedId) return;
+    const ids = new Set([selectedId, ...(relIndex.get(selectedId) || []).map((r) => r.otherId)]);
+    setCamino([]);
+    setEgo({ origen: selectedId, ids });
+  }, [ego, selectedId, relIndex]);
 
   // Cambiar de documento suelta el pin, salvo que se haya llegado por un vínculo.
   useEffect(() => {
@@ -318,7 +410,9 @@ export default function App() {
       if (e.key === 'Escape') {
         // Si hay un diálogo Radix abierto, el Esc es para cerrarlo, no para soltar la selección.
         if (document.querySelector('[role="dialog"][data-state="open"]')) return;
-        if (pinnedEdge) setPinnedEdge(null); else setSelectedId(null);
+        if (pinnedEdge) setPinnedEdge(null);
+        else if (ego) setEgo(null);
+        else setSelectedId(null);
         return;
       }
       if (e.key === '1') setVista('lista');
@@ -336,7 +430,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [orden, selectedId, pinnedEdge, seleccionar]);
+  }, [orden, selectedId, pinnedEdge, ego, seleccionar]);
 
   const selected = selectedId ? nodesById.get(selectedId) : null;
   const seccionInfo = sections.find((s) => s.nombre === seccion);
@@ -351,6 +445,8 @@ export default function App() {
     colorDe,
     temas,
     compacto: vista === 'split',
+    ego,
+    onFijar: fijarVecindario,
     edges: graph.edges,
     visibleIds,
     selectedId,
@@ -383,9 +479,10 @@ export default function App() {
 
         <div className="flex min-h-0">
           <Rail
-            sections={sections}
+            sections={sectionsVista}
             seccion={seccion}
             onSeccion={cambiarSeccion}
+            onNuevaSeccion={crearSeccion}
             facetas={facetas}
             tipos={tipos}
             onToggleTipo={toggleIn(setTipos)}
@@ -401,11 +498,21 @@ export default function App() {
             onIngest={() => setIngestOpen(true)}
             onScripts={() => setScriptsOpen(true)}
             onSeccionesCambiadas={(activa) => { cambiarSeccion(activa); recargar(); }}
+            ancho={anchoRail}
+          />
+          <Splitter
+            etiqueta="Ancho del panel izquierdo"
+            onStart={() => anchoRail}
+            onDrag={(dx, base) => setAnchoRail(acotar(base + dx, PANELES.rail))}
+            onReset={() => setAnchoRail(PANELES.rail.def)}
           />
 
-          <main className="flex min-w-0 flex-1">
+          <main ref={mainRef} className="flex min-w-0 flex-1">
             {(vista === 'lista' || vista === 'split') && (
-              <section className={vista === 'split' ? 'flex w-[46%] min-w-[380px] flex-col hairline-r' : 'flex min-w-0 flex-1 flex-col'}>
+              <section
+                className={vista === 'split' ? 'flex min-w-[320px] shrink-0 flex-col hairline-r' : 'flex min-w-0 flex-1 flex-col'}
+                style={vista === 'split' ? { width: `${splitPct}%` } : undefined}
+              >
                 <Library
                   status={status}
                   seccion={seccion}
@@ -438,10 +545,28 @@ export default function App() {
                 />
               </section>
             )}
+            {vista === 'split' && (
+              <Splitter
+                etiqueta="Reparto lista / grafo"
+                onStart={() => splitPct}
+                onDrag={(dx, base) => {
+                  const w = mainRef.current?.getBoundingClientRect().width || 1;
+                  setSplitPct(acotar(base + (dx / w) * 100, PANELES.split));
+                }}
+                onReset={() => setSplitPct(PANELES.split.def)}
+              />
+            )}
             {vista !== 'lista' && <section className="relative min-w-0 flex-1 overflow-hidden">{grafo}</section>}
           </main>
 
+          <Splitter
+            etiqueta="Ancho del inspector"
+            onStart={() => anchoInsp}
+            onDrag={(dx, base) => setAnchoInsp(acotar(base - dx, PANELES.insp))}
+            onReset={() => setAnchoInsp(PANELES.insp.def)}
+          />
           <Inspector
+            ancho={anchoInsp}
             node={selected}
             nodesById={nodesById}
             relIndex={relIndex}
@@ -459,8 +584,10 @@ export default function App() {
             onPin={fijarRelacion}
             onClearPin={() => setPinnedEdge(null)}
             onAbrir={abrirVinculo}
-            camino={camino}
-            onVolver={volverA}
+            camino={ego ? (selectedId && selectedId !== ego.origen ? [ego.origen] : []) : camino}
+            onVolver={ego ? () => setSelectedId(ego.origen) : volverA}
+            ego={ego}
+            onFijar={fijarVecindario}
             temas={temas}
             onTema={(k) => toggleIn(setTemasSel)(k)}
           />

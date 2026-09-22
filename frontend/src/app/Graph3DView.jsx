@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph3D from 'react-force-graph-3d';
 import * as THREE from 'three';
-import { Maximize, Pin, X } from 'lucide-react';
+import { Maximize, Pin, PinOff, Link2, X, Expand } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
 import ColorPanel, { calcularLeyenda } from '@/app/ColorPanel';
+import NodoTooltip from '@/app/NodoTooltip';
 import { resolverColor, fuenteLabel } from '@/lib/nodes';
 import { truncar } from '@/lib/utils';
 
@@ -13,8 +14,8 @@ import { truncar } from '@/lib/utils';
  * - Posiciones FIJAS desde la proyección 3D del backend (embeddings → UMAP):
  *   no hay simulación corriendo, nada se mueve ni titila.
  * - Aristas: líneas GL de 1px, quietas. Sólo la relación fijada se engrosa.
- * - Lejos: puntos livianos. Cerca, al pasar el mouse o al elegir: tarjeta con
- *   miniatura real + título (sólo los ~14 más cercanos, por rendimiento).
+ * - Lejos: puntos livianos. Cerca o al elegir: UNA tarjeta con miniatura real +
+ *   título. Hover: tooltip con el título completo. "Más aire" separa la vista.
  * - Clic en un nodo → mismo Inspector. Clic en el vacío → suelta el pin.
  */
 
@@ -142,7 +143,9 @@ function tarjetaDe(node, { borde, fondo, tinta, origen, fuerte }) {
   const hit = tarjetas.get(clave);
   if (hit) return hit;
 
-  const W = 256; const H = 236; const TH = 164; const pad = 12;
+  const W = fuerte ? 330 : 256; const TH = 164; const pad = 12;
+  const nLineas = fuerte ? 3 : 2;
+  const H = TH + 10 + nLineas * 24 + 14;
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const g = c.getContext('2d');
@@ -174,7 +177,7 @@ function tarjetaDe(node, { borde, fondo, tinta, origen, fuerte }) {
     g.textBaseline = 'top';
     g.font = '600 19px Inter, system-ui, sans-serif';
     g.fillStyle = rgba(tinta, 0.96);
-    lineas(g, node.label, W - pad * 2, 2).forEach((l, i) => g.fillText(l, pad, TH + 10 + i * 24));
+    lineas(g, node.label, W - pad * 2, nLineas).forEach((l, i) => g.fillText(l, pad, TH + 10 + i * 24));
     // borde al final para que quede por encima de todo
     rectRedondeado(g, 2, 2, W - 4, H - 4, 14);
     g.lineWidth = fuerte ? 5 : 3;
@@ -206,27 +209,71 @@ function tarjetaDe(node, { borde, fondo, tinta, origen, fuerte }) {
     img.src = `/thumb/${encodeURIComponent(node.id)}`;   // mismo origen: el canvas no queda "tainted"
   }
 
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
-  sp.scale.set(64, 59, 1);
+  // depthTest=false: la única tarjeta visible nunca queda tapada por esferas vecinas.
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false }));
+  sp.scale.set(W / 4, H / 4, 1);
   sp.center.set(0.5, 0);
-  sp.renderOrder = 8;
+  sp.renderOrder = 20;
   tarjetas.set(clave, sp);
   return sp;
 }
 
-// Cuántas tarjetas como máximo al acercarse y desde qué distancia de cámara aparecen.
-const UMBRAL_CERCA = 360;
-const MAX_TARJETAS = 14;
+// Tarjeta de preview: UNA sola. Con selección, la del elegido; sin selección y de
+// cerca, la del nodo más próximo a la cámara. Lejos, ninguna (sólo puntos).
+const UMBRAL_CERCA = 300;
+
+// "Más aire": factor de separación de la VISTA (no toca embeddings ni posiciones guardadas).
+const NIVELES_AIRE = [1, 1.6, 2.4];
+const SEPARACION_MIN = 26;   // distancia mínima entre centros al resolver solapes (unidades de escena)
+
+/**
+ * Posiciones de vista: proyección 3D del backend, expandida por `aire` alrededor
+ * del centro y con un relajado anti-solape (colisión) para que ningún par quede
+ * encimado. Es sólo presentación: la vecindad semántica se conserva.
+ */
+function posicionesVista(nodes, aire) {
+  const pts = nodes.map((n) => [(n.x3d ?? 0) * ESCALA, (n.y3d ?? 0) * ESCALA, (n.z3d ?? 0) * ESCALA]);
+  const N = pts.length;
+  if (!N) return pts;
+  const c = [0, 0, 0];
+  for (const q of pts) { c[0] += q[0] / N; c[1] += q[1] / N; c[2] += q[2] / N; }
+  for (const q of pts) for (let k = 0; k < 3; k++) q[k] = c[k] + (q[k] - c[k]) * aire;
+  const iters = N > 800 ? 4 : N > 300 ? 8 : 14;
+  const d2min = SEPARACION_MIN * SEPARACION_MIN;
+  for (let it = 0; it < iters; it++) {
+    let movio = false;
+    for (let i = 0; i < N; i++) {
+      const a = pts[i];
+      for (let j = i + 1; j < N; j++) {
+        const b = pts[j];
+        let dx = b[0] - a[0]; let dy = b[1] - a[1]; let dz = b[2] - a[2];
+        let d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= d2min) continue;
+        movio = true;
+        if (d2 < 1e-6) { dx = ((i * 7 + j) % 3) - 1 || 0.5; dy = 0.3; dz = -0.2; d2 = dx * dx + dy * dy + dz * dz; }
+        const d = Math.sqrt(d2);
+        const empuje = (SEPARACION_MIN - d) / 2 / d;
+        a[0] -= dx * empuje; a[1] -= dy * empuje; a[2] -= dz * empuje;
+        b[0] += dx * empuje; b[1] += dy * empuje; b[2] += dz * empuje;
+      }
+    }
+    if (!movio) break;
+  }
+  return pts;
+}
 
 
 export default function Graph3DView({
   nodes, edges, visibleIds, selectedId, highlightIds, onSelect, relIndex,
-  pinnedEdge, onClearPin, colorMode, onColorMode, colorDe: colorVar, temas, compacto,
+  pinnedEdge, onClearPin, colorMode, onColorMode, colorDe: colorVar, temas, compacto, ego, onFijar,
 }) {
   const fgRef = useRef(null);
   const cajaRef = useRef(null);
   const objs = useRef(new Map());      // id → { g, r, et, estado, fuerte, node, color, tarjeta }
   const hoverRef = useRef(null);
+  const mouseRef = useRef({ x: 0, y: 0, ancho: 0, alto: 0 });
+  const [hover, setHover] = useState(null);
+  const [aire, setAire] = useState(0);   // índice en NIVELES_AIRE
   const rafRef = useRef(0);
   const [tam, setTam] = useState({ w: 0, h: 0 });
 
@@ -261,18 +308,17 @@ export default function Graph3DView({
   const pinOtro = pin ? (pin.source === selectedId ? pin.target : pin.source) : null;
 
   const vecinos = useMemo(
-    () => (selectedId ? new Set((relIndex.get(selectedId) || []).map((r) => r.otherId)) : null),
-    [selectedId, relIndex],
+    () => (ego ? ego.ids : selectedId ? new Set((relIndex.get(selectedId) || []).map((r) => r.otherId)) : null),
+    [selectedId, relIndex, ego],
   );
   const grado = useCallback((id) => relIndex.get(id)?.length || 0, [relIndex]);
 
   // Datos del grafo: posiciones fijas. Se recrean sólo cuando cambia el conjunto visible.
   const data = useMemo(() => {
     const vis = nodes.filter((n) => visibleIds.has(n.id));
-    const ns = vis.map((n) => {
-      const x = (n.x3d ?? 0) * ESCALA;
-      const y = (n.y3d ?? 0) * ESCALA;
-      const z = (n.z3d ?? 0) * ESCALA;
+    const pos = posicionesVista(vis, NIVELES_AIRE[aire] || 1);
+    const ns = vis.map((n, i) => {
+      const [x, y, z] = pos[i];
       return { id: n.id, node: n, x, y, z, fx: x, fy: y, fz: z };
     });
     const ve = edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target));
@@ -281,13 +327,18 @@ export default function Graph3DView({
       source: e.source, target: e.target, label: e.label, score: e.score, fuerte: fuertes.has(e),
     }));
     return { nodes: ns, links };
-  }, [nodes, edges, visibleIds]);
+  }, [nodes, edges, visibleIds, aire]);
 
   // Qué nodos llevan etiqueta persistente.
   const etiquetados = useMemo(() => {
     const out = new Set();
     if (selectedId) out.add(selectedId);
     if (pinOtro) out.add(pinOtro);
+    if (ego) {
+      out.add(ego.origen);
+      for (const id of ego.ids) { if (out.size >= MAX_ETIQUETAS + 4) break; if (visibleIds.has(id)) out.add(id); }
+      return out;
+    }
     highlightIds.forEach((id) => out.size < MAX_ETIQUETAS && out.add(id));
     if (selectedId && !pinOtro) {
       for (const r of relIndex.get(selectedId) || []) {
@@ -303,21 +354,27 @@ export default function Graph3DView({
         .forEach(([id]) => out.add(id));
     }
     return out;
-  }, [selectedId, pinOtro, highlightIds, relIndex, visibleIds]);
+  }, [selectedId, pinOtro, ego, highlightIds, relIndex, visibleIds]);
 
   const estadoDe = useCallback((id) => {
+    if (ego) {
+      if (id === selectedId) return 'sel';
+      if (id === pinOtro) return 'pin';
+      if (id === ego.origen) return 'origen';
+      return ego.ids.has(id) ? 'vecino' : 'tenue';
+    }
     if (!selectedId) return 'normal';
     if (id === selectedId) return 'sel';
     if (pinOtro) return id === pinOtro ? 'pin' : 'tenue';
     return vecinos?.has(id) ? 'vecino' : 'tenue';
-  }, [selectedId, pinOtro, vecinos]);
+  }, [selectedId, pinOtro, vecinos, ego]);
 
   const nodeObject = useCallback((d) => {
     const estado = estadoDe(d.id);
     const fuerte = estado === 'sel' || estado === 'pin';
     const color = new THREE.Color(colorDe(d.node));
     const r = 4.5 + Math.sqrt(grado(d.id)) * 1.6 + (fuerte ? 3 : 0);
-    const alpha = estado === 'tenue' ? 0.18 : 1;
+    const alpha = estado === 'tenue' ? 0.28 : 1;   // contexto visible, no negro
 
     const g = new THREE.Group();
     const esfera = new THREE.Mesh(
@@ -329,9 +386,9 @@ export default function Graph3DView({
     // Halo suave (additive). Más intenso en el elegido; apagado en los tenues.
     const halo = new THREE.Sprite(new THREE.SpriteMaterial({
       map: texturaHalo(),
-      color: fuerte ? new THREE.Color(paleta.acento) : color,
+      color: fuerte || estado === 'origen' ? new THREE.Color(paleta.acento) : color,
       transparent: true,
-      opacity: estado === 'tenue' ? 0.06 : fuerte ? 0.95 : 0.5,
+      opacity: estado === 'tenue' ? 0.12 : fuerte ? 0.95 : estado === 'origen' ? 0.8 : 0.5,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     }));
@@ -341,7 +398,7 @@ export default function Graph3DView({
 
     let et = null;
     if (etiquetados.has(d.id)) {
-      et = spriteEtiqueta(truncar(d.node.label, 38), {
+      et = spriteEtiqueta(truncar(d.node.label, estado === 'sel' ? 90 : 24), {
         fuerte, acento: paleta.acento, fondo: paleta.superficie, tinta: paleta.tinta,
       });
       et.center.set(-0.06, 0.5);   // un poco a la derecha del nodo, en unidades de pantalla
@@ -357,16 +414,16 @@ export default function Graph3DView({
     const fg = fgRef.current;
     if (!fg) return;
     const cam = fg.camera().position;
-    const forzados = new Set([selectedId, pinOtro, hoverRef.current].filter(Boolean));
-    const cerca = [];
-    for (const [id, o] of objs.current) {
-      if (!o.g.parent) { objs.current.delete(id); continue; }   // objeto viejo, ya fuera de escena
-      if (forzados.has(id) || o.estado === 'tenue') continue;
-      const dist = cam.distanceTo(o.g.position);
-      if (dist < UMBRAL_CERCA) cerca.push([dist, id]);
+    let unica = selectedId && objs.current.has(selectedId) ? selectedId : null;
+    if (!unica) {
+      let mejor = UMBRAL_CERCA;
+      for (const [id, o] of objs.current) {
+        if (!o.g.parent) { objs.current.delete(id); continue; }   // objeto viejo, ya fuera de escena
+        const dist = cam.distanceTo(o.g.position);
+        if (dist < mejor) { mejor = dist; unica = id; }
+      }
     }
-    cerca.sort((x, y) => x[0] - y[0]);
-    const mostrar = new Set([...forzados, ...cerca.slice(0, MAX_TARJETAS).map((x) => x[1])]);
+    const mostrar = new Set(unica ? [unica] : []);
     for (const [id, o] of objs.current) {
       const ver = mostrar.has(id);
       if (ver) {
@@ -388,7 +445,7 @@ export default function Graph3DView({
         if (o.et) o.et.visible = true;
       }
     }
-  }, [selectedId, pinOtro, paleta]);
+  }, [selectedId, paleta]);
 
   // Recalcular como mucho una vez por frame.
   const programar = useCallback(() => {
@@ -410,18 +467,24 @@ export default function Graph3DView({
     const s = l.source?.id ?? l.source;
     const t = l.target?.id ?? l.target;
     if (selectedId && (s === selectedId || t === selectedId)) return true;
+    if (ego && ego.ids.has(s) && ego.ids.has(t)) return true;
     return l.fuerte;
-  }, [selectedId]);
+  }, [selectedId, ego]);
 
   const linkColor = useCallback((l) => {
     const s = l.source?.id ?? l.source;
     const t = l.target?.id ?? l.target;
     const propia = selectedId && (s === selectedId || t === selectedId);
     if (esPin(l)) return rgba(paleta.acento, 1);
+    if (ego) {
+      const dentro = ego.ids.has(s) && ego.ids.has(t);
+      if (!dentro) return rgba(paleta.arista, 0.07);
+      return propia && !pin ? rgba(paleta.acento, 0.75) : rgba(paleta.arista, pin ? 0.3 : 0.7);
+    }
     if (pin) return rgba(paleta.arista, propia ? 0.25 : 0.08);
     if (propia) return rgba(paleta.acento, 0.65);
     return rgba(paleta.arista, selectedId ? 0.15 : 0.55);
-  }, [selectedId, pin, esPin, paleta]);
+  }, [selectedId, pin, ego, esPin, paleta]);
 
   const linkWidth = useCallback((l) => (esPin(l) ? 1.1 : 0), [esPin]);
 
@@ -464,8 +527,20 @@ export default function Graph3DView({
     const fg = fgRef.current;
     if (!listo || !fg) return undefined;
     const t = setTimeout(() => {
-      if (!selectedId) { encuadrar(800); return; }
       const byId = new Map(data.nodes.map((d) => [d.id, d]));
+      if (ego) {
+        const pts = [...ego.ids].map((id) => byId.get(id)).filter(Boolean);
+        if (!pts.length) return;
+        const c = pts.reduce((acc, d) => ({ x: acc.x + d.fx / pts.length, y: acc.y + d.fy / pts.length, z: acc.z + d.fz / pts.length }), { x: 0, y: 0, z: 0 });
+        const r = Math.max(60, ...pts.map((d) => Math.hypot(d.fx - c.x, d.fy - c.y, d.fz - c.z)));
+        const dist = r / Math.sin(((fg.camera().fov || 50) * Math.PI) / 360) + 60;
+        const cam = fg.camera().position;
+        const dx = cam.x - c.x; const dy = cam.y - c.y; const dz = cam.z - c.z;
+        const len = Math.hypot(dx, dy, dz) || 1;
+        fg.cameraPosition({ x: c.x + (dx / len) * dist, y: c.y + (dy / len) * dist, z: c.z + (dz / len) * dist }, c, 900);
+        return;
+      }
+      if (!selectedId) { encuadrar(800); return; }
       const a = byId.get(selectedId);
       if (!a) { encuadrar(800); return; }
       const b = pinOtro ? byId.get(pinOtro) : null;
@@ -485,7 +560,7 @@ export default function Graph3DView({
       );
     }, 80);
     return () => clearTimeout(t);
-  }, [listo, firma, selectedId, pinOtro]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [listo, firma, ego ? `ego:${ego.origen}` : selectedId, ego ? null : pinOtro]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const fg = fgRef.current;
@@ -502,6 +577,13 @@ export default function Graph3DView({
   return (
     <div
       ref={cajaRef}
+      onMouseMove={(e) => {
+        const r = cajaRef.current.getBoundingClientRect();
+        mouseRef.current = { x: e.clientX - r.left, y: e.clientY - r.top, ancho: r.width, alto: r.height };
+        if (hoverRef.current) setHover((h) => (h ? { ...h, ...mouseRef.current } : h));
+      }}
+      onMouseLeave={() => { hoverRef.current = null; setHover(null); }}
+      onPointerDown={() => setHover(null)}
       className="relative size-full overflow-hidden"
       style={{
         background: `radial-gradient(ellipse 70% 60% at 50% 45%, color-mix(in oklab, ${paleta.acento} 9%, #0a0f1f) 0%, ${paleta.fondo} 72%)`,
@@ -526,7 +608,7 @@ export default function Graph3DView({
           onNodeHover={(d) => {
             hoverRef.current = d?.id || null;
             if (cajaRef.current) cajaRef.current.style.cursor = d ? 'pointer' : '';
-            programar();
+            setHover(d ? { node: d.node, ...mouseRef.current } : null);
           }}
           linkVisibility={linkVisible}
           linkColor={linkColor}
@@ -540,19 +622,55 @@ export default function Graph3DView({
 
       <div className="pointer-events-none absolute left-3 right-3 top-3 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">
         <span className="whitespace-nowrap rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
-          Explorar 3D · {data.nodes.length} nodos · arrastrá para orbitar · acercate para ver los documentos
+          Explorar 3D · {data.nodes.length} nodos · arrastrá para orbitar · acercate para ver un documento
         </span>
         {pin && (
           <span className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
-            <Pin className="size-3 text-accent" />
+            <Link2 className="size-3 text-accent" />
             <span className="max-w-[220px] truncate">{data.nodes.find((d) => d.id === pinOtro)?.node.label}</span>
-            <button type="button" onClick={onClearPin} className="text-ink-dim hover:text-ink" aria-label="Quitar pin"><X className="size-3" /></button>
+            <button type="button" onClick={onClearPin} className="text-ink-dim hover:text-ink" aria-label="Soltar vínculo"><X className="size-3" /></button>
+          </span>
+        )}
+        {ego && (
+          <span className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
+            <Pin className="size-3 text-accent" />
+            <span className="max-w-[220px] truncate">Vecindario de {data.nodes.find((d) => d.id === ego.origen)?.node.label}</span>
+            <span className="text-ink-dim">{ego.ids.size}</span>
+            <button type="button" onClick={onFijar} className="text-ink-dim hover:text-ink" aria-label="Desfijar vecindario"><X className="size-3" /></button>
           </span>
         )}
         <ColorPanel modo={colorMode} onModo={onColorMode} leyenda={leyenda} compacto={compacto} />
       </div>
 
+      {hover && <NodoTooltip node={hover.node} x={hover.x} y={hover.y} ancho={hover.ancho} alto={hover.alto} temas={temas} />}
+
       <div className="absolute bottom-3 left-3 flex flex-col overflow-hidden rounded-sm border border-hair bg-surface">
+        {(selectedId || ego) && (
+          <>
+            <Hint texto={ego ? 'Desfijar vecindario · Esc' : 'Fijar relaciones del elegido'} side="right">
+              <button
+                type="button"
+                aria-label={ego ? 'Desfijar vecindario' : 'Fijar relaciones'}
+                onClick={onFijar}
+                className={`grid size-7 place-items-center hover:bg-surface-2 ${ego ? 'text-accent' : 'text-ink-muted hover:text-ink'}`}
+              >
+                {ego ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
+              </button>
+            </Hint>
+            <div className="h-px bg-hair" />
+          </>
+        )}
+        <Hint texto={`Más aire: separar nodos ×${NIVELES_AIRE[(aire + 1) % NIVELES_AIRE.length]} (sólo la vista; no cambia los embeddings)`} side="right">
+          <button
+            type="button"
+            aria-label="Más aire"
+            onClick={() => setAire((a) => (a + 1) % NIVELES_AIRE.length)}
+            className={`grid h-7 min-w-7 place-items-center px-1 text-[10.5px] font-medium hover:bg-surface-2 ${aire ? 'text-accent' : 'text-ink-muted hover:text-ink'}`}
+          >
+            <span className="flex items-center gap-0.5"><Expand className="size-3.5" />{aire ? `×${NIVELES_AIRE[aire]}` : ''}</span>
+          </button>
+        </Hint>
+        <div className="h-px bg-hair" />
         <Hint texto="Encuadrar todo" side="right">
           <button type="button" aria-label="Encuadrar todo" onClick={() => encuadrar(600)} className="grid size-7 place-items-center text-ink-muted hover:bg-surface-2 hover:text-ink">
             <Maximize className="size-3.5" />
