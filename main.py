@@ -1,9 +1,13 @@
+import asyncio
 import math
 import os
 import random
 import re
 import threading
+import time
 import json
+import unicodedata
+from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,8 +42,8 @@ VAULT.mkdir(exist_ok=True)
 
 MAX_UPLOAD_MB = max(1, int(os.getenv("ALGEDI_MAX_UPLOAD_MB", "50")))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
-INGEST_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".html", ".htm", ".txt", ".md",
-                     ".docx", ".pptx", ".pptm"}
+INGEST_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".csv", ".html", ".htm", ".txt", ".md",
+                     ".docx", ".pptx", ".pptm", ".py", ".ipynb"}
 ISSUE_EXTENSIONS = {".pdf", ".html", ".htm", ".txt", ".md"}
 
 
@@ -1260,7 +1264,7 @@ async def security_status():
 # ── Secciones persistentes y edición de nodos ─────────────────────────
 
 _SECCION_MAX = 60
-_CAMPO_MAX = {"label": 300, "autor": 200, "tema": 120}
+_CAMPO_MAX = {"label": 300, "autor": 200, "tema": 120, "desc": 20000}
 
 
 def _nombre_seccion(valor) -> str:
@@ -1285,14 +1289,15 @@ def _campos_editables(body: dict) -> dict:
         valor = body[campo]
         if valor is not None and not isinstance(valor, str):
             raise ValueError(f"'{campo}' debe ser texto.")
-        valor = " ".join((valor or "").split())
+        # El cuerpo de una nota es markdown: conserva saltos de línea.
+        valor = (valor or "").strip() if campo == "desc" else " ".join((valor or "").split())
         if len(valor) > maximo:
             raise ValueError(f"'{campo}' supera {maximo} caracteres.")
         if campo == "label" and not valor:
             raise ValueError("El título no puede quedar vacío.")
         cambios[campo] = valor or None
     if not cambios:
-        raise ValueError("No hay campos editables en el pedido (label, autor, tema).")
+        raise ValueError("No hay campos editables en el pedido (label, autor, tema, desc).")
     return cambios
 
 
@@ -1726,6 +1731,258 @@ async def recompute_layout():
     return {"ok": True}
 
 
+# ── Notas, tablas y ejecución de archivos ─────────────────────────────
+
+_NOTA_MAX = 20000
+EJECUTABLES = (".py",)
+RUN_TIMEOUT = int(os.getenv("ALGEDI_RUN_TIMEOUT", "25"))
+RUN_SALIDA_MAX = 20000
+
+
+def _slug_nota(titulo: str) -> str:
+    """ID legible y único-ish para una nota nueva."""
+    plano = unicodedata.normalize("NFKD", titulo).encode("ascii", "ignore").decode()
+    base = re.sub(r"[^a-z0-9]+", "_", plano.lower()).strip("_")[:40] or "nota"
+    return f"nota_{base}_{uuid4().hex[:6]}"
+
+
+def _nota_valida(body: dict) -> dict:
+    """Valida la creación de una nota: título obligatorio, cuerpo markdown opcional."""
+    if not isinstance(body, dict):
+        raise ValueError("Body inválido.")
+    titulo = " ".join(str(body.get("label") or "").split())
+    if not titulo:
+        raise ValueError("La nota necesita un título.")
+    if len(titulo) > 300:
+        raise ValueError("El título supera 300 caracteres.")
+    cuerpo = str(body.get("desc") or "").strip()
+    if len(cuerpo) > _NOTA_MAX:
+        raise ValueError(f"El cuerpo supera {_NOTA_MAX} caracteres.")
+    tags = body.get("tags") or []
+    if not isinstance(tags, list) or any(not isinstance(t, str) for t in tags):
+        raise ValueError("'tags' debe ser una lista de texto.")
+    return {"label": titulo, "desc": cuerpo, "tags": [t.strip() for t in tags if t.strip()][:20]}
+
+
+@app.post("/api/nodes")
+async def create_node(request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Crea una nota (nodo tipado NOTA) en una sección. Sin embeddings: entra al grafo
+    como nodo propio y se relaciona a mano o en el próximo recálculo."""
+    body = await _read_body(request)
+    try:
+        datos = _nota_valida(body)
+        seccion = _nombre_seccion(body.get("seccion") or "personal")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    node = Node(
+        id=_slug_nota(datos["label"]),
+        label=datos["label"],
+        type="NOTA",
+        desc=datos["desc"],
+        fuente="nota",
+        dominio=seccion,
+        tags=datos["tags"],
+        conceptos=[],
+    )
+    db.add(node)
+    await _asegurar_seccion(db, seccion)
+    await db.commit()
+    await db.refresh(node)
+    nd = node_to_dict(node)
+    nd.pop("embedding", None)
+    return {"ok": True, "node": nd}
+
+
+def _leer_tabla(ruta: Path, hoja: str | None, limite: int) -> dict:
+    """Lee un xlsx/xls/csv → {hojas, hoja, columnas, filas, total_filas}. Sólo lectura."""
+    ext = ruta.suffix.lower()
+    if ext == ".csv":
+        import csv as _csv
+        with ruta.open("r", encoding="utf-8", errors="replace", newline="") as fh:
+            muestra = fh.read(8192)
+            fh.seek(0)
+            try:
+                dialecto = _csv.Sniffer().sniff(muestra, delimiters=",;\t|")
+            except Exception:
+                dialecto = _csv.excel
+            filas = list(_csv.reader(fh, dialecto))
+        if not filas:
+            return {"hojas": [], "hoja": None, "columnas": [], "filas": [], "total_filas": 0}
+        columnas = [str(c) for c in filas[0]]
+        cuerpo = [[("" if c is None else str(c)) for c in f] for f in filas[1:]]
+        return {"hojas": [], "hoja": None, "columnas": columnas,
+                "filas": cuerpo[:limite], "total_filas": len(cuerpo)}
+
+    import openpyxl
+    wb = openpyxl.load_workbook(str(ruta), read_only=True, data_only=True)
+    try:
+        hojas = list(wb.sheetnames)
+        elegida = hoja if hoja in hojas else (hojas[0] if hojas else None)
+        if elegida is None:
+            return {"hojas": [], "hoja": None, "columnas": [], "filas": [], "total_filas": 0}
+        ws = wb[elegida]
+        columnas, cuerpo = [], []
+        for i, fila in enumerate(ws.iter_rows(values_only=True)):
+            valores = [("" if c is None else str(c)) for c in fila]
+            if i == 0:
+                columnas = valores
+                continue
+            if len(cuerpo) < limite:
+                cuerpo.append(valores)
+        total = max(0, (ws.max_row or 1) - 1)
+        return {"hojas": hojas, "hoja": elegida, "columnas": columnas,
+                "filas": cuerpo, "total_filas": total}
+    finally:
+        wb.close()
+
+
+def _stats_columnas(columnas: list, filas: list) -> list:
+    """Resumen por columna: no vacíos, distintos, y min/máx/promedio si es numérica."""
+    salida = []
+    for i, nombre in enumerate(columnas):
+        valores = [f[i] for f in filas if i < len(f) and str(f[i]).strip() != ""]
+        numeros = []
+        for v in valores:
+            try:
+                numeros.append(float(str(v).replace(",", ".")))
+            except ValueError:
+                pass
+        col = {
+            "columna": nombre or f"col {i + 1}",
+            "no_vacios": len(valores),
+            "vacios": len(filas) - len(valores),
+            "distintos": len(set(valores)),
+            "numerica": bool(valores) and len(numeros) >= len(valores) * 0.8,
+        }
+        if col["numerica"] and numeros:
+            col.update({
+                "min": round(min(numeros), 4),
+                "max": round(max(numeros), 4),
+                "promedio": round(sum(numeros) / len(numeros), 4),
+            })
+        else:
+            frec = Counter(valores).most_common(3)
+            col["mas_frecuentes"] = [{"valor": v, "veces": n} for v, n in frec]
+        salida.append(col)
+    return salida
+
+
+@app.get("/api/node/{node_id}/table")
+async def node_table(node_id: str, hoja: str = None, limite: int = 200, stats: bool = False,
+                     db: AsyncSession = Depends(get_async_session)):
+    """Grilla de sólo lectura del archivo tabular de un nodo (xlsx/xls/csv)."""
+    node = (await db.execute(select(Node).where(Node.id == node_id))).scalar_one_or_none()
+    if not node:
+        raise HTTPException(404, f"Nodo {node_id} no encontrado")
+    if not node.fuente_path:
+        raise HTTPException(404, "El nodo no tiene archivo")
+    ruta = _resolve_file(node.fuente_path)
+    if ruta.suffix.lower() not in (".xlsx", ".xls", ".csv"):
+        raise HTTPException(400, f"«{ruta.suffix}» no es una tabla legible acá.")
+    limite = max(1, min(int(limite or 200), 1000))
+    try:
+        datos = await asyncio.to_thread(_leer_tabla, ruta, hoja, limite)
+    except ImportError:
+        raise HTTPException(501, "Falta openpyxl en el backend.")
+    except Exception as e:
+        raise HTTPException(500, f"No se pudo leer la tabla: {e}")
+    if stats:
+        datos["stats"] = _stats_columnas(datos["columnas"], datos["filas"])
+    return datos
+
+
+def _ejecutar_archivo(ruta: Path) -> dict:
+    """Corre un .py en un proceso aparte: sin variables de entorno del servidor
+    (ni claves ni DATABASE_URL), en un directorio temporal y con límite de tiempo."""
+    import subprocess, sys, tempfile
+    entorno = {
+        "PATH": os.getenv("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": "/tmp",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "ALGEDI_RUN": "1",
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        inicio = time.time()
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-I", str(ruta)],
+                capture_output=True, text=True, timeout=RUN_TIMEOUT,
+                cwd=tmp, env=entorno, input="",
+            )
+            return {
+                "stdout": proc.stdout[:RUN_SALIDA_MAX],
+                "stderr": proc.stderr[:RUN_SALIDA_MAX],
+                "returncode": proc.returncode,
+                "timeout": False,
+                "duration_ms": int((time.time() - inicio) * 1000),
+            }
+        except subprocess.TimeoutExpired as e:
+            return {
+                "stdout": (e.stdout or "")[:RUN_SALIDA_MAX] if isinstance(e.stdout, str) else "",
+                "stderr": f"Cortado por tiempo ({RUN_TIMEOUT}s).",
+                "returncode": None,
+                "timeout": True,
+                "duration_ms": RUN_TIMEOUT * 1000,
+            }
+
+
+@app.post("/api/node/{node_id}/run")
+async def run_node_file(node_id: str, request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Ejecuta el archivo .py de un nodo. Sin `confirm` sólo describe qué se correría."""
+    body = await _read_body(request)
+    node = (await db.execute(select(Node).where(Node.id == node_id))).scalar_one_or_none()
+    if not node:
+        raise HTTPException(404, f"Nodo {node_id} no encontrado")
+    if not node.fuente_path:
+        raise HTTPException(400, "El nodo no tiene un archivo para ejecutar.")
+    ruta = _resolve_file(node.fuente_path)
+    if ruta.suffix.lower() not in EJECUTABLES:
+        raise HTTPException(400, f"Sólo se ejecutan archivos {', '.join(EJECUTABLES)} (este es «{ruta.suffix}»).")
+
+    if not body.get("confirm"):
+        return {
+            "needs_confirmation": True,
+            "node_id": node_id,
+            "archivo": ruta.name,
+            "timeout_s": RUN_TIMEOUT,
+            "message": ("Se ejecuta en un proceso aparte, sin las variables de entorno del "
+                        f"servidor y con corte a los {RUN_TIMEOUT}s. Enviá confirm=true para correrlo."),
+        }
+
+    salida = await asyncio.to_thread(_ejecutar_archivo, ruta)
+    estado = "completed" if salida["returncode"] == 0 else "error"
+    run = ScriptRun(
+        script_id=f"node:{node_id}",
+        script_version=ruta.name,
+        inputs={"archivo": str(node.fuente_path)},
+        outputs=salida,
+        status=estado,
+        error_message=(salida["stderr"] or None) if estado == "error" else None,
+        node_id=node_id,
+        context_nodes=[node_id],
+        duration_ms=salida["duration_ms"],
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+    return {"ok": True, "run_id": run.id, "status": estado, "archivo": ruta.name, **salida}
+
+
+@app.get("/api/node/{node_id}/runs")
+async def node_runs(node_id: str, limit: int = 5, db: AsyncSession = Depends(get_async_session)):
+    """Últimas ejecuciones del archivo de un nodo."""
+    rows = (await db.execute(
+        select(ScriptRun).where(ScriptRun.script_id == f"node:{node_id}")
+        .order_by(ScriptRun.created_at.desc()).limit(max(1, min(int(limit or 5), 50)))
+    )).scalars().all()
+    return {"runs": [{
+        "id": r.id, "status": r.status, "archivo": r.script_version,
+        "outputs": r.outputs, "duration_ms": r.duration_ms,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    } for r in rows]}
+
+
 @app.post("/api/taxonomy")
 async def taxonomy(request: Request, apply: bool = False,
                    db: AsyncSession = Depends(get_async_session)):
@@ -1994,6 +2251,28 @@ async def get_rich_preview(
 
 # ── Agent ─────────────────────────────────────────────────────────────
 
+def _conducta_agente(max_sim: float, pregunta: str, hay_citas: bool, umbral: float) -> dict:
+    """Contrato de conducta del agente: responder | pedir_aclaracion | abstenerse.
+    El motivo es el que se le muestra al usuario, en criollo y con el número."""
+    palabras = [w for w in re.split(r"\s+", (pregunta or "").strip()) if w]
+    pct = round((max_sim or 0) * 100)
+    piso = round(umbral * 100)
+    if hay_citas:
+        return {"conducta": "responder",
+                "motivo": f"Hay pasajes citables (afinidad máxima {pct}%)."}
+    if max_sim >= umbral:
+        return {"conducta": "responder",
+                "motivo": f"Hay documentos afines ({pct}%), pero sin pasaje exacto para citar."}
+
+    if len(palabras) <= 3:
+        return {"conducta": "pedir_aclaracion",
+                "motivo": (f"La consulta es muy corta ({len(palabras)} palabras) y nada en la biblioteca "
+                           f"pasa del {pct}% de afinidad. Decime el tema, el documento o qué querés comparar.")}
+    return {"conducta": "abstenerse",
+            "motivo": (f"El mejor pasaje llega al {pct}% de afinidad, debajo del {piso}% que pido para citar: "
+                       "tu biblioteca no respalda esta respuesta. Lo que sigue es conocimiento general.")}
+
+
 @app.post("/api/agent")
 async def agent_endpoint(
     request: Request,
@@ -2008,6 +2287,9 @@ async def agent_endpoint(
     scored = await _nodos_relevantes_scored(ultima, max_n=6, db=db) if ultima else []
     max_sim = chunks[0]["sim"] if chunks else (scored[0]["sim"] if scored else 0.0)
     evidence_sufficient = bool(ultima and max_sim >= AGENT_VETO_UMBRAL)
+    # Citable sólo si el mejor pasaje pasa el piso de citas: si no, no se le ofrecen
+    # al modelo como citables y el agente se abstiene con motivo.
+    citable = bool(chunks and chunks[0]["sim"] >= AGENT_CITA_UMBRAL)
 
     # Documentos relacionados para navegación del grafo, deduplicados por nodo.
     best_by_node = {}
@@ -2028,7 +2310,7 @@ async def agent_endpoint(
     node_ids = [item["id"] for item in fundamentos]
 
     citations = []
-    if chunks and evidence_sufficient:
+    if chunks and citable:
         context_lines = []
         for index, chunk in enumerate(chunks, 1):
             marker = f"C{index}"
@@ -2055,7 +2337,7 @@ async def agent_endpoint(
             "pero separalo bajo el subtítulo 'Conocimiento general' y aclaralo.\n\n"
             + "\n\n".join(context_lines)
         )
-    elif scored and evidence_sufficient:
+    elif scored and evidence_sufficient and not citable:
         contexto = "\n".join(
             f"- [{int(s['sim'] * 100)}% afinidad] {s['label']}: "
             f"{(s.get('desc') or s.get('fragmento') or '').strip()[:240]}"
@@ -2091,7 +2373,10 @@ async def agent_endpoint(
     ))
     await db.commit()
 
+    conducta = _conducta_agente(max_sim, ultima, bool(citations), AGENT_CITA_UMBRAL)
     return {
+        **conducta,
+        "umbral": AGENT_CITA_UMBRAL,
         "reply": reply,
         "nodos_relevantes": node_ids,
         "fundamentos": fundamentos,
@@ -2949,6 +3234,11 @@ def _set_progress(pct: int, msg: str):
 #     vetaría consultas válidas — hay solapamiento entre off-topic y cubierto).
 #  2) Soft: al LLM se le pasa el % de afinidad y se le instruye decir "no me alcanza" si es bajo.
 AGENT_VETO_UMBRAL = 0.28
+# Piso para CITAR: con embeddings multilingües, textos sin relación igual dan
+# similitudes de ~0.5, así que el veto general (más laxo) no alcanza para decidir
+# si algo es citable. Medido sobre esta biblioteca: preguntas con respaldo dan
+# 0.69-0.88 y sin respaldo 0.52-0.58. Ajustable con ALGEDI_CITA_UMBRAL.
+AGENT_CITA_UMBRAL = float(os.getenv("ALGEDI_CITA_UMBRAL", "0.62"))
 
 # Techo de videos por playlist. NO es un capricho: cada video = 1 llamada al LLM, y
 # Gemini gratis limita req/min. 50 cubre casi cualquier playlist real; subilo si querés
@@ -3036,7 +3326,9 @@ def _extraer_documento(entrada: str) -> dict:
         return procesar_excel(entrada)
     if ext in (".html", ".htm"):
         return procesar_html(entrada)
-    if ext in (".txt", ".md"):
+    if ext in (".txt", ".md", ".py", ".ipynb", ".csv"):
+        # Código, notebooks y CSV se ingieren como texto: el contenido se indexa igual
+        # y la ejecución / la grilla los tratan aparte según la extensión.
         from processor import procesar_txt
         return procesar_txt(entrada)
     if ext == ".docx":

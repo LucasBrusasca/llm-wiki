@@ -8,7 +8,7 @@ import AgentFab from '@/app/AgentFab';
 import IngestDialog from '@/app/IngestDialog';
 import ScriptsSheet from '@/app/ScriptsSheet';
 import CommandPalette from '@/app/CommandPalette';
-import { fetchGraph, fetchSections, searchSemantic, updateNode, createSection } from '@/lib/api';
+import { fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota } from '@/lib/api';
 import { AGRUPADORES, MODOS_COLOR, indexarRelaciones } from '@/lib/nodes';
 import { construirTemas, temaKey, temaDe } from '@/lib/temas';
 import TaxonomiaDialog from '@/app/TaxonomiaDialog';
@@ -426,6 +426,20 @@ export default function App() {
     recargar();
   }, [selectedId, moverIds, seccion, recargar]);
 
+  // Nota nueva: entra al grafo como nodo NOTA y queda abierta para escribir.
+  const nuevaNota = useCallback(async () => {
+    const titulo = (window.prompt('Título de la nota:') || '').trim();
+    if (!titulo) return;
+    try {
+      const nd = await crearNota({ label: titulo, seccion });
+      setGraph((g) => ({ ...g, nodes: [{ ...nd, x: 0, y: 0, z: 0 }, ...g.nodes] }));
+      setSelectedId(nd.id);
+      loadSections();
+    } catch (e) {
+      window.alert(`No se pudo crear la nota: ${e.message}`);
+    }
+  }, [seccion, loadSections]);
+
   const preguntarSobre = useCallback((node) => {
     setAgentContext(node || null);
     setAgentOpen(true);
@@ -534,6 +548,7 @@ export default function App() {
             onNombrarTemas={() => setTaxonomiaOpen(true)}
             onIngest={() => setIngestOpen(true)}
             onScripts={() => setScriptsOpen(true)}
+            onNuevaNota={nuevaNota}
             onSeccionesCambiadas={(activa) => { cambiarSeccion(activa); recargar(); }}
             ancho={anchoRail}
           />

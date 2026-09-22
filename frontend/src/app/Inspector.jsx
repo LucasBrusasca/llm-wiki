@@ -13,6 +13,10 @@ import {
 } from '@/lib/nodes';
 import { temaDe } from '@/lib/temas';
 import Thumb, { tieneThumb } from '@/app/Thumb';
+import MediaPreview, { tipoMedia } from '@/app/MediaPreview';
+import TablaPreview from '@/app/TablaPreview';
+import EjecutarArchivo from '@/app/EjecutarArchivo';
+import NotaEditor from '@/app/NotaEditor';
 import { cn, fechaCorta, pct, normalizar } from '@/lib/utils';
 
 function urlFuente(node) {
@@ -21,10 +25,6 @@ function urlFuente(node) {
   return null;
 }
 
-function ytId(url) {
-  const m = (url || '').match(/(?:youtu\.be\/|v=|embed\/)([A-Za-z0-9_-]{11})/);
-  return m ? m[1] : null;
-}
 
 function Meta({ k, children }) {
   if (children == null || children === '' || children === false) return null;
@@ -225,102 +225,31 @@ function Relaciones({ node, rels, nodesById, onAbrir, onConcepto, pinnedEdge, on
 /** ¿Hay algo que previsualizar? Si no, el inspector abre directo en Resumen. */
 function tienePreview(node) {
   if (!node) return false;
-  if (ytId(node.fuente_url)) return true;
-  if ((node.fuente || '').toLowerCase() === 'pdf' && node.fuente_path) return true;
-  return tieneThumb(node);
+  const tipo = tipoMedia(node);
+  if (tipo === 'nada') return false;
+  if (tipo === 'archivo') return tieneThumb(node);
+  return true;
 }
 
-function Preview({ node }) {
-  const f = (node.fuente || '').toLowerCase();
-  const yt = ytId(node.fuente_url);
+const esEjecutable = (node) => (node?.fuente_path || '').toLowerCase().endsWith('.py');
 
-  if (yt) {
-    return (
-      <div className="p-4">
-        <div className="aspect-video overflow-hidden rounded-md border border-hair">
-          <iframe title="Video" className="size-full" src={`https://www.youtube-nocookie.com/embed/${yt}`} allowFullScreen />
-        </div>
-        {node.desc && <p className="mt-3 text-[12.5px] leading-relaxed text-ink-muted">{node.desc}</p>}
-      </div>
-    );
-  }
-  if (f === 'pdf' && node.fuente_path) {
-    return (
-      <div className="flex h-full min-h-[480px] flex-col p-3">
-        <iframe
-          title={`Vista previa de ${node.label}`}
-          src={`/files/${encodeURIComponent(node.id)}#view=FitH&toolbar=0`}
-          className="min-h-0 flex-1 rounded-md border border-hair bg-white"
-        />
-      </div>
-    );
-  }
+/** Vista previa: reproductor según el tipo, grilla si es tabla, editor si es nota. */
+function Preview({ node, onGuardar }) {
+  const tipo = tipoMedia(node);
+  if (tipo === 'nota') return <NotaEditor node={node} onGuardar={onGuardar} />;
+  if (tipo === 'tabla') return <div className="p-4"><TablaPreview node={node} /></div>;
   return (
-    <div className="p-4">
-      <div className="overflow-hidden rounded-md border border-hair">
-        <Thumb node={node} eager className="aspect-[4/3] w-full" iconClass="size-8" rounded="rounded-none" />
-      </div>
-      {node.fragmento && (
-        <blockquote className="mt-4 border-l-2 border-accent/60 pl-3 text-[12.5px] leading-relaxed text-ink-muted">
-          {node.fragmento}
-        </blockquote>
+    <div className="flex flex-col gap-3 p-4">
+      <MediaPreview node={node} />
+      {esEjecutable(node) && (
+        <Seccion titulo="Ejecutar">
+          <EjecutarArchivo node={node} />
+        </Seccion>
       )}
-      {node.desc && node.desc !== node.fragmento && (
-        <p className="mt-3 text-[12.5px] leading-relaxed text-ink/85">{node.desc}</p>
+      {tipo !== 'pdf' && tipo !== 'html' && node.desc && node.type !== 'NOTA' && (
+        <p className="text-[12.5px] leading-relaxed text-ink/85">{node.desc}</p>
       )}
     </div>
-  );
-}
-
-/** Edición manual de título, autor y tema (se guarda en la API). */
-function EditarNodo({ node, temas, onGuardar, onCancelar }) {
-  const [label, setLabel] = useState(node.label || '');
-  const [autor, setAutor] = useState(node.autor || '');
-  const [tema, setTema] = useState(node.tema && node.tema !== 'Sin clasificar' ? node.tema : '');
-  const [guardando, setGuardando] = useState(false);
-  const [error, setError] = useState(null);
-  const sugerencias = [...(temas?.values() || [])].filter((t) => t.key !== 'sin-tema').map((t) => t.nombre);
-
-  async function guardar(e) {
-    e?.preventDefault();
-    const campos = {};
-    if (label.trim() !== (node.label || '').trim()) campos.label = label;
-    if (autor.trim() !== (node.autor || '').trim()) campos.autor = autor;
-    if (tema.trim() !== (node.tema && node.tema !== 'Sin clasificar' ? node.tema : '').trim()) campos.tema = tema;
-    if (!Object.keys(campos).length) { onCancelar(); return; }
-    setGuardando(true); setError(null);
-    try {
-      await onGuardar(campos);
-    } catch (err) {
-      setError(err.message);
-      setGuardando(false);
-    }
-  }
-
-  const campo = 'h-8 w-full rounded-sm border border-hair bg-surface-2 px-2 text-[12.5px] text-ink placeholder:text-ink-dim focus:border-accent/60 focus:outline-none';
-  return (
-    <form onSubmit={guardar} className="mt-2 flex flex-col gap-2" onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), onCancelar())}>
-      <label className="block">
-        <span className="mb-0.5 block text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Título</span>
-        <textarea value={label} onChange={(e) => setLabel(e.target.value)} rows={2} autoFocus className={cn(campo, 'h-auto resize-none py-1.5')} />
-      </label>
-      <label className="block">
-        <span className="mb-0.5 block text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Autor</span>
-        <input value={autor} onChange={(e) => setAutor(e.target.value)} placeholder="Sin autor" className={campo} />
-      </label>
-      <label className="block">
-        <span className="mb-0.5 block text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Tema</span>
-        <input value={tema} onChange={(e) => setTema(e.target.value)} list="algedi-temas" placeholder="Sin tema (usa el automático)" className={campo} />
-        <datalist id="algedi-temas">{sugerencias.map((t) => <option key={t} value={t} />)}</datalist>
-      </label>
-      {error && <p className="text-[12px] text-danger">{error}</p>}
-      <div className="flex gap-1.5">
-        <Button type="submit" variant="default" size="sm" disabled={guardando || !label.trim()}>
-          {guardando ? <Loader2 className="animate-spin" /> : <Check />} Guardar
-        </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={onCancelar}>Cancelar</Button>
-      </div>
-    </form>
   );
 }
 
@@ -690,7 +619,7 @@ export default function Inspector({
         </TabsContent>
 
         <TabsContent value="preview" className="min-h-0 flex-1 overflow-y-auto">
-          <Preview node={node} />
+          <Preview node={node} onGuardar={onGuardar} />
         </TabsContent>
       </Tabs>
     </aside>

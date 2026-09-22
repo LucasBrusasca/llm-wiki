@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2, Sparkles } from 'lucide-react';
+import { Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2, Sparkles, StickyNote } from 'lucide-react';
 import { hayNombresAutomaticos } from '@/lib/temas';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
@@ -75,7 +75,7 @@ export default function Rail({
   facetas, tipos, onToggleTipo, fuentes, onToggleFuente,
   topConceptos, conceptos, onToggleConcepto,
   temas, temasSel, onToggleTema, onNombrarTemas,
-  onIngest, onScripts, onSeccionesCambiadas, ancho = 272,
+  onIngest, onScripts, onNuevaNota, onSeccionesCambiadas, ancho = 272,
 }) {
   async function renombrar(nombre) {
     const nuevo = (window.prompt(`Nuevo nombre para «${nombre}»:`, nombre) || '').trim().toLowerCase();
@@ -116,8 +116,8 @@ export default function Rail({
         <Button variant="default" size="lg" className="flex-1 glow-sel" onClick={onIngest}>
           <Upload /> Ingestar
         </Button>
-        <Button variant="outline" size="lg" className="flex-1" onClick={onScripts}>
-          <Terminal /> Scripts
+        <Button variant="outline" size="lg" className="flex-1" onClick={onNuevaNota}>
+          <StickyNote /> Nota
         </Button>
       </div>
 
@@ -247,6 +247,17 @@ export default function Rail({
           </Grupo>
         )}
       </nav>
+
+      {/* El registry de scripts queda como acceso secundario: lo que se ejecuta en el
+          día a día es el archivo del nodo, desde su inspector. */}
+      <button
+        type="button"
+        onClick={onScripts}
+        className="flex h-8 shrink-0 items-center gap-1.5 border-t border-hair px-3 text-[11.5px] text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink-muted"
+        title="Registry de scripts (legacy): los archivos .py de tus documentos se ejecutan desde el inspector"
+      >
+        <Terminal className="size-3" /> Scripts (registry legacy)
+      </button>
 
     </aside>
   );

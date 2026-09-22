@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MessageSquare, X, ArrowUp, Plus, Quote, ShieldAlert, FileText, Crosshair } from 'lucide-react';
+import { MessageSquare, X, ArrowUp, Plus, Quote, ShieldAlert, FileText, Crosshair, HelpCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Hint } from '@/components/ui/tooltip';
 import { askAgent } from '@/lib/api';
@@ -21,33 +21,33 @@ function citados(m) {
   return (m.citations || []).filter((c) => txt.includes(`[${c.marker}]`));
 }
 
-/** Qué respaldo tuvo la respuesta. Es lo primero que se ve, antes del texto. */
+/** Qué respaldo tuvo la respuesta y qué decidió hacer el agente (contrato de conducta). */
 function Evidencia({ m }) {
-  if (m.evidenceMode === 'chunks') {
-    const n = citados(m).length;
-    if (n > 0) {
-      return (
-        <span className="flex items-center gap-1 text-[11px] text-accent-soft">
-          <Quote className="size-3" /> Citada · {n} {n === 1 ? 'pasaje' : 'pasajes'} · afinidad máx {pct(m.sim)}
-        </span>
-      );
-    }
+  const n = citados(m).length;
+  const conducta = m.conducta || (m.evidenceMode === 'chunks' && n > 0 ? 'responder' : 'abstenerse');
+
+  if (conducta === 'abstenerse' || conducta === 'pedir_aclaracion') {
+    const pedir = conducta === 'pedir_aclaracion';
     return (
-      <span className="flex items-center gap-1 text-[11px] text-warn">
-        <ShieldAlert className="size-3" /> Sin citas en la respuesta · {m.citations.length} pasajes recuperados como contexto
-      </span>
+      <div className="flex gap-1.5 rounded-sm border border-warn/30 bg-warn/[0.08] px-2 py-1.5">
+        {pedir ? <HelpCircle className="mt-px size-3.5 shrink-0 text-warn" /> : <ShieldAlert className="mt-px size-3.5 shrink-0 text-warn" />}
+        <span className="text-[11.5px] leading-relaxed text-warn">
+          <b>{pedir ? 'Necesito que precises' : 'Me abstengo de citar'}</b>
+          {m.motivo ? <> · {m.motivo}</> : null}
+        </span>
+      </div>
     );
   }
-  if (m.evidenceMode === 'summaries') {
+  if (n > 0) {
     return (
-      <span className="flex items-center gap-1 text-[11px] text-ink-muted">
-        <FileText className="size-3" /> Basada en resúmenes, sin cita por pasaje · {pct(m.sim)}
+      <span className="flex items-center gap-1 text-[11px] text-accent-soft">
+        <Quote className="size-3" /> Citada · {n} {n === 1 ? 'pasaje' : 'pasajes'} · afinidad máx {pct(m.sim)}
       </span>
     );
   }
   return (
-    <span className="flex items-center gap-1 text-[11px] text-warn">
-      <ShieldAlert className="size-3" /> Sin respaldo en la biblioteca · se abstiene de citar
+    <span className="flex items-center gap-1 text-[11px] text-ink-muted">
+      <FileText className="size-3" /> {m.motivo || 'Basada en resúmenes, sin cita por pasaje'} · {pct(m.sim)}
     </span>
   );
 }
@@ -103,13 +103,35 @@ function Respuesta({ m, nodesById, onSelect, onHighlight }) {
         </details>
       )}
       {m.fundamentos?.length > 0 && (
-        <button
-          type="button"
-          onClick={() => onHighlight(m.fundamentos.map((f) => f.id))}
-          className="flex items-center gap-1 self-start text-[11px] text-ink-dim hover:text-ink"
-        >
-          <Crosshair className="size-3" /> Marcar {m.fundamentos.length} documentos en la biblioteca
-        </button>
+        <div className="rounded-sm border border-hair bg-surface-2/60 px-2 py-1.5">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Usé estos nodos</span>
+            <button
+              type="button"
+              onClick={() => onHighlight(m.fundamentos.map((f) => f.id))}
+              className="ml-auto flex items-center gap-1 text-[11px] text-ink-dim hover:text-ink"
+              title="Marcarlos en la biblioteca"
+            >
+              <Crosshair className="size-3" /> marcar
+            </button>
+          </div>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {m.fundamentos.map((f) => (
+              <li key={f.id}>
+                <button
+                  type="button"
+                  onClick={() => nodesById.has(f.id) && onSelect(f.id)}
+                  disabled={!nodesById.has(f.id)}
+                  className="flex w-full items-center gap-1.5 text-left text-[11.5px] text-ink-muted hover:text-ink disabled:cursor-default disabled:opacity-60"
+                  title={nodesById.has(f.id) ? 'Abrir en el inspector' : 'Está en otra sección'}
+                >
+                  <span className="w-8 shrink-0 text-right text-[10.5px] text-ink-dim">{pct(f.sim)}</span>
+                  <span className="truncate">{f.label}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );
@@ -158,6 +180,8 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
         citations: d.citations || [],
         fundamentos: d.fundamentos || [],
         evidenceMode: d.evidence_mode || (d.general_knowledge ? 'general' : null),
+        conducta: d.conducta,
+        motivo: d.motivo,
         sim: d.max_sim,
       }]);
     } catch {
@@ -192,6 +216,7 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
             <span className="size-1.5 rounded-full bg-accent" />
             <span className="text-[12.5px] font-semibold">Agente</span>
             <span className="text-[11.5px] capitalize text-ink-dim">· {seccion}</span>
+            <span className="text-[10.5px] text-ink-dim">cita o se abstiene</span>
             <div className="ml-auto flex items-center">
               <Hint texto="Nueva conversación">
                 <Button variant="ghost" size="icon-sm" onClick={() => { setMsgs([]); onHighlight([]); }} aria-label="Nueva conversación"><Plus /></Button>

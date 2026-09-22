@@ -81,6 +81,38 @@ export function deleteSection(nombre, password) {
   });
 }
 
+// ── Notas, tablas y ejecución ─────────────────────────────────────────
+/** Crea una nota (nodo NOTA) en una sección. */
+export async function crearNota({ label, desc = '', seccion, tags = [] }) {
+  const d = await fetch('/api/nodes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label, desc, seccion, tags }),
+  }).then(jsonOError);
+  return d.node;
+}
+
+/** Grilla de sólo lectura de un xlsx/xls/csv ligado a un nodo. */
+export async function fetchTabla(nodeId, { hoja, limite = 200, stats = false } = {}) {
+  const q = new URLSearchParams({ limite: String(limite), stats: String(stats) });
+  if (hoja) q.set('hoja', hoja);
+  return fetch(`/api/node/${encodeURIComponent(nodeId)}/table?${q}`).then(jsonOError);
+}
+
+/** Ejecuta el archivo del nodo. Sin confirmar, sólo describe qué se correría. */
+export async function ejecutarArchivo(nodeId, confirm = false) {
+  return fetch(`/api/node/${encodeURIComponent(nodeId)}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm }),
+  }).then(jsonOError);
+}
+
+export async function fetchEjecuciones(nodeId, limit = 5) {
+  const d = await fetch(`/api/node/${encodeURIComponent(nodeId)}/runs?limit=${limit}`).then(jsonOError);
+  return d.runs || [];
+}
+
 // ── Edición manual ────────────────────────────────────────────────────
 async function jsonOError(res) {
   const d = await res.json().catch(() => ({}));
