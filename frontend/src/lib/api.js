@@ -81,6 +81,40 @@ export function deleteSection(nombre, password) {
   });
 }
 
+// ── Edición manual ────────────────────────────────────────────────────
+async function jsonOError(res) {
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(d.detail || `HTTP ${res.status}`);
+  return d;
+}
+
+/** Título, autor y tema de un nodo. Devuelve el nodo actualizado. */
+export async function updateNode(nodeId, campos) {
+  const d = await fetch(`/api/node/${encodeURIComponent(nodeId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(campos),
+  }).then(jsonOError);
+  return d.node;
+}
+
+export async function moveNodes(ids, seccion) {
+  return fetch('/api/nodes/move', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, seccion }),
+  }).then(jsonOError);
+}
+
+/** Crea una sección que persiste aunque esté vacía. */
+export async function createSection(nombre) {
+  return fetch('/api/sections', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nombre }),
+  }).then(jsonOError);
+}
+
 /**
  * Taxonomía de temas por LLM (endpoint existente). Sin `apply` sólo PROPONE y no
  * escribe nada; con `apply` persiste `tema` en TODOS los documentos (todas las

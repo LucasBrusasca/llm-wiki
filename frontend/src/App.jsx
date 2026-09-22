@@ -8,11 +8,12 @@ import AgentFab from '@/app/AgentFab';
 import IngestDialog from '@/app/IngestDialog';
 import ScriptsSheet from '@/app/ScriptsSheet';
 import CommandPalette from '@/app/CommandPalette';
-import { fetchGraph, fetchSections, searchSemantic } from '@/lib/api';
+import { fetchGraph, fetchSections, searchSemantic, updateNode, createSection } from '@/lib/api';
 import { AGRUPADORES, MODOS_COLOR, indexarRelaciones } from '@/lib/nodes';
 import { construirTemas, temaKey, temaDe } from '@/lib/temas';
 import TaxonomiaDialog from '@/app/TaxonomiaDialog';
 import Splitter from '@/app/Splitter';
+import MoverDialog from '@/app/MoverDialog';
 import { normalizar } from '@/lib/utils';
 
 // React Flow pesa: sólo se carga cuando el usuario abre Split o Grafo.
@@ -104,6 +105,8 @@ export default function App() {
   const [agentOpen, setAgentOpen] = useState(false);
   const [agentContext, setAgentContext] = useState(null);
   const [taxonomiaOpen, setTaxonomiaOpen] = useState(false);
+  const [moverIds, setMoverIds] = useState(null);          // ids a mover de sección (diálogo)
+  const [marcados, setMarcados] = useState(() => new Set()); // selección múltiple en la lista
 
   const searchRef = useRef(null);
   const mainRef = useRef(null);
@@ -185,22 +188,41 @@ export default function App() {
     setPinnedEdge(null);
     setCamino([]);
     setEgo(null);
+    setMarcados(new Set());
     setHighlightIds(new Set());
     setTemasSel(new Set());
     setTipos(new Set()); setFuentes(new Set()); setConceptos(new Set());
     setQuery('');
   }, []);
 
-  const crearSeccion = useCallback((nombre) => {
-    const n = (nombre || '').trim().toLowerCase();
-    if (!n) return;
+  // Crear sección: se persiste en el backend (existe aunque esté vacía). Si la API
+  // no responde (p. ej. demo estática), queda guardada localmente como antes.
+  const guardarLocal = useCallback((n) => {
     setExtrasSecciones((prev) => {
       const next = prev.includes(n) ? prev : [...prev, n];
       guardarExtras(next);
       return next;
     });
-    cambiarSeccion(n);
-  }, [cambiarSeccion]);
+  }, []);
+  const crearSeccion = useCallback(async (nombre) => {
+    const n = (nombre || '').trim().toLowerCase();
+    if (!n) return;
+    try {
+      const r = await createSection(n);
+      loadSections();
+      cambiarSeccion(r.nombre);
+    } catch {
+      guardarLocal(n);
+      cambiarSeccion(n);
+    }
+  }, [cambiarSeccion, loadSections, guardarLocal]);
+
+  // Migración única: las secciones vacías que sólo vivían en este navegador pasan al backend.
+  useEffect(() => {
+    const pendientes = leerExtras();
+    if (!pendientes.length) return;
+    Promise.allSettled(pendientes.map((n) => createSection(n))).then(() => loadSections());
+  }, [loadSections]);
 
   // ── Índices derivados ──────────────────────────────────────────────
   const nodesById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
@@ -389,6 +411,21 @@ export default function App() {
     setTemasSel(new Set()); setTipos(new Set()); setFuentes(new Set()); setConceptos(new Set()); setQuery('');
   }, []);
 
+  const guardarNodo = useCallback(async (id, campos) => {
+    const nd = await updateNode(id, campos);
+    setGraph((g) => ({
+      ...g,
+      nodes: g.nodes.map((n) => (n.id === id ? { ...n, label: nd.label, autor: nd.autor, tema: nd.tema } : n)),
+    }));
+  }, []);
+
+  const tras_mover = useCallback((r) => {
+    setMarcados(new Set());
+    if (selectedId && moverIds?.includes(selectedId) && r?.seccion !== seccion) setSelectedId(null);
+    setMoverIds(null);
+    recargar();
+  }, [selectedId, moverIds, seccion, recargar]);
+
   const preguntarSobre = useCallback((node) => {
     setAgentContext(node || null);
     setAgentOpen(true);
@@ -535,6 +572,11 @@ export default function App() {
                   filtros={{ tipos, fuentes, conceptos, topConceptos, temasSel, temas }}
                   onToggleTema={toggleIn(setTemasSel)}
                   onNombrarTemas={() => setTaxonomiaOpen(true)}
+                  marcados={marcados}
+                  onMarca={toggleIn(setMarcados)}
+                  onMarcarVarios={(ids) => setMarcados(new Set(ids))}
+                  onLimpiarMarcas={() => setMarcados(new Set())}
+                  onMoverMarcados={() => setMoverIds([...marcados])}
                   onToggleTipo={toggleIn(setTipos)}
                   onToggleFuente={toggleIn(setFuentes)}
                   onToggleConcepto={toggleIn(setConceptos)}
@@ -588,6 +630,8 @@ export default function App() {
             onVolver={ego ? () => setSelectedId(ego.origen) : volverA}
             ego={ego}
             onFijar={fijarVecindario}
+            onGuardar={guardarNodo}
+            onMover={(ids) => setMoverIds(ids)}
             temas={temas}
             onTema={(k) => toggleIn(setTemasSel)(k)}
           />
@@ -605,6 +649,15 @@ export default function App() {
         />
 
         <IngestDialog open={ingestOpen} onOpenChange={setIngestOpen} seccion={seccion} onDone={recargar} />
+        <MoverDialog
+          open={!!moverIds}
+          onOpenChange={(o) => !o && setMoverIds(null)}
+          ids={moverIds || []}
+          nodesById={nodesById}
+          sections={sectionsVista}
+          seccion={seccion}
+          onDone={tras_mover}
+        />
         <TaxonomiaDialog open={taxonomiaOpen} onOpenChange={setTaxonomiaOpen} temas={temas} onDone={recargar} />
         <ScriptsSheet
           open={scriptsOpen}

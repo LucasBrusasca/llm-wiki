@@ -23,7 +23,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.connection import get_async_session, get_sync_session
-from database.models import AuditLog, Chunk, Document, Edge, GraphStat, Node, ScriptRun, Source
+from database.models import AuditLog, Chunk, Document, Edge, GraphStat, Node, ScriptRun, Section, Source
 
 load_dotenv()
 
@@ -724,6 +724,11 @@ async def get_sections(db: AsyncSession = Depends(get_async_session)):
         ).group_by(Node.dominio)
     )).all()
     secciones = [{"nombre": (d or "personal"), "count": c} for d, c in rows]
+    # Secciones creadas por el usuario que todavía no tienen documentos.
+    con_docs = {x["nombre"] for x in secciones}
+    for (nombre,) in (await db.execute(select(Section.nombre))).all():
+        if nombre not in con_docs:
+            secciones.append({"nombre": nombre, "count": 0})
     if not any(s["nombre"] == "personal" for s in secciones):
         secciones.insert(0, {"nombre": "personal", "count": 0})
     secciones.sort(key=lambda s: (s["nombre"] != "personal", s["nombre"].lower()))
@@ -1252,6 +1257,112 @@ async def security_status():
 
 # ── Secciones: renombrar / eliminar ───────────────────────────────────
 
+# ── Secciones persistentes y edición de nodos ─────────────────────────
+
+_SECCION_MAX = 60
+_CAMPO_MAX = {"label": 300, "autor": 200, "tema": 120}
+
+
+def _nombre_seccion(valor) -> str:
+    """Normaliza el nombre de una sección. Vacío o demasiado largo → ValueError."""
+    nombre = " ".join(str(valor or "").split()).strip().lower()
+    if not nombre:
+        raise ValueError("El nombre de la sección está vacío.")
+    if len(nombre) > _SECCION_MAX:
+        raise ValueError(f"El nombre de la sección supera {_SECCION_MAX} caracteres.")
+    return nombre
+
+
+def _campos_editables(body: dict) -> dict:
+    """De un body arbitrario, sólo los campos editables a mano, validados.
+    `label` no puede quedar vacío; `autor`/`tema` vacíos se guardan como NULL."""
+    if not isinstance(body, dict):
+        raise ValueError("Body inválido.")
+    cambios = {}
+    for campo, maximo in _CAMPO_MAX.items():
+        if campo not in body:
+            continue
+        valor = body[campo]
+        if valor is not None and not isinstance(valor, str):
+            raise ValueError(f"'{campo}' debe ser texto.")
+        valor = " ".join((valor or "").split())
+        if len(valor) > maximo:
+            raise ValueError(f"'{campo}' supera {maximo} caracteres.")
+        if campo == "label" and not valor:
+            raise ValueError("El título no puede quedar vacío.")
+        cambios[campo] = valor or None
+    if not cambios:
+        raise ValueError("No hay campos editables en el pedido (label, autor, tema).")
+    return cambios
+
+
+async def _asegurar_seccion(db: AsyncSession, nombre: str):
+    """Crea la fila de sección si no existe (idempotente)."""
+    if (await db.execute(select(Section).where(Section.nombre == nombre))).scalar_one_or_none() is None:
+        db.add(Section(nombre=nombre))
+
+
+@app.post("/api/sections")
+async def create_section(request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Crea una sección vacía que persiste aunque todavía no tenga documentos."""
+    body = await _read_body(request)
+    try:
+        nombre = _nombre_seccion(body.get("nombre"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await _asegurar_seccion(db, nombre)
+    await db.commit()
+    return {"ok": True, "nombre": nombre}
+
+
+@app.put("/api/node/{node_id}")
+async def update_node(node_id: str, request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Edición manual de título, autor y tema de un nodo. Devuelve el nodo actualizado."""
+    body = await _read_body(request)
+    try:
+        cambios = _campos_editables(body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    node = (await db.execute(select(Node).where(Node.id == node_id))).scalar_one_or_none()
+    if not node:
+        raise HTTPException(404, f"Nodo {node_id} no encontrado")
+    for campo, valor in cambios.items():
+        setattr(node, campo, valor)
+    await db.commit()
+    await db.refresh(node)
+    nd = node_to_dict(node)
+    nd.pop("embedding", None)
+    return {"ok": True, "cambios": sorted(cambios), "node": nd}
+
+
+class NodesMove(BaseModel):
+    ids: list[str]
+    seccion: str
+
+
+@app.post("/api/nodes/move")
+async def move_nodes(payload: NodesMove, db: AsyncSession = Depends(get_async_session)):
+    """Mueve uno o varios nodos a otra sección (cambia `dominio`). La sección destino
+    queda registrada aunque sea nueva. Los issues no se mueven: viven fuera de las secciones."""
+    try:
+        destino = _nombre_seccion(payload.seccion)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    ids = [i for i in dict.fromkeys(payload.ids or []) if isinstance(i, str) and i.strip()]
+    if not ids:
+        raise HTTPException(400, "No hay nodos para mover.")
+    if len(ids) > 5000:
+        raise HTTPException(400, "Demasiados nodos en un solo pedido.")
+    res = await db.execute(
+        sql_update(Node)
+        .where(Node.id.in_(ids), Node.is_issue == False)
+        .values(dominio=destino)
+    )
+    await _asegurar_seccion(db, destino)
+    await db.commit()
+    return {"ok": True, "seccion": destino, "movidos": res.rowcount or 0, "pedidos": len(ids)}
+
+
 @app.post("/api/sections/rename")
 async def rename_section(request: Request, db: AsyncSession = Depends(get_async_session)):
     body = await _read_body(request)
@@ -1264,6 +1375,8 @@ async def rename_section(request: Request, db: AsyncSession = Depends(get_async_
     if not _check_password(body.get("password")):
         raise HTTPException(403, "Clave de seguridad incorrecta.")
     await db.execute(sql_update(Node).where(Node.dominio == origen).values(dominio=destino))
+    await db.execute(sql_delete(Section).where(Section.nombre == origen))
+    await _asegurar_seccion(db, destino)
     await db.commit()
     return {"ok": True}
 
@@ -1283,7 +1396,8 @@ async def delete_section(request: Request, db: AsyncSession = Depends(get_async_
     if ids:
         await db.execute(sql_delete(Edge).where(Edge.source.in_(ids) | Edge.target.in_(ids)))
         await db.execute(sql_delete(Node).where(Node.id.in_(ids)))
-        await db.commit()
+    await db.execute(sql_delete(Section).where(Section.nombre == nombre))
+    await db.commit()
     return {"ok": True, "borrados": len(ids)}
 
 

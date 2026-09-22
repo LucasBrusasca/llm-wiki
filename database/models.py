@@ -150,6 +150,14 @@ class Chunk(Base):
     created_at     = Column(DateTime, server_default=func.now())
 
 
+class Section(Base):
+    """Secciones creadas por el usuario. Existen aunque todavía no tengan documentos;
+    las que tienen documentos también salen de `nodes.dominio`."""
+    __tablename__ = "sections"
+    nombre     = Column(String, primary_key=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
 class ScriptRun(Base):
     """Log de ejecución de scripts del registry."""
     __tablename__ = "script_runs"

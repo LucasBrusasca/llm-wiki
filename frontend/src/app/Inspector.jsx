@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   X, ExternalLink, MessageSquare, Share2, ArrowUpRight, ArrowDownLeft, ArrowRight, Copy, Check,
-  Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight,
+  Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight, Pencil, FolderInput, Loader2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -272,6 +272,58 @@ function Preview({ node }) {
   );
 }
 
+/** Edición manual de título, autor y tema (se guarda en la API). */
+function EditarNodo({ node, temas, onGuardar, onCancelar }) {
+  const [label, setLabel] = useState(node.label || '');
+  const [autor, setAutor] = useState(node.autor || '');
+  const [tema, setTema] = useState(node.tema && node.tema !== 'Sin clasificar' ? node.tema : '');
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState(null);
+  const sugerencias = [...(temas?.values() || [])].filter((t) => t.key !== 'sin-tema').map((t) => t.nombre);
+
+  async function guardar(e) {
+    e?.preventDefault();
+    const campos = {};
+    if (label.trim() !== (node.label || '').trim()) campos.label = label;
+    if (autor.trim() !== (node.autor || '').trim()) campos.autor = autor;
+    if (tema.trim() !== (node.tema && node.tema !== 'Sin clasificar' ? node.tema : '').trim()) campos.tema = tema;
+    if (!Object.keys(campos).length) { onCancelar(); return; }
+    setGuardando(true); setError(null);
+    try {
+      await onGuardar(campos);
+    } catch (err) {
+      setError(err.message);
+      setGuardando(false);
+    }
+  }
+
+  const campo = 'h-8 w-full rounded-sm border border-hair bg-surface-2 px-2 text-[12.5px] text-ink placeholder:text-ink-dim focus:border-accent/60 focus:outline-none';
+  return (
+    <form onSubmit={guardar} className="mt-2 flex flex-col gap-2" onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), onCancelar())}>
+      <label className="block">
+        <span className="mb-0.5 block text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Título</span>
+        <textarea value={label} onChange={(e) => setLabel(e.target.value)} rows={2} autoFocus className={cn(campo, 'h-auto resize-none py-1.5')} />
+      </label>
+      <label className="block">
+        <span className="mb-0.5 block text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Autor</span>
+        <input value={autor} onChange={(e) => setAutor(e.target.value)} placeholder="Sin autor" className={campo} />
+      </label>
+      <label className="block">
+        <span className="mb-0.5 block text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Tema</span>
+        <input value={tema} onChange={(e) => setTema(e.target.value)} list="algedi-temas" placeholder="Sin tema (usa el automático)" className={campo} />
+        <datalist id="algedi-temas">{sugerencias.map((t) => <option key={t} value={t} />)}</datalist>
+      </label>
+      {error && <p className="text-[12px] text-danger">{error}</p>}
+      <div className="flex gap-1.5">
+        <Button type="submit" variant="default" size="sm" disabled={guardando || !label.trim()}>
+          {guardando ? <Loader2 className="animate-spin" /> : <Check />} Guardar
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={onCancelar}>Cancelar</Button>
+      </div>
+    </form>
+  );
+}
+
 /** Sin selección: panorama de la sección en vez de un hueco vacío. */
 function Panorama({ seccion, seccionCount, edgesCount, relIndex, nodesById, topConceptos, onSelect, onConcepto }) {
   const conectados = useMemo(
@@ -349,15 +401,17 @@ function Panorama({ seccion, seccionCount, edgesCount, relIndex, nodesById, topC
 export default function Inspector({
   node, nodesById, relIndex, seccion, seccionCount, edgesCount, topConceptos,
   onSelect, onClose, onAsk, onConcepto, onVerEnGrafo, vista, pinnedEdge, onPin, onClearPin,
-  onAbrir, camino = [], onVolver, temas, onTema, ego, onFijar, ancho = 420,
+  onAbrir, camino = [], onVolver, temas, onTema, ego, onFijar, ancho = 420, onGuardar, onMover,
 }) {
   // Vista previa primero; si el documento no tiene nada que previsualizar, Resumen.
   const [tab, setTab] = useState('preview');
   const [copiado, setCopiado] = useState(false);
+  const [editando, setEditando] = useState(false);
   const rels = useMemo(() => (node ? relIndex.get(node.id) || [] : []), [node, relIndex]);
 
   useEffect(() => {
     setCopiado(false);
+    setEditando(false);
     setTab(tienePreview(node) ? 'preview' : 'resumen');
   }, [node?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -453,6 +507,16 @@ export default function Inspector({
             );
           })()}
           <div className="ml-auto flex items-center">
+            <Hint texto="Editar título, autor y tema">
+              <Button variant="ghost" size="icon-sm" onClick={() => setEditando((v) => !v)} aria-label="Editar" className={cn(editando && 'text-accent')}>
+                <Pencil />
+              </Button>
+            </Hint>
+            <Hint texto="Mover a sección…">
+              <Button variant="ghost" size="icon-sm" onClick={() => onMover?.([node.id])} aria-label="Mover a sección">
+                <FolderInput />
+              </Button>
+            </Hint>
             <Hint texto={copiado ? 'Copiado' : 'Copiar ID'}>
               <Button variant="ghost" size="icon-sm" onClick={copiarId} aria-label="Copiar ID">
                 {copiado ? <Check className="text-accent" /> : <Copy />}
@@ -463,7 +527,23 @@ export default function Inspector({
             </Hint>
           </div>
         </div>
-        <h2 className="mt-1.5 text-[15px] font-semibold leading-snug tracking-[-0.01em] text-ink">{node.label}</h2>
+        {editando ? (
+          <EditarNodo
+            key={node.id}
+            node={node}
+            temas={temas}
+            onCancelar={() => setEditando(false)}
+            onGuardar={async (campos) => { await onGuardar(node.id, campos); setEditando(false); }}
+          />
+        ) : (
+          <h2
+            className="mt-1.5 text-[15px] font-semibold leading-snug tracking-[-0.01em] text-ink"
+            onDoubleClick={() => setEditando(true)}
+            title="Doble clic para editar"
+          >
+            {node.label}
+          </h2>
+        )}
 
         <div className="mt-3 flex flex-wrap gap-1.5">
           {fuente && (

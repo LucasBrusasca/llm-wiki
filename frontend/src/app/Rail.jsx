@@ -143,7 +143,7 @@ export default function Rail({
                   style={{ '--c': colorSeccion(i) }}
                 />
               )}
-              menu={s.count > 0 && (
+              menu={(
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button type="button" aria-label={`Opciones de ${s.nombre}`} className="grid size-5 place-items-center rounded-xs text-ink-dim hover:bg-surface-3 hover:text-ink">

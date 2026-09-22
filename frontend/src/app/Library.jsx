@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Search, X, ChevronRight, ArrowDownUp, Rows3, Link2, Sparkles, Upload, AlertTriangle, Hash,
+  Search, X, ChevronRight, ArrowDownUp, Rows3, Link2, Sparkles, Upload, AlertTriangle, Hash, FolderInput,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -42,7 +42,7 @@ function Resaltado({ texto, terms }) {
   return out;
 }
 
-function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, semantic }) {
+function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, semantic, marcado, marcando, onMarca }) {
   const ref = useRef(null);
   useEffect(() => {
     if (selected) ref.current?.scrollIntoView({ block: 'nearest' });
@@ -57,18 +57,36 @@ function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, se
     <button
       ref={ref}
       type="button"
-      onClick={() => onSelect(node.id)}
+      onClick={(e) => {
+        // Ctrl/⌘+clic marca para acciones en lote sin cambiar el documento abierto.
+        if (e.metaKey || e.ctrlKey) { e.preventDefault(); onMarca(node.id); return; }
+        onSelect(node.id);
+      }}
       aria-current={selected || undefined}
       style={{ '--c': colorFuente(node) }}
       className={cn(
         'group relative grid w-full items-center gap-3 pl-4 pr-4 text-left transition-colors bar-cat',
         compact
-          ? 'h-[40px] grid-cols-[26px_minmax(0,1fr)_auto]'
-          : 'h-[50px] grid-cols-[34px_minmax(0,1fr)_56px_120px_76px_40px]',
+          ? 'h-[40px] grid-cols-[14px_26px_minmax(0,1fr)_auto]'
+          : 'h-[50px] grid-cols-[14px_34px_minmax(0,1fr)_56px_120px_76px_40px]',
+        marcado && 'bg-accent/[0.06]',
         selected ? 'bg-surface-3' : 'hover:bg-surface-2/80',
       )}
     >
       {selected && <span className="absolute inset-y-0 left-0 w-[2px] bg-accent" />}
+      <span
+        role="checkbox"
+        aria-checked={marcado}
+        aria-label="Marcar para acciones en lote"
+        onClick={(e) => { e.stopPropagation(); onMarca(node.id); }}
+        className={cn(
+          'grid size-3.5 place-items-center rounded-[3px] border transition-opacity',
+          marcado ? 'border-accent bg-accent opacity-100' : 'border-hair-strong',
+          !marcado && (marcando ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'),
+        )}
+      >
+        {marcado && <svg viewBox="0 0 10 10" className="size-2 text-accent-ink"><path d="M2 5.2 4.1 7.2 8 3" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg>}
+      </span>
       <Thumb
         node={node}
         className={compact ? 'h-[26px] w-[26px]' : 'h-[38px] w-[34px]'}
@@ -231,6 +249,7 @@ export default function Library({
   selectedId, onSelect, highlightIds, onClearHighlight, relIndex,
   filtros, onToggleTipo, onToggleFuente, onToggleConcepto, onToggleTema, onNombrarTemas, onLimpiar,
   onRetry, onIngest, compact,
+  marcados = new Set(), onMarca, onMarcarVarios, onLimpiarMarcas, onMoverMarcados,
 }) {
   const [cerrados, setCerrados] = useState(() => new Set());
   const terms = useMemo(() => normalizar(query.trim()).split(/\s+/).filter(Boolean), [query]);
@@ -305,6 +324,9 @@ export default function Library({
                   semantic={g.semantic}
                   compact={compact}
                   onSelect={onSelect}
+                  marcado={marcados.has(n.id)}
+                  marcando={marcados.size > 0}
+                  onMarca={onMarca}
                 />
               ))}
             </div>
@@ -376,6 +398,20 @@ export default function Library({
         </div>
       </div>
 
+      {marcados.size > 0 && (
+        <div className="flex shrink-0 items-center gap-2 hairline-b bg-accent/[0.06] px-4 py-1.5 text-[12px]">
+          <span className="text-ink">{marcados.size} {marcados.size === 1 ? 'marcado' : 'marcados'}</span>
+          <Button variant="outline" size="sm" onClick={onMoverMarcados}><FolderInput /> Mover a sección…</Button>
+          <button
+            type="button"
+            onClick={() => onMarcarVarios(grupos.flatMap((g) => g.items.map((n) => n.id)))}
+            className="text-[11.5px] text-ink-dim hover:text-ink"
+          >
+            Marcar los {visibleCount} visibles
+          </button>
+          <button type="button" onClick={onLimpiarMarcas} className="ml-auto text-[11.5px] text-ink-dim hover:text-ink">Desmarcar</button>
+        </div>
+      )}
       {(chips.length > 0 || highlightIds.size > 0) && (
         <div className="flex shrink-0 flex-wrap items-center gap-1.5 hairline-b px-4 py-1.5">
           {chips.map((c) => (
