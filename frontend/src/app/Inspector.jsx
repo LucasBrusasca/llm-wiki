@@ -326,23 +326,6 @@ function Panorama({ seccion, seccionCount, edgesCount, relIndex, nodesById, topC
         </Seccion>
       )}
 
-      {topConceptos.length > 0 && (
-        <Seccion titulo="Conceptos recurrentes">
-          <div className="flex flex-wrap gap-1">
-            {topConceptos.slice(0, 12).map((c) => (
-              <button
-                key={c.key}
-                type="button"
-                onClick={() => onConcepto(c.key)}
-                className="rounded-xs border border-hair bg-surface-2 px-1.5 text-[11.5px] leading-[20px] text-ink-muted hover:border-hair-strong hover:text-ink"
-              >
-                {c.label} <span className="text-ink-dim">{c.count}</span>
-              </button>
-            ))}
-          </div>
-        </Seccion>
-      )}
-
       <Seccion titulo="Atajos">
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[12px]">
           {[
