@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  X, ExternalLink, MessageSquare, Share2, ArrowUpRight, ArrowDownLeft, Copy, Check,
-  Hash, FileQuestion, Link2, CornerDownRight,
+  X, ExternalLink, MessageSquare, Share2, ArrowUpRight, ArrowDownLeft, ArrowRight, Copy, Check,
+  Hash, Link2, CornerDownRight, Pin, PinOff, Undo2, ChevronRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -9,7 +9,10 @@ import { Hint } from '@/components/ui/tooltip';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import {
   iconoDe, tipoMeta, fuenteLabel, relacionLabel, procedenciaLabel, RELACIONES,
+  colorTipo, colorFuente,
 } from '@/lib/nodes';
+import { temaDe } from '@/lib/temas';
+import Thumb, { tieneThumb } from '@/app/Thumb';
 import { cn, fechaCorta, pct, normalizar } from '@/lib/utils';
 
 function urlFuente(node) {
@@ -53,10 +56,15 @@ function Barra({ valor }) {
   );
 }
 
-/** Una relación: qué vínculo, con quién, por qué y de dónde salió. */
-function Relacion({ item, node, other, onSelect, onConcepto }) {
+const mismaArista = (e, pin) => !!pin && e.source === pin.source && e.target === pin.target && e.label === pin.label;
+
+/**
+ * Una relación: qué vínculo, con quién, por qué y de dónde salió.
+ * Clic en la tarjeta = fijar el vínculo en el grafo (el inspector NO cambia de
+ * documento). Para ir al otro documento hay un "Abrir" explícito.
+ */
+function Relacion({ item, other, onAbrir, onConcepto, fijada, onPin }) {
   const { edge, dir } = item;
-  const OtherIcon = iconoDe(other);
   const ev = edge.evidencia || {};
   const procedencia = [
     procedenciaLabel(edge),
@@ -67,11 +75,21 @@ function Relacion({ item, node, other, onSelect, onConcepto }) {
   ].filter(Boolean);
 
   return (
-    <li className="group hairline-b py-3 last:border-b-0">
+    <li
+      role="button"
+      tabIndex={0}
+      aria-pressed={fijada}
+      onClick={() => onPin(edge)}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPin(edge); } }}
+      className={cn(
+        'group relative -mx-2 my-1 cursor-pointer rounded-md border px-2 py-2.5 transition-colors',
+        fijada ? 'border-accent/50 bg-accent/[0.06] glow-sel' : 'border-transparent hover:border-hair hover:bg-surface-2/60',
+      )}
+    >
       <div className="flex items-center gap-1.5 text-[11.5px] text-ink-dim">
-        {dir === 'out'
-          ? <ArrowUpRight className="size-3 text-ink-dim" />
-          : <ArrowDownLeft className="size-3 text-ink-dim" />}
+        {fijada
+          ? <Pin className="size-3 text-accent" />
+          : dir === 'out' ? <ArrowUpRight className="size-3" /> : <ArrowDownLeft className="size-3" />}
         <span>
           {dir === 'out'
             ? <>este documento <span className="text-ink-muted">{relacionLabel(edge.label)}</span></>
@@ -83,17 +101,22 @@ function Relacion({ item, node, other, onSelect, onConcepto }) {
         </span>
       </div>
 
-      <button
-        type="button"
-        onClick={() => other && onSelect(other.id)}
-        disabled={!other}
-        className="mt-1.5 flex w-full items-start gap-2 rounded-sm text-left disabled:opacity-60"
-      >
-        <OtherIcon className="mt-0.5 size-3.5 shrink-0 text-ink-dim group-hover:text-accent" />
-        <span className="text-[12.5px] font-medium leading-snug text-ink underline-offset-2 group-hover:underline">
+      <div className="mt-2 flex items-start gap-2">
+        {other ? <Thumb node={other} className="h-[30px] w-[26px]" /> : null}
+        <span className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-ink">
           {other?.label || item.otherId}
         </span>
-      </button>
+        {other && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onAbrir(other.id, edge); }}
+            className="flex shrink-0 items-center gap-1 rounded-xs border border-hair px-1.5 py-0.5 text-[11px] text-ink-muted opacity-70 transition hover:border-hair-strong hover:text-ink group-hover:opacity-100"
+            title="Ir a este documento siguiendo el vínculo (queda en el camino para volver)"
+          >
+            Abrir <ArrowRight className="size-3" />
+          </button>
+        )}
+      </div>
 
       {edge.description && (
         <p className="mt-1.5 flex gap-1.5 text-[12px] leading-relaxed text-ink-muted">
@@ -108,7 +131,7 @@ function Relacion({ item, node, other, onSelect, onConcepto }) {
             <button
               key={c}
               type="button"
-              onClick={() => onConcepto(normalizar(c))}
+              onClick={(e) => { e.stopPropagation(); onConcepto(normalizar(c)); }}
               className="rounded-xs border border-hair bg-surface-2 px-1.5 text-[11px] leading-[18px] text-ink-muted hover:border-hair-strong hover:text-ink"
             >
               {c}
@@ -125,7 +148,7 @@ function Relacion({ item, node, other, onSelect, onConcepto }) {
   );
 }
 
-function Relaciones({ node, rels, nodesById, onSelect, onConcepto }) {
+function Relaciones({ node, rels, nodesById, onAbrir, onConcepto, pinnedEdge, onPin, onClearPin }) {
   const [filtro, setFiltro] = useState('todas');
   const [limite, setLimite] = useState(10);
   useEffect(() => { setFiltro('todas'); setLimite(10); }, [node.id]);
@@ -145,9 +168,23 @@ function Relaciones({ node, rels, nodesById, onSelect, onConcepto }) {
   }
 
   const lista = filtro === 'todas' ? rels : rels.filter((r) => r.edge.label === filtro);
+  const fijadaOtro = pinnedEdge && nodesById.get(pinnedEdge.source === node.id ? pinnedEdge.target : pinnedEdge.source);
 
   return (
     <div className="px-4 pt-3">
+      {pinnedEdge ? (
+        <div className="mb-2 flex items-center gap-2 rounded-sm border border-accent/40 bg-accent/[0.07] px-2 py-1.5 text-[11.5px]">
+          <Pin className="size-3 shrink-0 text-accent" />
+          <span className="min-w-0 flex-1 truncate text-ink-muted">
+            Fijada: <span className="text-ink">{fijadaOtro?.label || '—'}</span>
+          </span>
+          <button type="button" onClick={onClearPin} className="flex shrink-0 items-center gap-1 text-ink-dim hover:text-ink">
+            <PinOff className="size-3" /> Quitar pin
+          </button>
+        </div>
+      ) : (
+        <p className="mb-2 text-[11px] text-ink-dim">Clic en una relación para fijarla en el grafo · «Abrir» para ir al documento.</p>
+      )}
       <div className="flex flex-wrap gap-1">
         {[['todas', rels.length], ...porTipo].map(([k, n]) => (
           <button
@@ -163,15 +200,16 @@ function Relaciones({ node, rels, nodesById, onSelect, onConcepto }) {
           </button>
         ))}
       </div>
-      <ul className="mt-1">
+      <ul className="mt-1.5">
         {lista.slice(0, limite).map((r) => (
           <Relacion
             key={`${r.edge.source}-${r.edge.target}-${r.edge.label}`}
             item={r}
-            node={node}
             other={nodesById.get(r.otherId)}
-            onSelect={onSelect}
+            onAbrir={onAbrir}
             onConcepto={onConcepto}
+            fijada={mismaArista(r.edge, pinnedEdge)}
+            onPin={onPin}
           />
         ))}
       </ul>
@@ -184,18 +222,25 @@ function Relaciones({ node, rels, nodesById, onSelect, onConcepto }) {
   );
 }
 
+/** ¿Hay algo que previsualizar? Si no, el inspector abre directo en Resumen. */
+function tienePreview(node) {
+  if (!node) return false;
+  if (ytId(node.fuente_url)) return true;
+  if ((node.fuente || '').toLowerCase() === 'pdf' && node.fuente_path) return true;
+  return tieneThumb(node);
+}
+
 function Preview({ node }) {
-  const [thumbOk, setThumbOk] = useState(true);
-  useEffect(() => setThumbOk(true), [node.id]);
   const f = (node.fuente || '').toLowerCase();
   const yt = ytId(node.fuente_url);
 
   if (yt) {
     return (
       <div className="p-4">
-        <div className="aspect-video overflow-hidden rounded-sm border border-hair">
+        <div className="aspect-video overflow-hidden rounded-md border border-hair">
           <iframe title="Video" className="size-full" src={`https://www.youtube-nocookie.com/embed/${yt}`} allowFullScreen />
         </div>
+        {node.desc && <p className="mt-3 text-[12.5px] leading-relaxed text-ink-muted">{node.desc}</p>}
       </div>
     );
   }
@@ -205,30 +250,23 @@ function Preview({ node }) {
         <iframe
           title={`Vista previa de ${node.label}`}
           src={`/files/${encodeURIComponent(node.id)}#view=FitH&toolbar=0`}
-          className="min-h-0 flex-1 rounded-sm border border-hair bg-white"
+          className="min-h-0 flex-1 rounded-md border border-hair bg-white"
         />
       </div>
     );
   }
   return (
     <div className="p-4">
-      {node.fuente_path && thumbOk ? (
-        <img
-          src={`/thumb/${encodeURIComponent(node.id)}`}
-          alt=""
-          onError={() => setThumbOk(false)}
-          className="w-full rounded-sm border border-hair bg-surface-2"
-        />
-      ) : (
-        <div className="grid place-items-center rounded-sm border border-dashed border-hair-strong py-10 text-center text-[12px] text-ink-dim">
-          <FileQuestion className="mb-2 size-5" />
-          Sin vista previa embebible para este origen.
-        </div>
-      )}
+      <div className="overflow-hidden rounded-md border border-hair">
+        <Thumb node={node} eager className="aspect-[4/3] w-full" iconClass="size-8" rounded="rounded-none" />
+      </div>
       {node.fragmento && (
-        <blockquote className="mt-4 border-l-2 border-hair-strong pl-3 text-[12.5px] leading-relaxed text-ink-muted">
+        <blockquote className="mt-4 border-l-2 border-accent/60 pl-3 text-[12.5px] leading-relaxed text-ink-muted">
           {node.fragmento}
         </blockquote>
+      )}
+      {node.desc && node.desc !== node.fragmento && (
+        <p className="mt-3 text-[12.5px] leading-relaxed text-ink/85">{node.desc}</p>
       )}
     </div>
   );
@@ -311,7 +349,7 @@ function Panorama({ seccion, seccionCount, edgesCount, relIndex, nodesById, topC
             ['↑ ↓', 'moverse por la lista'],
             ['/', 'filtrar la biblioteca'],
             ['Ctrl K', 'buscar en todo'],
-            ['1 2 3', 'Lista · Split · Grafo'],
+            ['1 2 3 4', 'Lista · Split · Grafo · 3D'],
             ['Esc', 'cerrar el detalle'],
           ].map(([k, v]) => (
             <React.Fragment key={k}>
@@ -327,15 +365,20 @@ function Panorama({ seccion, seccionCount, edgesCount, relIndex, nodesById, topC
 
 export default function Inspector({
   node, nodesById, relIndex, seccion, seccionCount, edgesCount, topConceptos,
-  onSelect, onClose, onAsk, onConcepto, onVerEnGrafo, vista,
+  onSelect, onClose, onAsk, onConcepto, onVerEnGrafo, vista, pinnedEdge, onPin, onClearPin,
+  onAbrir, camino = [], onVolver, temas, onTema,
 }) {
-  const [tab, setTab] = useState('resumen');
+  // Vista previa primero; si el documento no tiene nada que previsualizar, Resumen.
+  const [tab, setTab] = useState('preview');
   const [copiado, setCopiado] = useState(false);
   const rels = useMemo(() => (node ? relIndex.get(node.id) || [] : []), [node, relIndex]);
 
-  useEffect(() => { setCopiado(false); }, [node?.id]);
+  useEffect(() => {
+    setCopiado(false);
+    setTab(tienePreview(node) ? 'preview' : 'resumen');
+  }, [node?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const shell = 'flex w-[360px] shrink-0 flex-col hairline-l bg-surface xl:w-[410px]';
+  const shell = 'flex w-[370px] shrink-0 flex-col hairline-l bg-surface xl:w-[420px]';
 
   if (!node) {
     return (
@@ -367,11 +410,63 @@ export default function Inspector({
 
   return (
     <aside className={shell} aria-label="Detalle del documento">
+      {camino.length > 0 && (
+        <nav aria-label="Camino" className="flex shrink-0 items-center gap-1 hairline-b bg-accent/[0.04] px-3 py-1.5 text-[11px]">
+          <span className="shrink-0 text-ink-dim">Camino</span>
+          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden">
+            {camino.map((id, i) => (
+              <React.Fragment key={`${id}-${i}`}>
+                {/* Con camino largo se muestran el origen y los dos últimos pasos. */}
+                {(i === 0 || i >= camino.length - 2) ? (
+                  <button
+                    type="button"
+                    onClick={() => onVolver(i)}
+                    className="min-w-0 max-w-[110px] truncate rounded-xs px-1 text-ink-muted hover:bg-surface-2 hover:text-ink"
+                    title={nodesById.get(id)?.label}
+                  >
+                    {nodesById.get(id)?.label || id}
+                  </button>
+                ) : i === 1 ? <span className="px-0.5 text-ink-dim">…</span> : null}
+                {(i === 0 || i >= camino.length - 2) && <ChevronRight className="size-3 shrink-0 text-ink-dim" />}
+              </React.Fragment>
+            ))}
+            <span className="min-w-0 truncate px-1 text-ink">{node.label}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => onVolver(0)}
+            className="flex shrink-0 items-center gap-1 rounded-xs px-1 text-ink-dim hover:bg-surface-2 hover:text-accent"
+            title="Volver al documento de partida"
+          >
+            <Undo2 className="size-3" /> Origen
+          </button>
+        </nav>
+      )}
       <header className="shrink-0 px-4 pb-3 pt-3">
         <div className="flex items-center gap-1.5 text-[11.5px] text-ink-dim">
-          <Icon className="size-3.5" />
-          <span>{tipoMeta(node.type).label}</span>
-          {fuenteLabel(node) && <><span>·</span><span>{fuenteLabel(node)}</span></>}
+          <span className="chip-cat flex items-center gap-1 rounded-xs px-1.5 py-px text-[10.5px] font-medium" style={{ '--c': colorTipo(node.type) }}>
+            <Icon className="size-3" /> {tipoMeta(node.type).label}
+          </span>
+          {fuenteLabel(node) && (
+            <span className="chip-cat rounded-xs px-1.5 py-px text-[10.5px] font-medium" style={{ '--c': colorFuente(node) }}>
+              {fuenteLabel(node)}
+            </span>
+          )}
+          {(() => {
+            const t = temas ? temaDe(temas, node) : null;
+            if (!t || t.key === 'sin-tema') return null;
+            return (
+              <button
+                type="button"
+                onClick={() => onTema?.(t.key)}
+                className="flex min-w-0 items-center gap-1 truncate text-[10.5px] text-ink-muted hover:text-ink"
+                title={t.auto ? `${t.nombre} — nombre automático. Clic para filtrar por este tema.` : `Filtrar por «${t.nombre}»`}
+              >
+                <span className="size-1.5 shrink-0 rounded-full dot-cat" style={{ '--c': t.color }} />
+                <span className="truncate">{t.nombre}</span>
+              </button>
+            );
+          })()}
           <div className="ml-auto flex items-center">
             <Hint texto={copiado ? 'Copiado' : 'Copiar ID'}>
               <Button variant="ghost" size="icon-sm" onClick={copiarId} aria-label="Copiar ID">
@@ -397,16 +492,20 @@ export default function Inspector({
           {vista === 'lista' && (
             <Button variant="ghost" size="sm" onClick={onVerEnGrafo}><Share2 /> Ver en grafo</Button>
           )}
+          {pinnedEdge && (
+            <Button variant="ghost" size="sm" onClick={onClearPin} title="Soltar la relación fijada"><PinOff /> Quitar pin</Button>
+          )}
         </div>
       </header>
 
       <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
         <TabsList>
+          <TabsTrigger value="preview">Vista previa</TabsTrigger>
           <TabsTrigger value="resumen">Resumen</TabsTrigger>
           <TabsTrigger value="relaciones">
             Relaciones <span className="text-[11px] text-ink-dim">{rels.length}</span>
+            {pinnedEdge && <Pin className="size-3 text-accent" />}
           </TabsTrigger>
-          <TabsTrigger value="preview">Vista previa</TabsTrigger>
         </TabsList>
 
         <TabsContent value="resumen" className="min-h-0 flex-1 overflow-y-auto pb-24">
@@ -476,19 +575,24 @@ export default function Inspector({
               <ul className="-mx-1.5">
                 {rels.slice(0, 4).map((r) => {
                   const o = nodesById.get(r.otherId);
-                  const OI = iconoDe(o);
+                  const fija = mismaArista(r.edge, pinnedEdge);
                   return (
                     <li key={`${r.edge.source}-${r.edge.target}`}>
                       <button
                         type="button"
-                        onClick={() => o && onSelect(o.id)}
-                        className="flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left hover:bg-surface-2"
+                        onClick={() => onPin(r.edge)}
+                        title="Fijar este vínculo en el grafo"
+                        className={cn(
+                          'flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left',
+                          fija ? 'bg-accent/[0.08]' : 'hover:bg-surface-2',
+                        )}
                       >
-                        <OI className="size-3.5 shrink-0 text-ink-dim" />
+                        {o ? <Thumb node={o} className="h-[26px] w-[22px]" iconClass="size-3" /> : null}
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-[12.5px] text-ink">{o?.label || r.otherId}</span>
                           <span className="block truncate text-[11px] text-ink-dim">{relacionLabel(r.edge.label)} · {pct(r.edge.score)}</span>
                         </span>
+                        {fija && <Pin className="size-3 shrink-0 text-accent" />}
                       </button>
                     </li>
                   );
@@ -499,7 +603,16 @@ export default function Inspector({
         </TabsContent>
 
         <TabsContent value="relaciones" className="min-h-0 flex-1 overflow-y-auto pb-24">
-          <Relaciones node={node} rels={rels} nodesById={nodesById} onSelect={onSelect} onConcepto={onConcepto} />
+          <Relaciones
+            node={node}
+            rels={rels}
+            nodesById={nodesById}
+            onAbrir={onAbrir}
+            onConcepto={onConcepto}
+            pinnedEdge={pinnedEdge}
+            onPin={onPin}
+            onClearPin={onClearPin}
+          />
         </TabsContent>
 
         <TabsContent value="preview" className="min-h-0 flex-1 overflow-y-auto">

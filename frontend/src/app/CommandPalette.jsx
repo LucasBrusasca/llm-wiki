@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Upload, Terminal, MessageSquare, List, Columns2, Share2, Layers, Sparkles } from 'lucide-react';
+import { Upload, Terminal, MessageSquare, List, Columns2, Share2, Orbit, Layers, Sparkles } from 'lucide-react';
 import {
   CommandDialog, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem,
 } from '@/components/ui/command';
@@ -14,6 +14,7 @@ const ACCIONES = [
   { id: 'lista', label: 'Vista: Lista', icon: List },
   { id: 'split', label: 'Vista: Split', icon: Columns2 },
   { id: 'grafo', label: 'Vista: Grafo', icon: Share2 },
+  { id: '3d', label: 'Vista: Explorar 3D', icon: Orbit },
 ];
 
 export default function CommandPalette({

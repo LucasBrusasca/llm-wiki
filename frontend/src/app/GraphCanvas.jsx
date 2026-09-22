@@ -3,13 +3,14 @@ import ReactFlow, {
   Background, Handle, Position, ReactFlowProvider, useReactFlow, useStore,
 } from 'reactflow';
 import 'reactflow/dist/base.css';
-import { Plus, Minus, Maximize, Waypoints } from 'lucide-react';
+import { Plus, Minus, Maximize, Waypoints, Pin, X } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
-import { iconoDe } from '@/lib/nodes';
+import ColorPanel, { calcularLeyenda } from '@/app/ColorPanel';
+import Thumb from '@/app/Thumb';
 import { cn, truncar } from '@/lib/utils';
 
 const W = 172;          // ancho de la tarjeta de nodo
-const H = 26;           // alto
+const H = 30;           // alto (entra una miniatura de 20×24)
 const ZOOM_LEJOS = 0.55; // por debajo, las tarjetas pasan a punto (vista de conjunto)
 const K_FUERTES = 2;    // aristas por nodo en el modo "fuertes"
 
@@ -24,7 +25,7 @@ function layout(nodes, edges) {
   const n = nodes.length;
   if (!n) return new Map();
   const idx = new Map(nodes.map((nd, i) => [nd.id, i]));
-  const k = 150;                                   // distancia ideal entre nodos
+  const k = 170;                                   // distancia ideal entre nodos
   const R = Math.sqrt(n) * k * 0.6;
   // Semilla: coordenadas del backend normalizadas a un disco de radio R.
   const sx = nodes.map((nd) => nd.x3d ?? 0);
@@ -141,33 +142,35 @@ const centro = { left: '50%', top: '50%', opacity: 0, pointerEvents: 'none', wid
 const DocNode = memo(({ data }) => {
   const zoom = useStore(zoomSel) || 1;
   const lejos = zoom < ZOOM_LEJOS;
-  const Icon = iconoDe(data.node);
-  const { estado, marcado } = data; // estado: 'sel' | 'vecino' | 'tenue' | 'normal'
+  const { estado, marcado, color } = data; // estado: 'sel' | 'pin' | 'vecino' | 'tenue' | 'normal'
+  const fuerte = estado === 'sel' || estado === 'pin';
 
   if (lejos) {
-    // Vista de conjunto: punto de tamaño constante en pantalla. Sólo el nodo
-    // elegido, sus vecinos y lo marcado por el agente llevan etiqueta.
+    // Vista de conjunto: punto de tamaño constante en pantalla, del color de su
+    // tema/tipo/origen. Sin miniaturas acá (serían cientos de imágenes diminutas).
     const inv = 1 / zoom;
     const { etiqueta } = data;
+    const d = (fuerte ? 10 : 7) * inv;
     return (
-      <div title={data.node.label} className="relative" style={{ width: W, height: H }}>
+      <div title={data.node.label} className="relative" style={{ width: W, height: H, '--c': color }}>
         <Handle type="target" position={Position.Top} style={centro} isConnectable={false} />
         <Handle type="source" position={Position.Bottom} style={centro} isConnectable={false} />
         <span
-          className={cn(
-            'absolute left-1/2 top-1/2 block rounded-full transition-opacity',
-            estado === 'sel' ? 'bg-accent' : marcado ? 'bg-accent-soft' : estado === 'vecino' ? 'bg-ink' : 'bg-ink-dim',
-            estado === 'tenue' && 'opacity-30',
-          )}
-          style={{ width: 7 * inv, height: 7 * inv, transform: 'translate(-50%,-50%)' }}
+          className={cn('absolute left-1/2 top-1/2 block rounded-full dot-cat transition-opacity', estado === 'tenue' && 'opacity-25')}
+          style={{
+            width: d,
+            height: d,
+            transform: 'translate(-50%,-50%)',
+            boxShadow: fuerte ? `0 0 0 ${2 * inv}px var(--color-canvas), 0 0 0 ${3.5 * inv}px var(--color-accent)` : marcado ? `0 0 0 ${2 * inv}px var(--color-accent-soft)` : undefined,
+          }}
         />
         {etiqueta && (
           <span
             className={cn(
               'absolute left-1/2 top-1/2 whitespace-nowrap rounded-xs border px-1 text-[11px]',
-              estado === 'sel' ? 'border-accent/50 bg-surface-3 text-ink' : 'border-hair-strong bg-surface text-ink-muted',
+              fuerte ? 'border-accent/60 bg-surface-3 text-ink' : 'border-hair-strong bg-surface/95 text-ink-muted',
             )}
-            style={{ transform: `translate(${6 * inv}px,-50%) scale(${inv})`, transformOrigin: 'left center' }}
+            style={{ transform: `translate(${8 * inv}px,-50%) scale(${inv})`, transformOrigin: 'left center' }}
           >
             {truncar(data.node.label, 36)}
           </span>
@@ -176,21 +179,22 @@ const DocNode = memo(({ data }) => {
     );
   }
 
+  // Cerca: tarjeta con miniatura real del documento (o ícono teñido si no hay).
   return (
-    <div title={data.node.label} style={{ width: W }}>
+    <div title={data.node.label} style={{ width: W, '--c': color }}>
       <Handle type="target" position={Position.Top} style={centro} isConnectable={false} />
       <Handle type="source" position={Position.Bottom} style={centro} isConnectable={false} />
       <div
         className={cn(
-          'flex items-center gap-1.5 rounded-sm border bg-surface px-2 text-[11.5px] transition-[opacity,border-color,background-color]',
-          estado === 'sel' && 'border-accent bg-surface-3 text-ink',
+          'flex items-center gap-2 overflow-hidden rounded-sm border bg-surface pl-1 pr-2 text-[11.5px] bar-cat transition-[opacity,border-color,background-color,box-shadow]',
+          fuerte && 'border-accent bg-surface-3 text-ink glow-sel',
           estado === 'vecino' && 'border-hair-strong text-ink',
           estado === 'normal' && 'border-hair text-ink-muted hover:border-hair-strong hover:text-ink',
-          estado === 'tenue' && 'border-hair text-ink-dim opacity-30',
+          estado === 'tenue' && 'border-hair text-ink-dim opacity-25',
         )}
         style={{ height: H }}
       >
-        <Icon className={cn('size-3 shrink-0', estado === 'sel' ? 'text-accent' : 'text-ink-dim')} />
+        <Thumb node={data.node} color={color} className="ml-[3px] h-[24px] w-[20px]" iconClass="size-3" />
         <span className="truncate">{truncar(data.node.label, 30)}</span>
         {marcado && <span className="ml-auto size-1.5 shrink-0 rounded-full bg-accent" />}
       </div>
@@ -219,11 +223,23 @@ function BotonCanvas({ texto, onClick, children, activo }) {
   );
 }
 
-function Lienzo({ nodes, edges, visibleIds, selectedId, highlightIds, onSelect, relIndex }) {
+const esPin = (e, pin) => !!pin && e.source === pin.source && e.target === pin.target && e.label === pin.label;
+
+function Lienzo({
+  nodes, edges, visibleIds, selectedId, highlightIds, onSelect, relIndex,
+  pinnedEdge, onClearPin, colorMode, onColorMode, colorDe, temas,
+}) {
   const rf = useReactFlow();
   const [todas, setTodas] = useState(false);
   const posiciones = useMemo(() => layout(nodes, podar(edges, 3)), [nodes, edges]);
   const nodesById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+
+  // El pin sólo cuenta si toca al documento elegido y sus dos puntas están a la vista.
+  const pin = pinnedEdge && selectedId
+    && (pinnedEdge.source === selectedId || pinnedEdge.target === selectedId)
+    && visibleIds.has(pinnedEdge.source) && visibleIds.has(pinnedEdge.target)
+    ? pinnedEdge : null;
+  const pinOtro = pin ? (pin.source === selectedId ? pin.target : pin.source) : null;
 
   const vecinos = useMemo(() => {
     if (!selectedId) return null;
@@ -236,19 +252,20 @@ function Lienzo({ nodes, edges, visibleIds, selectedId, highlightIds, onSelect, 
   );
   const base = useMemo(() => (todas ? visiblesEdges : podar(visiblesEdges, K_FUERTES)), [visiblesEdges, todas]);
 
-  // Vista de conjunto: qué puntos llevan etiqueta. Prioridad: el elegido, lo que
-  // marcó el agente, sus vecinos más fuertes y, sin selección, los más conectados.
-  // Colocación greedy: una etiqueta que pisaría a otra ya puesta no se dibuja.
+  // Vista de conjunto: qué puntos llevan etiqueta. Prioridad: el elegido, el
+  // extremo fijado, lo que marcó el agente, sus vecinos y, sin selección, los
+  // más conectados. Greedy: una etiqueta que pisaría a otra no se dibuja.
   const zoom = useStore(zoomSel) || 1;
   const etiquetados = useMemo(() => {
     const out = new Set();
     if (zoom >= ZOOM_LEJOS) return out;
     const orden = [];
     if (selectedId) orden.push(selectedId);
+    if (pinOtro) orden.push(pinOtro);
     highlightIds.forEach((id) => orden.push(id));
-    if (selectedId) {
+    if (selectedId && !pinOtro) {
       (relIndex.get(selectedId) || []).forEach((r) => orden.push(r.otherId));   // ya vienen por score
-    } else {
+    } else if (!selectedId) {
       [...relIndex.entries()]
         .sort((x, y) => y[1].length - x[1].length)
         .slice(0, 16)
@@ -261,16 +278,17 @@ function Lienzo({ nodes, edges, visibleIds, selectedId, highlightIds, onSelect, 
       const p = posiciones.get(id);
       if (!p) continue;
       const label = truncar(nodesById.get(id)?.label || '', 36);
-      const x0 = p.x + W / 2 + 6 / zoom;
+      const x0 = p.x + W / 2 + 8 / zoom;
       const y0 = p.y + H / 2 - 10 / zoom;
       const r = [x0, y0, x0 + (label.length * 6.4 + 14) / zoom, y0 + 20 / zoom];
-      if (id !== selectedId && rects.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1])) continue;
+      const obligatoria = id === selectedId || id === pinOtro;
+      if (!obligatoria && rects.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1])) continue;
       rects.push(r);
       out.add(id);
       if (out.size >= limite) break;
     }
     return out;
-  }, [zoom, selectedId, highlightIds, relIndex, visibleIds, posiciones, nodesById]);
+  }, [zoom, selectedId, pinOtro, highlightIds, relIndex, visibleIds, posiciones, nodesById]);
 
   const rfNodes = useMemo(() => nodes
     .filter((n) => visibleIds.has(n.id))
@@ -278,6 +296,7 @@ function Lienzo({ nodes, edges, visibleIds, selectedId, highlightIds, onSelect, 
       let estado = 'normal';
       if (selectedId) {
         if (n.id === selectedId) estado = 'sel';
+        else if (pinOtro) estado = n.id === pinOtro ? 'pin' : 'tenue';
         else if (vecinos?.has(n.id)) estado = 'vecino';
         else estado = 'tenue';
       }
@@ -285,10 +304,16 @@ function Lienzo({ nodes, edges, visibleIds, selectedId, highlightIds, onSelect, 
         id: n.id,
         type: 'doc',
         position: posiciones.get(n.id) || { x: 0, y: 0 },
-        data: { node: n, estado, marcado: highlightIds.has(n.id), etiqueta: etiquetados.has(n.id) },
-        zIndex: estado === 'sel' ? 3 : estado === 'vecino' ? 2 : 1,
+        data: {
+          node: n,
+          estado,
+          color: colorDe(n),
+          marcado: highlightIds.has(n.id),
+          etiqueta: etiquetados.has(n.id),
+        },
+        zIndex: estado === 'sel' || estado === 'pin' ? 3 : estado === 'vecino' ? 2 : 1,
       };
-    }), [nodes, visibleIds, posiciones, selectedId, vecinos, highlightIds, etiquetados]);
+    }), [nodes, visibleIds, posiciones, selectedId, pinOtro, vecinos, highlightIds, etiquetados, colorDe]);
 
   const rfEdges = useMemo(() => {
     // Con selección: siempre todas las aristas del nodo elegido, aunque la poda las haya sacado.
@@ -298,6 +323,10 @@ function Lienzo({ nodes, edges, visibleIds, selectedId, highlightIds, onSelect, 
     }
     return [...set].map((e) => {
       const propia = selectedId && (e.source === selectedId || e.target === selectedId);
+      const fijada = esPin(e, pin);
+      let opacity = 0.8;
+      if (pin) opacity = fijada ? 1 : propia ? 0.14 : 0.06;
+      else if (selectedId) opacity = propia ? 0.6 : 0.12;
       return {
         id: `${e.source}→${e.target}→${e.label}`,
         source: e.source,
@@ -305,14 +334,16 @@ function Lienzo({ nodes, edges, visibleIds, selectedId, highlightIds, onSelect, 
         type: 'straight',
         focusable: false,
         style: {
-          stroke: propia ? 'var(--color-accent)' : '#4b5059',
-          strokeWidth: 1,
-          opacity: selectedId ? (propia ? 0.55 : 0.15) : 0.85,
+          stroke: fijada || (propia && !pin) ? 'var(--color-accent)' : 'var(--edge)',
+          strokeWidth: fijada ? 2 : 1,
+          opacity,
         },
-        zIndex: propia ? 1 : 0,
+        zIndex: fijada ? 2 : propia ? 1 : 0,
       };
     });
-  }, [base, visiblesEdges, selectedId]);
+  }, [base, visiblesEdges, selectedId, pin]);
+
+  const leyenda = useMemo(() => calcularLeyenda(nodes, visibleIds, colorMode, temas), [nodes, visibleIds, colorMode, temas]);
 
   // Encuadrar cuando cambia el conjunto visible (sección / filtros).
   const firma = useMemo(() => `${visibleIds.size}:${nodes.length}`, [visibleIds, nodes.length]);
@@ -321,45 +352,58 @@ function Lienzo({ nodes, edges, visibleIds, selectedId, highlightIds, onSelect, 
     return () => clearTimeout(t);
   }, [firma, rf]);
 
-  // Al elegir un nodo: encuadrar el nodo y sus vecinos (no sólo centrarlo), así
-  // se ve con quién se conecta sin tener que salir a buscarlos.
+  // Al elegir un nodo: encuadrar el nodo y sus vecinos. Al fijar una relación:
+  // encuadrar sólo esas dos puntas.
   const ultimo = useRef(null);
+  const claveEncuadre = pin ? `pin:${pin.source}:${pin.target}:${pin.label}` : selectedId ? `sel:${selectedId}` : null;
   useEffect(() => {
-    if (!selectedId || selectedId === ultimo.current) return;
-    ultimo.current = selectedId;
-    if (!visibleIds.has(selectedId)) return;
-    const ids = [selectedId, ...[...(vecinos || [])].filter((id) => visibleIds.has(id))];
+    if (!claveEncuadre || claveEncuadre === ultimo.current) return undefined;
+    ultimo.current = claveEncuadre;
+    if (!visibleIds.has(selectedId)) return undefined;
+    const ids = pin
+      ? [pin.source, pin.target]
+      : [selectedId, ...[...(vecinos || [])].filter((id) => visibleIds.has(id))];
     const t = setTimeout(() => {
-      rf.fitView({ nodes: ids.map((id) => ({ id })), padding: 0.25, duration: 350, maxZoom: 1.1 });
+      rf.fitView({ nodes: ids.map((id) => ({ id })), padding: pin ? 0.6 : 0.25, duration: 350, maxZoom: 1.2 });
     }, 20);
     return () => clearTimeout(t);
-  }, [selectedId, vecinos, rf, visibleIds]);
+  }, [claveEncuadre, pin, selectedId, vecinos, rf, visibleIds]);
 
   const onNodeClick = useCallback((_, n) => onSelect(n.id), [onSelect]);
 
   return (
-    <div className="algedi-flow relative size-full bg-canvas">
+    <div className="algedi-flow relative size-full">
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
         nodeTypes={nodeTypes}
         onNodeClick={onNodeClick}
+        onPaneClick={() => pinnedEdge && onClearPin?.()}
         nodesConnectable={false}
         elementsSelectable={false}
         edgesFocusable={false}
+        onlyRenderVisibleElements
         minZoom={0.1}
         maxZoom={2.5}
         fitView
         fitViewOptions={{ padding: 0.12 }}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={24} size={1} color="#16181b" />
+        <Background gap={24} size={1} color="#141a2d" />
       </ReactFlow>
 
-      <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 text-[11px] text-ink-dim">
+      <div className="pointer-events-none absolute left-3 right-3 top-3 flex items-start gap-2 text-[11px] text-ink-dim">
         <span className="rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
           {rfNodes.length} nodos · {rfEdges.length} aristas{todas ? '' : ' fuertes'}
         </span>
+        {pin && (
+          <span className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
+            <Pin className="size-3 text-accent" />
+            <span className="max-w-[220px] truncate">{nodesById.get(pinOtro)?.label}</span>
+            <button type="button" onClick={onClearPin} className="text-ink-dim hover:text-ink" aria-label="Quitar pin"><X className="size-3" /></button>
+          </span>
+        )}
+        <ColorPanel modo={colorMode} onModo={onColorMode} leyenda={leyenda} />
       </div>
 
       <div className="absolute bottom-3 left-3 flex flex-col overflow-hidden rounded-sm border border-hair bg-surface">

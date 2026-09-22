@@ -9,18 +9,22 @@ import IngestDialog from '@/app/IngestDialog';
 import ScriptsSheet from '@/app/ScriptsSheet';
 import CommandPalette from '@/app/CommandPalette';
 import { fetchGraph, fetchSections, searchSemantic } from '@/lib/api';
-import { AGRUPADORES, indexarRelaciones } from '@/lib/nodes';
+import { AGRUPADORES, MODOS_COLOR, indexarRelaciones } from '@/lib/nodes';
+import { construirTemas, temaKey, temaDe } from '@/lib/temas';
+import TaxonomiaDialog from '@/app/TaxonomiaDialog';
 import { normalizar } from '@/lib/utils';
 
 // React Flow pesa: sólo se carga cuando el usuario abre Split o Grafo.
 const GraphCanvas = lazy(() => import('@/app/GraphCanvas'));
+// El 3D (three.js) es el modo "explorar": nunca el home, se carga sólo si se abre.
+const Graph3DView = lazy(() => import('@/app/Graph3DView'));
 
 const LS = {
   get(k, def) { try { const v = localStorage.getItem(k); return v == null ? def : v; } catch { return def; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* sin storage */ } },
 };
 
-const VISTAS = ['lista', 'split', 'grafo'];
+const VISTAS = ['lista', 'split', 'grafo', '3d'];
 
 function fechaOrden(n) {
   return Date.parse(n.fecha_doc || n.created_at || 0) || 0;
@@ -43,13 +47,25 @@ export default function App() {
   });
   const [selectedId, setSelectedId] = useState(null);
   const [highlightIds, setHighlightIds] = useState(() => new Set());   // lo que marca el agente
+  // Relación fijada desde el inspector: {source, target, label}. No cambia el
+  // documento seleccionado; sólo decide qué vínculo resalta el grafo.
+  const [pinnedEdge, setPinnedEdge] = useState(null);
+  // Camino de estudio: documentos desde los que llegaste siguiendo vínculos.
+  // camino[0] es el origen. Se vacía al elegir algo "desde afuera" (lista, búsqueda).
+  const [camino, setCamino] = useState([]);
+  const pinAlLlegar = useRef(null);   // arista por la que se llegó: queda fijada en el destino
+
+  // ── Apariencia ─────────────────────────────────────────────────────
+  const [colorMode, setColorMode] = useState(() => LS.get('algedi_color', 'cluster'));
+  useEffect(() => LS.set('algedi_color', colorMode), [colorMode]);
 
   // ── Filtros ────────────────────────────────────────────────────────
   const [query, setQuery] = useState('');
   const [tipos, setTipos] = useState(() => new Set());
   const [fuentes, setFuentes] = useState(() => new Set());
   const [conceptos, setConceptos] = useState(() => new Set());
-  const [groupBy, setGroupBy] = useState(() => LS.get('algedi_agrupar', 'fuente'));
+  const [temasSel, setTemasSel] = useState(() => new Set());
+  const [groupBy, setGroupBy] = useState(() => LS.get('algedi_agrupar', 'tema'));
   const [sortBy, setSortBy] = useState(() => LS.get('algedi_orden', 'reciente'));
   const [semanticIds, setSemanticIds] = useState(null);
 
@@ -59,6 +75,7 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
   const [agentContext, setAgentContext] = useState(null);
+  const [taxonomiaOpen, setTaxonomiaOpen] = useState(false);
 
   const searchRef = useRef(null);
 
@@ -102,7 +119,10 @@ export default function App() {
     setSeccion(nombre);
     LS.set('algedi_seccion', nombre);
     setSelectedId(null);
+    setPinnedEdge(null);
+    setCamino([]);
     setHighlightIds(new Set());
+    setTemasSel(new Set());
     setTipos(new Set()); setFuentes(new Set()); setConceptos(new Set());
     setQuery('');
   }, []);
@@ -110,6 +130,7 @@ export default function App() {
   // ── Índices derivados ──────────────────────────────────────────────
   const nodesById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
   const relIndex = useMemo(() => indexarRelaciones(graph.edges), [graph.edges]);
+  const temas = useMemo(() => construirTemas(graph.nodes), [graph.nodes]);
 
   // Texto indexado por nodo (sin acentos) para la búsqueda local.
   const haystack = useMemo(() => {
@@ -152,6 +173,7 @@ export default function App() {
 
   // ── Filtrado ───────────────────────────────────────────────────────
   const pasaFacetas = useCallback((n) => {
+    if (temasSel.size && !temasSel.has(temaKey(n))) return false;
     if (tipos.size && !tipos.has(n.type)) return false;
     if (fuentes.size && !fuentes.has((n.fuente || 'sin-origen').toLowerCase())) return false;
     if (conceptos.size) {
@@ -159,7 +181,7 @@ export default function App() {
       for (const c of conceptos) if (!propios.has(c)) return false;   // AND: cada concepto acota
     }
     return true;
-  }, [tipos, fuentes, conceptos]);
+  }, [temasSel, tipos, fuentes, conceptos]);
 
   const { visibles, semanticos } = useMemo(() => {
     const q = normalizar(query.trim());
@@ -184,19 +206,25 @@ export default function App() {
   }, [graph.nodes, pasaFacetas, query, haystack, semanticIds, sortBy, relIndex]);
 
   const grupos = useMemo(() => {
-    const agr = AGRUPADORES[groupBy] || AGRUPADORES.fuente;
+    const base = AGRUPADORES[groupBy] || AGRUPADORES.fuente;
+    // "Tema" usa el índice de temas legibles (nombre humano o automático), no el número de cluster.
+    const agr = groupBy === 'tema'
+      ? { keyOf: temaKey, titleOf: (k) => temas.get(k)?.nombre || 'Sin tema', colorOf: (k) => temas.get(k)?.color }
+      : base;
     const map = new Map();
     for (const n of visibles) {
       const k = agr.keyOf(n);
-      if (!map.has(k)) map.set(k, { key: k, title: agr.titleOf(k), items: [] });
+      if (!map.has(k)) map.set(k, { key: k, title: agr.titleOf(k), color: agr.colorOf?.(k), auto: groupBy === 'tema' && temas.get(k)?.auto, items: [] });
       map.get(k).items.push(n);
     }
-    const arr = [...map.values()].sort((a, b) => b.items.length - a.items.length);
+    // Más poblados primero; "Sin tema" / "Sin origen" siempre al final.
+    const ultimo = (g) => (g.key === 'sin-tema' || g.key === 'sin-origen' ? 1 : 0);
+    const arr = [...map.values()].sort((a, b) => ultimo(a) - ultimo(b) || b.items.length - a.items.length);
     if (semanticos.length) {
       arr.push({ key: '__semantico', title: 'Por significado', semantic: true, items: semanticos });
     }
     return arr;
-  }, [visibles, semanticos, groupBy]);
+  }, [visibles, semanticos, groupBy, temas]);
 
   const orden = useMemo(() => grupos.flatMap((g) => g.items.map((n) => n.id)), [grupos]);
 
@@ -217,7 +245,47 @@ export default function App() {
     if (selectedId && status === 'ok' && !nodesById.has(selectedId)) setSelectedId(null);
   }, [selectedId, nodesById, status]);
 
-  const seleccionar = useCallback((id) => setSelectedId(id), []);
+  // Elegir "desde afuera" (lista, búsqueda, teclado): empieza un camino nuevo.
+  const seleccionar = useCallback((id) => {
+    setCamino([]);
+    setSelectedId(id);
+  }, []);
+
+  // Seguir un vínculo: el documento actual pasa al camino y la arista usada queda fijada.
+  const abrirVinculo = useCallback((id, edge) => {
+    if (!id || id === selectedId) return;
+    if (selectedId) setCamino((c) => [...c, selectedId]);
+    pinAlLlegar.current = edge ? { source: edge.source, target: edge.target, label: edge.label } : null;
+    setSelectedId(id);
+  }, [selectedId]);
+
+  // Volver a un punto del camino (0 = origen). Lo que venía después se descarta.
+  const volverA = useCallback((i) => {
+    const destino = camino[i];
+    if (!destino) return;
+    setCamino(camino.slice(0, i));
+    setSelectedId(destino);
+  }, [camino]);
+
+  // En el grafo, clic en un vecino del elegido = seguir ese vínculo; en otro nodo = empezar de nuevo.
+  const elegirEnGrafo = useCallback((id) => {
+    const r = selectedId && (relIndex.get(selectedId) || []).find((x) => x.otherId === id);
+    if (r) abrirVinculo(id, r.edge); else seleccionar(id);
+  }, [selectedId, relIndex, abrirVinculo, seleccionar]);
+
+  // Cambiar de documento suelta el pin, salvo que se haya llegado por un vínculo.
+  useEffect(() => {
+    setPinnedEdge(pinAlLlegar.current);
+    pinAlLlegar.current = null;
+  }, [selectedId]);
+
+  const fijarRelacion = useCallback((edge) => {
+    setPinnedEdge((prev) => (
+      prev && prev.source === edge.source && prev.target === edge.target && prev.label === edge.label
+        ? null
+        : { source: edge.source, target: edge.target, label: edge.label }
+    ));
+  }, []);
 
   const toggleIn = (setter) => (key) => setter((prev) => {
     const next = new Set(prev);
@@ -226,7 +294,7 @@ export default function App() {
   });
 
   const limpiarFiltros = useCallback(() => {
-    setTipos(new Set()); setFuentes(new Set()); setConceptos(new Set()); setQuery('');
+    setTemasSel(new Set()); setTipos(new Set()); setFuentes(new Set()); setConceptos(new Set()); setQuery('');
   }, []);
 
   const preguntarSobre = useCallback((node) => {
@@ -249,46 +317,59 @@ export default function App() {
       if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); return; }
       if (e.key === 'Escape') {
         // Si hay un diálogo Radix abierto, el Esc es para cerrarlo, no para soltar la selección.
-        if (!document.querySelector('[role="dialog"][data-state="open"]')) setSelectedId(null);
+        if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+        if (pinnedEdge) setPinnedEdge(null); else setSelectedId(null);
         return;
       }
       if (e.key === '1') setVista('lista');
       if (e.key === '2') setVista('split');
       if (e.key === '3') setVista('grafo');
+      if (e.key === '4') setVista('3d');
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'j' || e.key === 'k') {
         if (!orden.length) return;
         e.preventDefault();
         const i = orden.indexOf(selectedId);
         const dir = (e.key === 'ArrowDown' || e.key === 'j') ? 1 : -1;
         const next = i < 0 ? 0 : Math.min(orden.length - 1, Math.max(0, i + dir));
-        setSelectedId(orden[next]);
+        seleccionar(orden[next]);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [orden, selectedId]);
+  }, [orden, selectedId, pinnedEdge, seleccionar]);
 
   const selected = selectedId ? nodesById.get(selectedId) : null;
   const seccionInfo = sections.find((s) => s.nombre === seccion);
   const visibleIds = useMemo(() => new Set(orden), [orden]);
 
+  const colorDe = useCallback(
+    (n) => (colorMode === 'cluster' ? temaDe(temas, n).color : (MODOS_COLOR[colorMode] || MODOS_COLOR.cluster).de(n)),
+    [colorMode, temas],
+  );
+  const propsGrafo = {
+    nodes: graph.nodes,
+    colorDe,
+    temas,
+    edges: graph.edges,
+    visibleIds,
+    selectedId,
+    highlightIds,
+    pinnedEdge,
+    onClearPin: () => setPinnedEdge(null),
+    onSelect: elegirEnGrafo,
+    relIndex,
+    colorMode,
+    onColorMode: setColorMode,
+  };
   const grafo = (
     <Suspense fallback={<div className="grid h-full place-items-center text-[12px] text-ink-dim">Cargando grafo…</div>}>
-      <GraphCanvas
-        nodes={graph.nodes}
-        edges={graph.edges}
-        visibleIds={visibleIds}
-        selectedId={selectedId}
-        highlightIds={highlightIds}
-        onSelect={seleccionar}
-        relIndex={relIndex}
-      />
+      {vista === '3d' ? <Graph3DView {...propsGrafo} /> : <GraphCanvas {...propsGrafo} />}
     </Suspense>
   );
 
   return (
     <TooltipProvider delayDuration={350}>
-      <div className="grid h-screen grid-rows-[44px_minmax(0,1fr)] bg-canvas">
+      <div className="grid h-screen grid-rows-[48px_minmax(0,1fr)]">
         <Topbar
           seccion={seccion}
           total={graph.nodes.length}
@@ -312,13 +393,17 @@ export default function App() {
             topConceptos={topConceptos}
             conceptos={conceptos}
             onToggleConcepto={toggleIn(setConceptos)}
+            temas={temas}
+            temasSel={temasSel}
+            onToggleTema={toggleIn(setTemasSel)}
+            onNombrarTemas={() => setTaxonomiaOpen(true)}
             onIngest={() => setIngestOpen(true)}
             onScripts={() => setScriptsOpen(true)}
             onSeccionesCambiadas={(activa) => { cambiarSeccion(activa); recargar(); }}
           />
 
           <main className="flex min-w-0 flex-1">
-            {vista !== 'grafo' && (
+            {(vista === 'lista' || vista === 'split') && (
               <section className={vista === 'split' ? 'flex w-[46%] min-w-[380px] flex-col hairline-r' : 'flex min-w-0 flex-1 flex-col'}>
                 <Library
                   status={status}
@@ -339,7 +424,9 @@ export default function App() {
                   highlightIds={highlightIds}
                   onClearHighlight={() => setHighlightIds(new Set())}
                   relIndex={relIndex}
-                  filtros={{ tipos, fuentes, conceptos, topConceptos }}
+                  filtros={{ tipos, fuentes, conceptos, topConceptos, temasSel, temas }}
+                  onToggleTema={toggleIn(setTemasSel)}
+                  onNombrarTemas={() => setTaxonomiaOpen(true)}
                   onToggleTipo={toggleIn(setTipos)}
                   onToggleFuente={toggleIn(setFuentes)}
                   onToggleConcepto={toggleIn(setConceptos)}
@@ -367,6 +454,14 @@ export default function App() {
             onConcepto={(k) => toggleIn(setConceptos)(k)}
             onVerEnGrafo={() => setVista((v) => (v === 'lista' ? 'split' : v))}
             vista={vista}
+            pinnedEdge={pinnedEdge}
+            onPin={fijarRelacion}
+            onClearPin={() => setPinnedEdge(null)}
+            onAbrir={abrirVinculo}
+            camino={camino}
+            onVolver={volverA}
+            temas={temas}
+            onTema={(k) => toggleIn(setTemasSel)(k)}
           />
         </div>
 
@@ -382,6 +477,7 @@ export default function App() {
         />
 
         <IngestDialog open={ingestOpen} onOpenChange={setIngestOpen} seccion={seccion} onDone={recargar} />
+        <TaxonomiaDialog open={taxonomiaOpen} onOpenChange={setTaxonomiaOpen} temas={temas} onDone={recargar} />
         <ScriptsSheet
           open={scriptsOpen}
           onOpenChange={setScriptsOpen}

@@ -9,7 +9,8 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuRadioGroup,
   DropdownMenuRadioItem, DropdownMenuLabel,
 } from '@/components/ui/dropdown-menu';
-import { AGRUPADORES, iconoDe, fuenteLabel, tipoMeta } from '@/lib/nodes';
+import { AGRUPADORES, fuenteLabel, tipoMeta, colorFuente, colorTipo } from '@/lib/nodes';
+import Thumb from '@/app/Thumb';
 import { cn, fechaCorta, normalizar } from '@/lib/utils';
 
 const ORDENES = {
@@ -42,7 +43,6 @@ function Resaltado({ texto, terms }) {
 }
 
 function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, semantic }) {
-  const Icon = iconoDe(node);
   const ref = useRef(null);
   useEffect(() => {
     if (selected) ref.current?.scrollIntoView({ block: 'nearest' });
@@ -50,6 +50,8 @@ function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, se
   const fecha = fechaCorta(node.fecha_doc);
   const vigencia = node.vigencia?.estado;
   const noVigente = vigencia && vigencia !== 'vigente';
+  const origen = fuenteLabel(node);
+  const sub = (node.desc || node.fragmento || '').trim();
 
   return (
     <button
@@ -57,30 +59,49 @@ function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, se
       type="button"
       onClick={() => onSelect(node.id)}
       aria-current={selected || undefined}
+      style={{ '--c': colorFuente(node) }}
       className={cn(
-        'group relative grid h-[34px] w-full items-center gap-3 px-4 text-left transition-colors',
-        compact ? 'grid-cols-[16px_minmax(0,1fr)_auto]' : 'grid-cols-[16px_minmax(0,1fr)_150px_88px_52px]',
-        selected ? 'bg-surface-3' : 'hover:bg-surface-2',
+        'group relative grid w-full items-center gap-3 pl-4 pr-4 text-left transition-colors bar-cat',
+        compact
+          ? 'h-[40px] grid-cols-[26px_minmax(0,1fr)_auto]'
+          : 'h-[50px] grid-cols-[34px_minmax(0,1fr)_56px_120px_76px_40px]',
+        selected ? 'bg-surface-3' : 'hover:bg-surface-2/80',
       )}
     >
       {selected && <span className="absolute inset-y-0 left-0 w-[2px] bg-accent" />}
-      <Icon className={cn('size-3.5', selected ? 'text-accent' : 'text-ink-dim')} />
+      <Thumb
+        node={node}
+        className={compact ? 'h-[26px] w-[26px]' : 'h-[38px] w-[34px]'}
+        iconClass={compact ? 'size-3.5' : 'size-4'}
+      />
 
-      <span className="flex min-w-0 items-center gap-2">
-        <span className={cn('truncate text-[12.5px]', selected ? 'text-ink' : 'text-ink/90')}>
-          <Resaltado texto={node.label} terms={terms} />
+      <span className="min-w-0">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className={cn('truncate text-[13px] leading-5', selected ? 'text-ink' : 'text-ink/90')}>
+            <Resaltado texto={node.label} terms={terms} />
+          </span>
+          {highlighted && <span className="size-1.5 shrink-0 rounded-full bg-accent" title="Marcado por el agente" />}
+          {semantic && <Sparkles className="size-3 shrink-0 text-accent-soft" />}
+          {noVigente && <Badge variant="warn">{vigencia}</Badge>}
+          {node.type && node.type !== 'DOCUMENTO' && (
+            <span className="chip-cat shrink-0 rounded-xs px-1.5 text-[10.5px] leading-4" style={{ '--c': colorTipo(node.type) }}>
+              {tipoMeta(node.type).label}
+            </span>
+          )}
         </span>
-        {highlighted && <span className="size-1.5 shrink-0 rounded-full bg-accent" title="Marcado por el agente" />}
-        {semantic && <Sparkles className="size-3 shrink-0 text-accent-soft" />}
-        {noVigente && <Badge variant="warn">{vigencia}</Badge>}
-        {node.type && node.type !== 'DOCUMENTO' && <Badge>{tipoMeta(node.type).label}</Badge>}
+        {!compact && sub && (
+          <span className="block truncate text-[11.5px] leading-4 text-ink-dim">{sub}</span>
+        )}
       </span>
 
       {compact ? (
         <span className="text-[11px] text-ink-dim">{fecha || ''}</span>
       ) : (
         <>
-          <span className="truncate text-[11.5px] text-ink-dim" title={node.autor || ''}>
+          <span>
+            {origen && <span className="chip-cat rounded-xs px-1.5 py-px text-[10.5px] font-medium">{origen}</span>}
+          </span>
+          <span className="truncate text-[11.5px] text-ink-muted" title={node.autor || ''}>
             {node.autor || ''}
           </span>
           <span className="text-[11.5px] text-ink-dim">{fecha || ''}</span>
@@ -94,26 +115,87 @@ function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, se
   );
 }
 
-function Encabezado({ grupo, abierto, onToggle, compact }) {
+function Encabezado({ grupo, abierto, onToggle, compact, onNombrarTemas }) {
   return (
     <button
       type="button"
       onClick={onToggle}
-      className="sticky top-0 z-10 flex h-8 w-full items-center gap-1.5 hairline-b bg-canvas/95 px-4 text-left backdrop-blur-sm"
+      className="sticky top-0 z-10 flex h-9 w-full items-center gap-2 hairline-b bg-canvas/90 px-4 text-left backdrop-blur-md"
     >
       <ChevronRight className={cn('size-3 text-ink-dim transition-transform', abierto && 'rotate-90')} />
-      {grupo.semantic && <Sparkles className="size-3 text-accent-soft" />}
-      <span className="text-[12px] font-medium text-ink">{grupo.title}</span>
+      {grupo.semantic
+        ? <Sparkles className="size-3 text-accent-soft" />
+        : grupo.color && <span className="size-2 rounded-full dot-cat" style={{ '--c': grupo.color }} />}
+      <span className="text-[12px] font-semibold text-ink">{grupo.title}</span>
       <span className="text-[11.5px] text-ink-dim">{grupo.items.length}</span>
+      {grupo.auto && !compact && (
+        <span
+          role="link"
+          tabIndex={-1}
+          onClick={(e) => { e.stopPropagation(); onNombrarTemas?.(); }}
+          className="ml-1 cursor-pointer text-[10.5px] text-ink-dim underline-offset-2 hover:text-accent hover:underline"
+          title="Nombre derivado de los conceptos del cluster. Clic para pedirle al LLM nombres legibles."
+        >
+          nombre automático
+        </span>
+      )}
       {grupo.semantic && (
         <span className="ml-1 text-[11px] text-ink-dim">no contienen el texto, pero el motor semántico los asocia</span>
       )}
       {!compact && !grupo.semantic && grupo.first && (
-        <span className="ml-auto grid grid-cols-[150px_88px_52px] gap-3 text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">
-          <span>Autor</span><span>Fecha</span><span className="text-right">Rel.</span>
+        <span className="ml-auto grid grid-cols-[56px_120px_76px_40px] gap-3 text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">
+          <span>Origen</span><span>Autor</span><span>Fecha</span><span className="text-right">Rel.</span>
         </span>
       )}
     </button>
+  );
+}
+
+/** Sección vacía: qué es esto, qué hacer, y cómo se va a ver cuando haya contenido. */
+function Hero({ seccion, onIngest }) {
+  const ejemplos = [
+    { fuente: 'pdf', label: 'Apunte de Inferencia Estadística', sub: 'PDF · 42 páginas · 12 conceptos' },
+    { fuente: 'ppt', label: 'Clase 3 — Estimadores', sub: 'Presentación · profundiza en el apunte' },
+    { fuente: 'youtube', label: 'Intervalos de confianza, explicado', sub: 'Video · transcripto y citable' },
+  ];
+  return (
+    <div className="grid flex-1 place-items-center overflow-y-auto p-8">
+      <div className="w-full max-w-[520px]">
+        <div className="mb-5 grid size-11 place-items-center rounded-md border border-hair-strong bg-surface-2 glow-sel">
+          <Upload className="size-5 text-accent" />
+        </div>
+        <h2 className="text-[20px] font-semibold tracking-[-0.02em]">
+          «<span className="capitalize">{seccion}</span>» todavía está vacía
+        </h2>
+        <p className="mt-1.5 max-w-[440px] text-[13px] leading-relaxed text-ink-muted">
+          Subí PDFs, presentaciones, Word, planillas o links. Algedi extrae el texto, genera embeddings,
+          los vincula con lo que ya sabés y los deja listos para que el agente cite o se abstenga.
+        </p>
+        <div className="mt-5 flex gap-2">
+          <Button variant="default" size="lg" onClick={onIngest}><Upload /> Ingestar documentos</Button>
+        </div>
+
+        <p className="mb-2 mt-8 text-[10.5px] font-medium uppercase tracking-[0.08em] text-ink-dim">Así se va a ver</p>
+        <div className="overflow-hidden rounded-md border border-hair bg-surface/70">
+          {ejemplos.map((e, i) => (
+            <div
+              key={e.label}
+              className={cn('flex h-[50px] items-center gap-3 bar-cat px-3.5', i < ejemplos.length - 1 && 'hairline-b')}
+              style={{ '--c': colorFuente(e.fuente) }}
+            >
+              <Thumb node={{ id: `ejemplo-${i}`, fuente: e.fuente }} className="h-[34px] w-[30px]" iconClass="size-4" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12.5px] text-ink/90">{e.label}</span>
+                <span className="block truncate text-[11px] text-ink-dim">{e.sub}</span>
+              </span>
+              <span className="chip-cat rounded-xs px-1.5 py-px text-[10.5px] font-medium">
+                {fuenteLabel({ fuente: e.fuente })}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -134,8 +216,8 @@ function Esqueleto() {
   return (
     <div className="flex flex-col gap-px pt-8" aria-busy>
       {Array.from({ length: 14 }).map((_, i) => (
-        <div key={i} className="flex h-[34px] items-center gap-3 px-4">
-          <div className="size-3.5 rounded-xs bg-surface-2" />
+        <div key={i} className="flex h-[50px] items-center gap-3 px-4">
+          <div className="h-[38px] w-[34px] rounded-xs bg-surface-2" />
           <div className="h-2.5 rounded-xs bg-surface-2" style={{ width: `${30 + ((i * 37) % 45)}%` }} />
         </div>
       ))}
@@ -147,7 +229,7 @@ export default function Library({
   status, seccion, seccionCount, totalNodes, grupos, visibleCount,
   query, onQuery, searchRef, groupBy, onGroupBy, sortBy, onSortBy,
   selectedId, onSelect, highlightIds, onClearHighlight, relIndex,
-  filtros, onToggleTipo, onToggleFuente, onToggleConcepto, onLimpiar,
+  filtros, onToggleTipo, onToggleFuente, onToggleConcepto, onToggleTema, onNombrarTemas, onLimpiar,
   onRetry, onIngest, compact,
 }) {
   const [cerrados, setCerrados] = useState(() => new Set());
@@ -158,6 +240,9 @@ export default function Library({
   );
 
   const chips = [
+    ...[...(filtros.temasSel || [])].map((k) => ({
+      k: `m:${k}`, label: filtros.temas?.get(k)?.nombre || 'Tema', color: filtros.temas?.get(k)?.color, off: () => onToggleTema(k),
+    })),
     ...[...filtros.tipos].map((t) => ({ k: `t:${t}`, label: tipoMeta(t).plural, off: () => onToggleTipo(t) })),
     ...[...filtros.fuentes].map((f) => ({ k: `f:${f}`, label: fuenteLabel({ fuente: f }) || f, off: () => onToggleFuente(f) })),
     ...[...filtros.conceptos].map((c) => ({ k: `c:${c}`, label: conceptoLabel.get(c) || c, icon: Hash, off: () => onToggleConcepto(c) })),
@@ -182,11 +267,7 @@ export default function Library({
       </Estado>
     );
   } else if (totalNodes === 0) {
-    cuerpo = (
-      <Estado icon={Upload} titulo={`«${seccion}» está vacía`} texto="Subí PDFs, presentaciones, Word o links. Se procesan, se vinculan y quedan citables.">
-        <Button variant="default" onClick={onIngest}><Upload /> Ingestar documentos</Button>
-      </Estado>
-    );
+    cuerpo = <Hero seccion={seccion} onIngest={onIngest} />;
   } else if (visibleCount === 0 && semCount === 0) {
     cuerpo = (
       <Estado icon={Search} titulo="Nada coincide" texto={`${totalNodes} nodos en la sección, ninguno pasa los filtros actuales.`}>
@@ -202,6 +283,7 @@ export default function Library({
             <div key={g.key || 'todos'}>
               {(g.title || g.semantic) && (
                 <Encabezado
+                  onNombrarTemas={onNombrarTemas}
                   grupo={{ ...g, first: gi === 0 }}
                   abierto={abierto}
                   compact={compact}
@@ -304,6 +386,7 @@ export default function Library({
               className="flex h-5 items-center gap-1 rounded-xs border border-hair-strong bg-surface-2 pl-1.5 pr-1 text-[11.5px] text-ink-muted hover:text-ink"
             >
               {c.icon && <c.icon className="size-3 text-ink-dim" />}
+              {c.color && <span className="size-2 rounded-full dot-cat" style={{ '--c': c.color }} />}
               {c.label}
               <X className="size-3 text-ink-dim" />
             </button>

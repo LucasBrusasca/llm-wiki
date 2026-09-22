@@ -1,19 +1,20 @@
 import React, { useState } from 'react';
-import { Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
+import { Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2, Sparkles } from 'lucide-react';
+import { hayNombresAutomaticos } from '@/lib/temas';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import { renameSection, deleteSection } from '@/lib/api';
 import { pedirClave, avisarClaveIncorrecta } from '@/security.js';
 import { Button } from '@/components/ui/button';
-import { tipoMeta, fuenteLabel, iconoDe } from '@/lib/nodes';
+import { tipoMeta, fuenteLabel, iconoDe, colorFuente, colorTipo, colorSeccion } from '@/lib/nodes';
 import { cn } from '@/lib/utils';
 
 function Grupo({ titulo, children, accion, plegable = false }) {
   const [abierto, setAbierto] = useState(true);
   return (
-    <div className="px-2 pt-3">
-      <div className="flex h-6 items-center justify-between px-1.5">
+    <div className="px-2.5 pt-5">
+      <div className="mb-1 flex h-6 items-center justify-between px-1.5">
         <button
           className={cn('flex items-center gap-1 text-[10.5px] font-medium uppercase tracking-[0.08em] text-ink-dim', plegable && 'hover:text-ink-muted')}
           onClick={() => plegable && setAbierto((a) => !a)}
@@ -29,19 +30,20 @@ function Grupo({ titulo, children, accion, plegable = false }) {
   );
 }
 
-function Fila({ activa, onClick, icon: Icon, label, count, marca, title, menu }) {
+function Fila({ activa, onClick, icon: Icon, label, count, marca, title, menu, color }) {
   const boton = (
     <button
       type="button"
       onClick={onClick}
       title={title}
+      style={color ? { '--c': color } : undefined}
       className={cn(
-        'group flex h-7 w-full items-center gap-2 rounded-sm px-1.5 text-left text-[12.5px] transition-colors',
+        'group flex h-8 w-full items-center gap-2.5 rounded-sm px-2 text-left text-[12.5px] transition-colors',
         activa ? 'bg-surface-3 text-ink' : 'text-ink-muted hover:bg-surface-2 hover:text-ink',
       )}
     >
       {marca}
-      {Icon && <Icon className={cn('size-3.5 shrink-0', activa ? 'text-accent' : 'text-ink-dim group-hover:text-ink-muted')} />}
+      {Icon && <Icon className={cn('size-3.5 shrink-0', color ? 'text-cat' : activa ? 'text-accent' : 'text-ink-dim group-hover:text-ink-muted')} />}
       <span className="flex-1 truncate">{label}</span>
       {count != null && <span className={cn('text-[11px] text-ink-dim', menu && 'group-hover/fila:hidden')}>{count}</span>}
     </button>
@@ -72,6 +74,7 @@ export default function Rail({
   sections, seccion, onSeccion,
   facetas, tipos, onToggleTipo, fuentes, onToggleFuente,
   topConceptos, conceptos, onToggleConcepto,
+  temas, temasSel, onToggleTema, onNombrarTemas,
   onIngest, onScripts, onSeccionesCambiadas,
 }) {
   async function renombrar(nombre) {
@@ -108,12 +111,12 @@ export default function Rail({
     : [...sections, { nombre: seccion, count: 0 }];
 
   return (
-    <aside className="flex w-[260px] shrink-0 flex-col hairline-r bg-surface">
-      <div className="flex gap-1.5 hairline-b p-2">
-        <Button variant="default" size="md" className="flex-1" onClick={onIngest}>
+    <aside className="flex w-[272px] shrink-0 flex-col hairline-r bg-surface">
+      <div className="flex gap-2 hairline-b p-2.5">
+        <Button variant="default" size="lg" className="flex-1 glow-sel" onClick={onIngest}>
           <Upload /> Ingestar
         </Button>
-        <Button variant="outline" size="md" className="flex-1" onClick={onScripts}>
+        <Button variant="outline" size="lg" className="flex-1" onClick={onScripts}>
           <Terminal /> Scripts
         </Button>
       </div>
@@ -127,14 +130,19 @@ export default function Rail({
             </button>
           }
         >
-          {seccionesVista.map((s) => (
+          {seccionesVista.map((s, i) => (
             <Fila
               key={s.nombre}
               activa={s.nombre === seccion}
               onClick={() => onSeccion(s.nombre)}
               label={<span className="capitalize">{s.nombre}</span>}
               count={s.count}
-              marca={<span className={cn('size-1.5 shrink-0 rounded-full', s.nombre === seccion ? 'bg-accent' : 'bg-hair-strong')} />}
+              marca={(
+                <span
+                  className={cn('size-2 shrink-0 rounded-[3px] dot-cat transition-opacity', s.nombre === seccion ? 'opacity-100' : 'opacity-45')}
+                  style={{ '--c': colorSeccion(i) }}
+                />
+              )}
               menu={s.count > 0 && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -155,6 +163,40 @@ export default function Rail({
           ))}
         </Grupo>
 
+        {temas.size > 0 && (
+          <Grupo
+            titulo="Temas"
+            plegable
+            accion={hayNombresAutomaticos(temas) && (
+              <button
+                type="button"
+                onClick={onNombrarTemas}
+                title="Los nombres automáticos salen de los conceptos de cada cluster. Podés pedirle al LLM una taxonomía legible."
+                className="flex items-center gap-1 rounded-xs px-1 text-[10.5px] text-ink-dim hover:bg-surface-2 hover:text-accent"
+              >
+                <Sparkles className="size-3" /> Nombrar con IA
+              </button>
+            )}
+          >
+            {[...temas.values()].sort((a, b) => (a.key === 'sin-tema') - (b.key === 'sin-tema') || b.count - a.count).map((t) => (
+              <Fila
+                key={t.key}
+                activa={temasSel.has(t.key)}
+                onClick={() => onToggleTema(t.key)}
+                marca={<Check on={temasSel.has(t.key)} />}
+                label={(
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="size-2 shrink-0 rounded-full dot-cat" style={{ '--c': t.color }} />
+                    <span className="truncate">{t.nombre}</span>
+                  </span>
+                )}
+                count={t.count}
+                title={t.auto ? `${t.nombre} — nombre automático (conceptos del cluster)` : t.nombre}
+              />
+            ))}
+          </Grupo>
+        )}
+
         {tiposOrden.length > 1 && (
           <Grupo titulo="Tipo" plegable>
             {tiposOrden.map(([t, n]) => (
@@ -164,6 +206,7 @@ export default function Rail({
                 onClick={() => onToggleTipo(t)}
                 marca={<Check on={tipos.has(t)} />}
                 icon={tipoMeta(t).icon}
+                color={colorTipo(t)}
                 label={tipoMeta(t).plural}
                 count={n}
               />
@@ -180,6 +223,7 @@ export default function Rail({
                 onClick={() => onToggleFuente(f)}
                 marca={<Check on={fuentes.has(f)} />}
                 icon={iconoDe({ fuente: f })}
+                color={colorFuente(f)}
                 label={f === 'sin-origen' ? 'Sin origen' : fuenteLabel({ fuente: f })}
                 count={n}
               />

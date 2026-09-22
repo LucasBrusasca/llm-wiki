@@ -18,21 +18,16 @@ export const TIPOS = {
 };
 
 /** Ícono por origen del archivo — más informativo que el tipo cuando todo es DOCUMENTO. */
-const ICONO_FUENTE = {
+const ICONO_CLAVE = {
   pdf: FileText,
   ppt: Presentation,
-  pptx: Presentation,
   word: FileType2,
-  docx: FileType2,
   excel: Table2,
-  xlsx: Table2,
-  imagen: ImageIcon,
-  youtube: CirclePlay,
-  url: Globe,
+  video: CirclePlay,
   web: Globe,
+  imagen: ImageIcon,
   script: Terminal,
   issue: CircleAlert,
-  architect: FolderOpen,
 };
 
 export function tipoMeta(tipo) {
@@ -41,17 +36,62 @@ export function tipoMeta(tipo) {
 
 export function iconoDe(node) {
   if (!node) return Boxes;
-  return ICONO_FUENTE[(node.fuente || '').toLowerCase()] || tipoMeta(node.type).icon;
+  if (node.type && node.type !== 'DOCUMENTO' && TIPOS[node.type]) return TIPOS[node.type].icon;
+  return ICONO_CLAVE[claveFuente(node)] || tipoMeta(node.type).icon;
 }
 
 export function fuenteLabel(node) {
   const f = (node?.fuente || '').toLowerCase();
   const nombres = {
-    pdf: 'PDF', ppt: 'PPT', pptx: 'PPT', word: 'Word', docx: 'Word',
-    excel: 'Excel', xlsx: 'Excel', youtube: 'YouTube', url: 'Web', web: 'Web',
+    pdf: 'PDF', ppt: 'PPT', pptx: 'PPT', pptm: 'PPT', word: 'Word', docx: 'Word',
+    excel: 'Excel', xlsx: 'Excel', youtube: 'YouTube', url: 'Web', web: 'Web', html: 'HTML',
     script: 'Script', issue: 'Issue', architect: 'Architect', imagen: 'Imagen',
   };
   return nombres[f] || (f ? f.toUpperCase() : null);
+}
+
+// ── Color con significado ────────────────────────────────────────────────
+// Todas las funciones devuelven `var(--…)` (tokens de globals.css). El 3D, que
+// necesita hex, usa resolverColor.
+
+const FUENTE_A_CLAVE = {
+  pdf: 'pdf',
+  ppt: 'ppt', pptx: 'ppt', pptm: 'ppt',
+  word: 'word', docx: 'word', doc: 'word',
+  excel: 'excel', xlsx: 'excel', xls: 'excel', csv: 'excel',
+  youtube: 'video', video: 'video', audio: 'video', mp3: 'video', wav: 'video',
+  url: 'web', web: 'web', html: 'web', htm: 'web',
+  imagen: 'imagen', image: 'imagen', png: 'imagen', jpg: 'imagen', jpeg: 'imagen',
+  script: 'script',
+  issue: 'issue', architect: 'issue',
+};
+
+export function claveFuente(nodeOrFuente) {
+  const f = (typeof nodeOrFuente === 'string' ? nodeOrFuente : nodeOrFuente?.fuente || '').toLowerCase();
+  return FUENTE_A_CLAVE[f] || 'otro';
+}
+
+export const colorFuente = (n) => `var(--src-${claveFuente(n)})`;
+export const colorTipo = (tipo) => `var(--tipo-${TIPOS[tipo] ? tipo : 'otro'})`;
+export function colorCluster(n) {
+  const c = n?.cluster;
+  return c != null && c >= 0 ? `var(--cl-${c % 10})` : 'var(--cl-noise)';
+}
+export const colorSeccion = (i) => `var(--sec-${i % 6})`;
+
+/** Cómo colorear nodos en los grafos. */
+export const MODOS_COLOR = {
+  cluster: { label: 'Tema', de: colorCluster },
+  tipo: { label: 'Tipo', de: (n) => colorTipo(n.type) },
+  fuente: { label: 'Origen', de: colorFuente },
+};
+
+/** `var(--x)` → valor computado (hex). Para three.js / canvas, que no entienden CSS vars. */
+export function resolverColor(expr, fallback = '#8a9099') {
+  const m = /^var\((--[^)]+)\)$/.exec(expr || '');
+  if (!m) return expr || fallback;
+  const v = getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim();
+  return v || fallback;
 }
 
 /** Relaciones: el backend usa constantes en mayúsculas; la UI las muestra en prosa. */
@@ -78,20 +118,26 @@ export function procedenciaLabel(edge) {
 
 /** Agrupadores disponibles en la biblioteca. `keyOf` devuelve el grupo de un nodo. */
 export const AGRUPADORES = {
+  tema: {
+    label: 'Tema',
+    keyOf: (n) => n.tema || (n.cluster != null && n.cluster >= 0 ? `Grupo ${n.cluster + 1}` : 'Sin clasificar'),
+    titleOf: (k) => k,
+    colorOf: (k) => {
+      const m = /^Grupo (\d+)$/.exec(k);
+      return m ? `var(--cl-${(Number(m[1]) - 1) % 10})` : 'var(--cl-noise)';
+    },
+  },
   tipo: {
     label: 'Tipo',
     keyOf: (n) => n.type || 'SIN_TIPO',
     titleOf: (k) => tipoMeta(k).plural,
+    colorOf: (k) => colorTipo(k),
   },
   fuente: {
     label: 'Origen',
     keyOf: (n) => (n.fuente || 'sin-origen').toLowerCase(),
     titleOf: (k) => (k === 'sin-origen' ? 'Sin origen' : (fuenteLabel({ fuente: k }) || k)),
-  },
-  tema: {
-    label: 'Tema',
-    keyOf: (n) => n.tema || (n.cluster != null && n.cluster >= 0 ? `Grupo ${n.cluster + 1}` : 'Sin clasificar'),
-    titleOf: (k) => k,
+    colorOf: (k) => colorFuente(k),
   },
   autor: {
     label: 'Autor',

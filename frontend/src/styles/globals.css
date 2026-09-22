@@ -2,39 +2,90 @@
 
 /* ──────────────────────────────────────────────────────────────────────────
    Algedi — sistema de diseño
-   Dark sobrio, un solo acento (teal), hairlines, densidad alta tipo Linear.
-   Todo token vive acá: si un color no está en esta lista, no se usa.
+   Noche profunda + acentos vivos CON SIGNIFICADO: cada origen de archivo, tipo
+   de nodo y cluster tiene su color. El color nunca es decorativo: si algo está
+   pintado, dice qué es. Hairlines, densidad tipo Linear, un solo glow suave.
+
+   Los tokens --color-* generan utilidades de Tailwind (bg-surface, text-ink…).
+   Los colores de categoría (--src-*, --tipo-*, --cl-*) son variables planas que
+   leen tanto el DOM como el lienzo 3D (vía resolverColor).
    ────────────────────────────────────────────────────────────────────────── */
 @theme {
-  /* Superficies: casi negro, neutro frío. La jerarquía la hace el borde, no la sombra. */
-  --color-canvas:    #08090a;   /* fondo de la app */
-  --color-surface:   #0c0d0f;   /* rail, inspector, topbar */
-  --color-surface-2: #121316;   /* filas hover, inputs, chips */
-  --color-surface-3: #191b1f;   /* activo / seleccionado */
+  --color-canvas:    #05060c;
+  --color-surface:   #0a0c16;
+  --color-surface-2: #10131f;
+  --color-surface-3: #171b2b;
 
-  /* Hairlines: el chrome se dibuja con bordes de 1px, nunca con sombras difusas. */
-  --color-hair:        #1c1e22;
-  --color-hair-strong: #2a2d33;
+  --color-hair:        #191d2e;
+  --color-hair-strong: #272d45;
 
-  /* Texto */
-  --color-ink:       #e7e9ec;
-  --color-ink-muted: #969ca6;
-  --color-ink-dim:   #646a74;
+  --color-ink:       #e9edf7;
+  --color-ink-muted: #9aa3bd;
+  --color-ink-dim:   #636c88;
 
-  /* Acento ÚNICO — teal. Si aparece otro color saturado en la UI, es un bug. */
-  --color-accent:      #14b8a6;
-  --color-accent-soft: #5eead4;
-  --color-accent-ink:  #04100e;
+  /* Acento de interfaz (selección, foco, acciones primarias) */
+  --color-accent:      #22d3ee;
+  --color-accent-soft: #7de8f8;
+  --color-accent-ink:  #03141a;
 
-  /* Semánticos, reservados para estado real (nunca decorativos) */
-  --color-warn:   #d4a04e;
-  --color-danger: #d9695f;
+  /* Semánticos: sólo para estado real (vigencia, error, ejecución ok) */
+  --color-warn:   #fbbf24;
+  --color-danger: #f87171;
+  --color-ok:     #4ade80;
 
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
 
   --radius-xs: 3px;
   --radius-sm: 5px;
   --radius-md: 7px;
+}
+
+:root {
+  color-scheme: dark;
+
+  /* Un único glow suave, reservado a hover/selección */
+  --glow: 0 0 0 1px color-mix(in oklab, var(--color-accent) 45%, transparent),
+          0 0 18px -4px color-mix(in oklab, var(--color-accent) 55%, transparent);
+
+  /* Origen del archivo */
+  --src-pdf:    #f87171;   /* rojo PDF */
+  --src-ppt:    #fb923c;   /* naranja presentación */
+  --src-word:   #60a5fa;   /* azul Word */
+  --src-excel:  #4ade80;   /* verde planilla */
+  --src-video:  #e879f9;   /* fucsia video / YouTube */
+  --src-web:    #2dd4bf;   /* teal web / HTML */
+  --src-imagen: #facc15;   /* amarillo imagen */
+  --src-script: #a78bfa;   /* violeta código */
+  --src-issue:  #fbbf24;
+  --src-otro:   #94a3b8;
+
+  /* Tipo de nodo */
+  --tipo-DOCUMENTO:  #38bdf8;
+  --tipo-NOTA:       #facc15;
+  --tipo-CHUNK:      #64748b;
+  --tipo-SCRIPT:     #a78bfa;
+  --tipo-QUERY:      #2dd4bf;
+  --tipo-ISSUE:      #fb7185;
+  --tipo-EXPEDIENTE: #c084fc;
+  --tipo-otro:       #94a3b8;
+
+  /* Clusters / temas (HDBSCAN): 10 tonos separables + ruido apagado */
+  --cl-0: #22d3ee; --cl-1: #a78bfa; --cl-2: #fbbf24; --cl-3: #4ade80; --cl-4: #f472b6;
+  --cl-5: #60a5fa; --cl-6: #fb923c; --cl-7: #2dd4bf; --cl-8: #e879f9; --cl-9: #a3e635;
+  --cl-noise: #475069;
+
+  /* Grafos y secciones */
+  --edge: #3a4466;
+  --grid-dot: #141a2d;
+  --sec-0: #22d3ee; --sec-1: #a78bfa; --sec-2: #fbbf24; --sec-3: #4ade80; --sec-4: #f472b6; --sec-5: #60a5fa;
+}
+
+/* Fondo con profundidad: gradiente fijo, sin animación. */
+body {
+  background:
+    radial-gradient(1200px 600px at 70% -10%, color-mix(in oklab, #22d3ee 7%, transparent), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, color-mix(in oklab, #a78bfa 7%, transparent), transparent 60%),
+    var(--color-canvas);
 }
 
 @layer base {
@@ -44,7 +95,6 @@
 
   body {
     margin: 0;
-    background: var(--color-canvas);
     color: var(--color-ink);
     font-family: var(--font-sans);
     font-size: 13px;
@@ -68,7 +118,7 @@
     background-clip: content-box;
     border-radius: 99px;
   }
-  *::-webkit-scrollbar-thumb:hover { background-color: #3a3e45; background-clip: content-box; }
+  *::-webkit-scrollbar-thumb:hover { background-color: #3a4260; background-clip: content-box; }
 
   :focus-visible {
     outline: 1px solid var(--color-accent);
@@ -86,6 +136,18 @@
   background: color-mix(in oklab, var(--color-accent) 16%, transparent);
   border-radius: 2px;
 }
+
+/* Categoría: el componente fija --c (color de origen/tipo/cluster) y estas
+   utilidades derivan chip, marca y borde. */
+@utility chip-cat {
+  color: color-mix(in oklab, var(--c) 88%, white);
+  background: color-mix(in oklab, var(--c) 13%, transparent);
+  border: 1px solid color-mix(in oklab, var(--c) 32%, transparent);
+}
+@utility bar-cat { box-shadow: inset 2px 0 0 color-mix(in oklab, var(--c) 75%, transparent); }
+@utility dot-cat { background: var(--c); }
+@utility text-cat { color: var(--c); }
+@utility glow-sel { box-shadow: var(--glow); }
 
 /* Markdown de respuestas del agente (sanitizado con DOMPurify en markdown.js) */
 .agent-md > * + * { margin-top: 0.6em; }

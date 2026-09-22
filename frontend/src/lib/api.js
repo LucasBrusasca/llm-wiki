@@ -81,6 +81,23 @@ export function deleteSection(nombre, password) {
   });
 }
 
+/**
+ * Taxonomía de temas por LLM (endpoint existente). Sin `apply` sólo PROPONE y no
+ * escribe nada; con `apply` persiste `tema` en TODOS los documentos (todas las
+ * secciones), por eso va con clave si la seguridad está activa.
+ */
+export async function proponerTaxonomia() {
+  return fetch('/api/taxonomy', { method: 'POST' }).then(jsonOrThrow);
+}
+
+export function aplicarTaxonomia(password) {
+  return fetch('/api/taxonomy?apply=true', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+}
+
 export async function searchSemantic(q, max = 24) {
   const d = await fetch(`/api/search?q=${encodeURIComponent(q)}&max_n=${max}`).then(jsonOrThrow);
   return Array.isArray(d.ids) ? d.ids : [];
