@@ -6,7 +6,6 @@ import { Hint } from '@/components/ui/tooltip';
 import ColorPanel, { calcularLeyenda } from '@/app/ColorPanel';
 import NodoTooltip from '@/app/NodoTooltip';
 import { resolverColor, fuenteLabel } from '@/lib/nodes';
-import { truncar } from '@/lib/utils';
 
 /**
  * Vista "Explorar 3D": modo de impacto, nunca el home.
@@ -63,40 +62,49 @@ function texturaHalo() {
   return haloTex;
 }
 
-/** Etiqueta como sprite de canvas (sin dependencias extra). Tamaño constante en mundo. */
-function spriteEtiqueta(texto, { fuerte, acento, fondo, tinta }) {
-  const pad = 10;
-  const fs = 26;
+/**
+ * Chip de etiqueta: título corto, sin miniatura, ancho máximo fijo. Mide lo mismo
+ * en pantalla a cualquier distancia (sizeAttenuation=false), así que no crece ni
+ * se pierde al orbitar.
+ */
+const CHIP_ANCHO_MAX = 140;   // px de pantalla
+const CHIP_ALTO = 22;
+
+function spriteEtiqueta(texto, { fuerte, acento, fondo, tinta, vh }) {
+  const K = 2;                                   // canvas al doble: texto nítido
+  const pad = 7 * K;
+  const fs = 12 * K;
   const c = document.createElement('canvas');
   const g = c.getContext('2d');
   g.font = `500 ${fs}px Inter, system-ui, sans-serif`;
-  const w = Math.ceil(g.measureText(texto).width) + pad * 2;
-  const h = fs + pad * 1.4;
+  // Recortar hasta que entre en el ancho máximo.
+  let t = String(texto || '');
+  const maxTexto = CHIP_ANCHO_MAX * K - pad * 2;
+  if (g.measureText(t).width > maxTexto) {
+    while (t.length > 1 && g.measureText(`${t}…`).width > maxTexto) t = t.slice(0, -1);
+    t = `${t}…`;
+  }
+  const w = Math.min(CHIP_ANCHO_MAX * K, Math.ceil(g.measureText(t).width) + pad * 2);
+  const h = CHIP_ALTO * K;
   c.width = w;
   c.height = h;
   g.font = `500 ${fs}px Inter, system-ui, sans-serif`;
-  g.fillStyle = rgba(fondo, 0.88);
-  g.strokeStyle = fuerte ? acento : rgba(tinta, 0.25);
-  g.lineWidth = 2;
-  const r = 8;
-  g.beginPath();
-  g.moveTo(r, 1); g.lineTo(w - r, 1); g.quadraticCurveTo(w - 1, 1, w - 1, r);
-  g.lineTo(w - 1, h - r); g.quadraticCurveTo(w - 1, h - 1, w - r, h - 1);
-  g.lineTo(r, h - 1); g.quadraticCurveTo(1, h - 1, 1, h - r);
-  g.lineTo(1, r); g.quadraticCurveTo(1, 1, r, 1);
-  g.closePath();
+  g.fillStyle = rgba(fondo, 0.92);
+  rectRedondeado(g, 1, 1, w - 2, h - 2, 7 * K);
   g.fill();
+  g.lineWidth = 1.5 * K;
+  g.strokeStyle = fuerte ? acento : rgba(tinta, 0.28);
   g.stroke();
-  g.fillStyle = fuerte ? '#ffffff' : rgba(tinta, 0.9);
+  g.fillStyle = fuerte ? '#ffffff' : rgba(tinta, 0.92);
   g.textBaseline = 'middle';
-  g.fillText(texto, pad, h / 2 + 1);
+  g.fillText(t, pad, h / 2 + 1);
+
   const tex = new THREE.CanvasTexture(c);
   tex.minFilter = THREE.LinearFilter;
-  // sizeAttenuation=false: la etiqueta mide lo mismo en pantalla a cualquier distancia.
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({
     map: tex, transparent: true, depthWrite: false, depthTest: false, sizeAttenuation: false,
   }));
-  const alto = 0.022;                      // ≈ 2% del alto del lienzo
+  const alto = CHIP_ALTO / (vh || 840);          // fracción del alto del lienzo
   sp.scale.set(alto * (w / h), alto, 1);
   sp.renderOrder = 10;
   return sp;
@@ -133,19 +141,28 @@ function lineas(g, texto, ancho, max) {
 }
 
 /**
- * Tarjeta de previsualización del documento: miniatura real (/thumb/{id}) +
- * título corto + origen. Sprite con tamaño EN EL MUNDO: crece al acercarse,
- * que es justamente cuando aparece. Cacheada por nodo y estilo.
+ * Tarjeta de previsualización: UNA sola a la vez, con medidas fijas
+ * (200×168, miniatura 120×90 en 4:3 y barra de título de dos líneas).
+ * Tamaño constante en pantalla: no crece al acercar la cámara.
  */
+const CARD_W = 200;
+const CARD_H = 168;
+const THUMB_W = 120;
+const THUMB_H = 90;
+
 const tarjetas = new Map();
-function tarjetaDe(node, { borde, fondo, tinta, origen, fuerte }) {
-  const clave = `${node.id}|${fuerte ? 'f' : borde}`;
+function tarjetaDe(node, { borde, fondo, tinta, origen, vh }) {
+  const clave = `${node.id}|${borde}|${Math.round((vh || 840) / 40)}`;
   const hit = tarjetas.get(clave);
   if (hit) return hit;
 
-  const W = fuerte ? 330 : 256; const TH = 164; const pad = 12;
-  const nLineas = fuerte ? 3 : 2;
-  const H = TH + 10 + nLineas * 24 + 14;
+  const K = 2;                                   // canvas al doble para que se lea
+  const W = CARD_W * K;
+  const H = CARD_H * K;
+  const tw = THUMB_W * K;
+  const th = THUMB_H * K;
+  const tx = (W - tw) / 2;
+  const ty = 9 * K;
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const g = c.getContext('2d');
@@ -153,77 +170,88 @@ function tarjetaDe(node, { borde, fondo, tinta, origen, fuerte }) {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.minFilter = THREE.LinearFilter;
 
-  const pintarMarco = () => {
+  const fondoTarjeta = () => {
     g.clearRect(0, 0, W, H);
-    rectRedondeado(g, 2, 2, W - 4, H - 4, 14);
-    g.fillStyle = rgba(fondo, 0.95);
+    rectRedondeado(g, 2, 2, W - 4, H - 4, 8 * K);
+    g.fillStyle = rgba(fondo, 0.96);
     g.fill();
   };
-  const pintarPlaceholder = () => {
+  const marcoThumb = () => {
+    rectRedondeado(g, tx, ty, tw, th, 7 * K);
+    g.fillStyle = rgba(borde, 0.14);
+    g.fill();
+  };
+  const placeholder = () => {
     g.save();
-    rectRedondeado(g, 8, 8, W - 16, TH - 8, 9);
+    rectRedondeado(g, tx, ty, tw, th, 7 * K);
     g.clip();
     g.fillStyle = rgba(borde, 0.16);
-    g.fillRect(8, 8, W - 16, TH - 8);
-    g.fillStyle = rgba(borde, 0.9);
-    g.font = '700 30px Inter, system-ui, sans-serif';
+    g.fillRect(tx, ty, tw, th);
+    g.fillStyle = rgba(borde, 0.95);
+    g.font = `700 ${20 * K}px Inter, system-ui, sans-serif`;
     g.textAlign = 'center';
     g.textBaseline = 'middle';
-    g.fillText(origen || 'DOC', W / 2, 8 + (TH - 8) / 2);
+    g.fillText(origen || 'DOC', W / 2, ty + th / 2);
     g.restore();
+    g.textAlign = 'left';
   };
-  const pintarTexto = () => {
+  const titulo = () => {
+    // Barra de título: 2 líneas como máximo, 12px, con elipsis.
     g.textAlign = 'left';
     g.textBaseline = 'top';
-    g.font = '600 19px Inter, system-ui, sans-serif';
-    g.fillStyle = rgba(tinta, 0.96);
-    lineas(g, node.label, W - pad * 2, nLineas).forEach((l, i) => g.fillText(l, pad, TH + 10 + i * 24));
-    // borde al final para que quede por encima de todo
-    rectRedondeado(g, 2, 2, W - 4, H - 4, 14);
-    g.lineWidth = fuerte ? 5 : 3;
-    g.strokeStyle = fuerte ? borde : rgba(borde, 0.7);
+    g.font = `500 ${12 * K}px Inter, system-ui, sans-serif`;
+    g.fillStyle = rgba(tinta, 0.97);
+    const pad = 10 * K;
+    lineas(g, node.label, W - pad * 2, 2).forEach((l, i) => g.fillText(l, pad, ty + th + 9 * K + i * 16 * K));
+    // Borde del color del origen/tema, al final para que quede por encima.
+    rectRedondeado(g, 2, 2, W - 4, H - 4, 8 * K);
+    g.lineWidth = 2 * K;
+    g.strokeStyle = borde;
     g.stroke();
     tex.needsUpdate = true;
   };
 
-  pintarMarco();
-  pintarPlaceholder();
-  pintarTexto();
+  fondoTarjeta(); marcoThumb(); placeholder(); titulo();
 
   if (node.fuente_path || node.fuente_url) {
     const img = new Image();
     img.decoding = 'async';
     img.onload = () => {
-      pintarMarco();
+      fondoTarjeta();
       g.save();
-      rectRedondeado(g, 8, 8, W - 16, TH - 8, 9);
+      rectRedondeado(g, tx, ty, tw, th, 7 * K);
       g.clip();
       g.fillStyle = '#ffffff';
-      g.fillRect(8, 8, W - 16, TH - 8);
-      // object-fit: cover, anclado arriba (la primera página/diapositiva manda)
-      const esc = Math.max((W - 16) / img.width, (TH - 8) / img.height);
-      g.drawImage(img, 8 + ((W - 16) - img.width * esc) / 2, 8, img.width * esc, img.height * esc);
+      g.fillRect(tx, ty, tw, th);
+      // object-fit: cover, anclado arriba (la primera página manda).
+      const esc = Math.max(tw / img.width, th / img.height);
+      g.drawImage(img, tx + (tw - img.width * esc) / 2, ty, img.width * esc, img.height * esc);
       g.restore();
-      pintarTexto();
+      titulo();
     };
     img.src = `/thumb/${encodeURIComponent(node.id)}`;   // mismo origen: el canvas no queda "tainted"
   }
 
-  // depthTest=false: la única tarjeta visible nunca queda tapada por esferas vecinas.
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false }));
-  sp.scale.set(W / 4, H / 4, 1);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthWrite: false, depthTest: false, sizeAttenuation: false,
+  }));
+  const alto = CARD_H / (vh || 840);
+  sp.scale.set(alto * (CARD_W / CARD_H), alto, 1);
   sp.center.set(0.5, 0);
   sp.renderOrder = 20;
   tarjetas.set(clave, sp);
   return sp;
 }
 
-// Tarjeta de preview: UNA sola. Con selección, la del elegido; sin selección y de
-// cerca, la del nodo más próximo a la cámara. Lejos, ninguna (sólo puntos).
-const UMBRAL_CERCA = 300;
+// Niveles de detalle según cuán cerca está la cámara del conjunto:
+//   lejos  → sólo puntos
+//   medio  → puntos + chips del elegido / vecindario
+//   cerca  → además, UNA tarjeta de preview
+const LOD_LEJOS = 1.5;    // × el radio de la nube
+const LOD_CERCA = 0.75;
 
 // "Más aire": factor de separación de la VISTA (no toca embeddings ni posiciones guardadas).
-const NIVELES_AIRE = [1, 1.6, 2.4];
+const NIVELES_AIRE = [1, 1.4, 2];
 const SEPARACION_MIN = 26;   // distancia mínima entre centros al resolver solapes (unidades de escena)
 
 /**
@@ -317,6 +345,16 @@ export default function Graph3DView({
   const data = useMemo(() => {
     const vis = nodes.filter((n) => visibleIds.has(n.id));
     const pos = posicionesVista(vis, NIVELES_AIRE[aire] || 1);
+    // Con vecindario fijado, ese conjunto se abre un poco más: es lo que se está
+    // leyendo y no tiene que quedar amontonado (sigue siendo vista, no embeddings).
+    if (ego) {
+      const idx = vis.map((n, i) => (ego.ids.has(n.id) ? i : -1)).filter((i) => i >= 0);
+      if (idx.length > 1) {
+        const c = [0, 0, 0];
+        idx.forEach((i) => { c[0] += pos[i][0] / idx.length; c[1] += pos[i][1] / idx.length; c[2] += pos[i][2] / idx.length; });
+        idx.forEach((i) => { for (let k = 0; k < 3; k++) pos[i][k] = c[k] + (pos[i][k] - c[k]) * 1.9; });
+      }
+    }
     const ns = vis.map((n, i) => {
       const [x, y, z] = pos[i];
       return { id: n.id, node: n, x, y, z, fx: x, fy: y, fz: z };
@@ -327,7 +365,7 @@ export default function Graph3DView({
       source: e.source, target: e.target, label: e.label, score: e.score, fuerte: fuertes.has(e),
     }));
     return { nodes: ns, links };
-  }, [nodes, edges, visibleIds, aire]);
+  }, [nodes, edges, visibleIds, aire, ego]);
 
   // Qué nodos llevan etiqueta persistente.
   const etiquetados = useMemo(() => {
@@ -373,7 +411,7 @@ export default function Graph3DView({
     const estado = estadoDe(d.id);
     const fuerte = estado === 'sel' || estado === 'pin';
     const color = new THREE.Color(colorDe(d.node));
-    const r = 4.5 + Math.sqrt(grado(d.id)) * 1.6 + (fuerte ? 3 : 0);
+    const r = 3 + Math.sqrt(grado(d.id)) * 1.1 + (fuerte ? 2 : 0);
     const alpha = estado === 'tenue' ? 0.28 : 1;   // contexto visible, no negro
 
     const g = new THREE.Group();
@@ -388,18 +426,18 @@ export default function Graph3DView({
       map: texturaHalo(),
       color: fuerte || estado === 'origen' ? new THREE.Color(paleta.acento) : color,
       transparent: true,
-      opacity: estado === 'tenue' ? 0.12 : fuerte ? 0.95 : estado === 'origen' ? 0.8 : 0.5,
+      opacity: estado === 'tenue' ? 0.1 : fuerte ? 0.75 : estado === 'origen' ? 0.6 : 0.32,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     }));
-    const hs = r * (fuerte ? 8 : 5.5);
+    const hs = r * (fuerte ? 4.5 : 3.2);   // halo contenido: de cerca no se vuelve un globo
     halo.scale.set(hs, hs, 1);
     g.add(halo);
 
     let et = null;
     if (etiquetados.has(d.id)) {
-      et = spriteEtiqueta(truncar(d.node.label, estado === 'sel' ? 90 : 24), {
-        fuerte, acento: paleta.acento, fondo: paleta.superficie, tinta: paleta.tinta,
+      et = spriteEtiqueta(d.node.label, {
+        fuerte, acento: paleta.acento, fondo: paleta.superficie, tinta: paleta.tinta, vh: tam.h,
       });
       et.center.set(-0.06, 0.5);   // un poco a la derecha del nodo, en unidades de pantalla
       et.position.set(r * 1.3, 0, 0);
@@ -407,45 +445,89 @@ export default function Graph3DView({
     }
     objs.current.set(d.id, { g, r, et, estado, fuerte, node: d.node, color: `#${color.getHexString()}` });
     return g;
-  }, [estadoDe, colorDe, grado, etiquetados, paleta]);
+  }, [estadoDe, colorDe, grado, etiquetados, paleta, tam.h]);
 
-  // ── Tarjetas de previsualización (LOD por cercanía + hover + selección) ──
+  // Centro y radio de la nube: definen los umbrales de detalle (LOD).
+  const encuadre = useMemo(() => {
+    const ns = data.nodes;
+    if (!ns.length) return { centro: new THREE.Vector3(), radio: 1 };
+    let cx = 0; let cy = 0; let cz = 0;
+    for (const d of ns) { cx += d.fx / ns.length; cy += d.fy / ns.length; cz += d.fz / ns.length; }
+    let radio = 1;
+    for (const d of ns) radio = Math.max(radio, Math.hypot(d.fx - cx, d.fy - cy, d.fz - cz));
+    return { centro: new THREE.Vector3(cx, cy, cz), radio };
+  }, [data.nodes]);
+
+  // ── Detalle por distancia: puntos → chips → una tarjeta ──
   const actualizarTarjetas = useCallback(() => {
     const fg = fgRef.current;
     if (!fg) return;
     const cam = fg.camera().position;
-    let unica = selectedId && objs.current.has(selectedId) ? selectedId : null;
-    if (!unica) {
-      let mejor = UMBRAL_CERCA;
-      for (const [id, o] of objs.current) {
-        if (!o.g.parent) { objs.current.delete(id); continue; }   // objeto viejo, ya fuera de escena
-        const dist = cam.distanceTo(o.g.position);
-        if (dist < mejor) { mejor = dist; unica = id; }
+    const dist = cam.distanceTo(encuadre.centro);
+    const nivel = dist > encuadre.radio * LOD_LEJOS ? 'lejos'
+      : dist < encuadre.radio * LOD_CERCA ? 'cerca' : 'medio';
+
+    // La tarjeta es la del elegido; sin selección, la del nodo más cercano, y
+    // sólo de cerca. De lejos no hay ninguna: la vista queda en puntos.
+    let unica = null;
+    if (nivel !== 'lejos') {
+      if (selectedId && objs.current.has(selectedId)) unica = selectedId;
+      else if (nivel === 'cerca') {
+        let mejor = Infinity;
+        for (const [id, o] of objs.current) {
+          if (!o.g.parent) { objs.current.delete(id); continue; }
+          const d = cam.distanceTo(o.g.position);
+          if (d < mejor) { mejor = d; unica = id; }
+        }
       }
     }
-    const mostrar = new Set(unica ? [unica] : []);
+
     for (const [id, o] of objs.current) {
-      const ver = mostrar.has(id);
+      if (!o.g.parent) { objs.current.delete(id); continue; }   // objeto viejo, fuera de escena
+      const ver = id === unica;
       if (ver) {
         const t = tarjetaDe(o.node, {
           borde: o.fuerte ? paleta.acento : o.color,
           fondo: paleta.superficie,
           tinta: paleta.tinta,
           origen: fuenteLabel(o.node),
-          fuerte: o.fuerte,
+          vh: tam.h,
         });
         if (o.tarjeta && o.tarjeta !== t) o.tarjeta.visible = false;
         if (t.parent !== o.g) o.g.add(t);
         t.position.set(0, o.r * 1.25, 0);
         t.visible = true;
         o.tarjeta = t;
-        if (o.et) o.et.visible = false;          // la tarjeta ya lleva el título
-      } else {
-        if (o.tarjeta) o.tarjeta.visible = false;
-        if (o.et) o.et.visible = true;
+      } else if (o.tarjeta) {
+        o.tarjeta.visible = false;                                // nunca quedan dos abiertas
       }
     }
-  }, [selectedId, paleta]);
+
+    // Chips: nunca de lejos, y nunca encimados. Se proyectan a pantalla y se
+    // colocan por prioridad (elegido → origen del vecindario → vecinos → resto);
+    // el que pisaría a otro ya puesto, no se dibuja.
+    const camara = fg.camera();
+    const rects = [];
+    const prioridad = (id) => (id === selectedId ? 0 : ego && id === ego.origen ? 1 : vecinos?.has(id) ? 2 : 3);
+    const candidatos = [...objs.current.entries()]
+      .filter(([id, o]) => o.et && id !== unica)
+      .map(([id, o]) => ({ id, o, p: prioridad(id), d: cam.distanceTo(o.g.position) }))
+      .sort((a, b) => a.p - b.p || a.d - b.d);
+
+    for (const { o } of candidatos) {
+      if (nivel === 'lejos') { o.et.visible = false; continue; }
+      const v = o.g.position.clone().project(camara);
+      if (v.z > 1) { o.et.visible = false; continue; }          // detrás de la cámara
+      const x = (v.x * 0.5 + 0.5) * tam.w;
+      const y = (-v.y * 0.5 + 0.5) * tam.h;
+      const ancho = o.et.scale.x * tam.h;                        // el sprite mide en fracción de alto
+      const alto = o.et.scale.y * tam.h;
+      const r = [x + 6, y - alto / 2 - 2, x + 6 + ancho, y + alto / 2 + 2];
+      const choca = rects.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
+      o.et.visible = !choca;
+      if (!choca) rects.push(r);
+    }
+  }, [selectedId, paleta, encuadre, tam.h, tam.w, ego, vecinos]);
 
   // Recalcular como mucho una vez por frame.
   const programar = useCallback(() => {
