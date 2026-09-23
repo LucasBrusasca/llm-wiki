@@ -91,16 +91,125 @@ def crear_chunks_paginas(paginas: list[tuple[int, str]]) -> list[dict]:
 def asociar_chunks(chunks: list[dict], node_id: str) -> list[dict]:
     return [{**chunk, "node_id": node_id} for chunk in chunks]
 
-def parsear_json(texto):
-    if texto.startswith("```"):
-        texto = re.sub(r'^```\w*\n?', '', texto).rstrip('`').strip()
+class JSONParseError(Exception):
+    """Excepción amigable para errores de parsing de JSON del LLM."""
+    pass
+
+
+def _limpiar_texto_llm(texto: str) -> str:
+    """Limpia el texto del LLM: elimina thinking tags, markdown fences, y prosa extra."""
+    if not texto:
+        return ""
+    
+    texto = re.sub(r'<think>.*?</think>', '', texto, flags=re.DOTALL | re.IGNORECASE)
+    texto = re.sub(r'<thinking>.*?</thinking>', '', texto, flags=re.DOTALL | re.IGNORECASE)
+    
+    texto = re.sub(r'^```(?:json)?\s*\n?', '', texto, flags=re.MULTILINE)
+    texto = re.sub(r'\n?```\s*$', '', texto, flags=re.MULTILINE)
+    
+    return texto.strip()
+
+
+def _extraer_json_objeto(texto: str) -> str | None:
+    """Extrae el objeto JSON más externo del texto, manejando anidamiento."""
+    inicio = texto.find('{')
+    if inicio == -1:
+        return None
+    
+    nivel = 0
+    en_string = False
+    escape = False
+    
+    for i, char in enumerate(texto[inicio:], inicio):
+        if escape:
+            escape = False
+            continue
+        if char == '\\':
+            escape = True
+            continue
+        if char == '"' and not escape:
+            en_string = not en_string
+            continue
+        if en_string:
+            continue
+        if char == '{':
+            nivel += 1
+        elif char == '}':
+            nivel -= 1
+            if nivel == 0:
+                return texto[inicio:i + 1]
+    
+    return None
+
+
+def _reparar_json(texto: str) -> str:
+    """Intenta reparar problemas comunes en JSON del LLM."""
+    texto = re.sub(r',(\s*[}\]])', r'\1', texto)
+    
+    texto = re.sub(r'([}\]"\d])\s*\n\s*(")', r'\1,\n\2', texto)
+    
+    texto = re.sub(r'("(?:[^"\\]|\\.)*")', lambda m: m.group(0).replace('\n', '\\n'), texto)
+    
+    return texto
+
+
+def parsear_json(texto: str, *, permitir_retry: bool = False, 
+                 retry_fn: callable = None) -> dict:
+    """Parsea JSON del LLM de forma robusta.
+    
+    Estrategia de recuperación:
+    1. Limpia thinking tags, markdown fences, prosa extra
+    2. Extrae el objeto JSON más externo
+    3. Intenta reparaciones comunes (trailing commas, newlines)
+    4. Opcionalmente reintenta con el LLM pidiendo solo JSON válido
+    5. Si todo falla, lanza JSONParseError con mensaje amigable
+    
+    Args:
+        texto: Texto crudo del LLM
+        permitir_retry: Si True y hay retry_fn, reintenta con el LLM
+        retry_fn: Función que recibe el texto original y retorna nuevo texto del LLM
+    
+    Returns:
+        dict parseado
+        
+    Raises:
+        JSONParseError: Con mensaje amigable en español si no se puede recuperar
+    """
+    if not texto or not texto.strip():
+        raise JSONParseError("El modelo no devolvió contenido. Reintentá el ingest.")
+    
+    texto_limpio = _limpiar_texto_llm(texto)
+    
     try:
-        return json.loads(texto)
+        return json.loads(texto_limpio)
     except json.JSONDecodeError:
-        m = re.search(r'\{.*\}', texto, re.DOTALL)
-        if m:
-            return json.loads(m.group())
-        raise
+        pass
+    
+    json_extraido = _extraer_json_objeto(texto_limpio)
+    if json_extraido:
+        try:
+            return json.loads(json_extraido)
+        except json.JSONDecodeError:
+            pass
+        
+        json_reparado = _reparar_json(json_extraido)
+        try:
+            return json.loads(json_reparado)
+        except json.JSONDecodeError:
+            pass
+    
+    if permitir_retry and retry_fn:
+        try:
+            nuevo_texto = retry_fn(texto)
+            if nuevo_texto and nuevo_texto != texto:
+                return parsear_json(nuevo_texto, permitir_retry=False)
+        except Exception:
+            pass
+    
+    raise JSONParseError(
+        "El modelo devolvió metadata inválida; reintentá el ingest. "
+        "Si el error persiste, probá con otro video o verificá tu conexión."
+    )
 
 import httpx
 
