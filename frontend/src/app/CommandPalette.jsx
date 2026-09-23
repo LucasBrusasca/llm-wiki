@@ -19,7 +19,7 @@ const ACCIONES = [
 
 export default function CommandPalette({
   open, onOpenChange, nodes, haystack, sections, seccion, onSelect, onSeccion, onAction,
-  inspectorAbierto = true, autoAbrir = false,
+  inspectorAbierto = true, railAbierto = true, autoAbrir = false,
 }) {
   const [q, setQ] = useState('');
   const [sem, setSem] = useState([]);
@@ -51,6 +51,7 @@ export default function CommandPalette({
 
   // Acciones que dependen del estado actual del panel derecho.
   const ACCIONES_PANEL = [
+    { id: 'rail', label: railAbierto ? 'Ocultar barra de secciones' : 'Mostrar barra de secciones', icon: PanelRight },
     { id: 'inspector', label: inspectorAbierto ? 'Ocultar panel derecho' : 'Mostrar panel derecho', icon: PanelRight },
     {
       id: 'auto-inspector',

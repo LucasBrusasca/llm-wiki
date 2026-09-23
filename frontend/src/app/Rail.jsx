@@ -70,12 +70,15 @@ function Check({ on }) {
   );
 }
 
+// Espejo de SECCIONES_BASE en el backend: no se eliminan aunque estén en cero.
+const SECCIONES_BASE = new Set(['personal', 'finanzas', 'maestria']);
+
 export default function Rail({
   sections, seccion, onSeccion, onNuevaSeccion,
   facetas, tipos, onToggleTipo, fuentes, onToggleFuente,
   topConceptos, conceptos, onToggleConcepto,
   temas, temasSel, onToggleTema, onNombrarTemas,
-  onIngest, onScripts, onNuevaNota, onSeccionesCambiadas, ancho = 272,
+  onIngest, onScripts, onNuevaNota, onSeccionesCambiadas, onSeccionEliminada, ancho = 272,
 }) {
   async function renombrar(nombre) {
     const nuevo = (window.prompt(`Nuevo nombre para «${nombre}»:`, nombre) || '').trim().toLowerCase();
@@ -89,12 +92,13 @@ export default function Rail({
   }
 
   async function eliminar(nombre, count) {
-    if (!window.confirm(`¿Eliminar la sección «${nombre}» y sus ${count} documentos? No se puede deshacer.`)) return;
-    const clave = await pedirClave(`eliminar «${nombre}»`);
-    if (!clave) return;
-    const r = await deleteSection(nombre, clave.password).catch(() => null);
-    if (r?.status === 403) { avisarClaveIncorrecta(); return; }
+    // Una sección vacía es un rótulo: borrarla no destruye nada y no pide la clave.
+    // Con documentos adentro, el menú ni siquiera deja llegar hasta acá.
+    if (count > 0) return;
+    if (!window.confirm(`Se elimina la sección «${nombre}». No borra nodos (está vacía).`)) return;
+    const r = await deleteSection(nombre).catch(() => null);
     if (!r?.ok) { window.alert('No se pudo eliminar la sección.'); return; }
+    onSeccionEliminada?.(nombre);
     const otra = sections.find((s) => s.nombre !== nombre)?.nombre || 'personal';
     onSeccionesCambiadas(nombre === seccion ? otra : seccion);
   }
@@ -153,9 +157,23 @@ export default function Rail({
                   <DropdownMenuContent align="start" side="right">
                     <DropdownMenuItem onSelect={() => renombrar(s.nombre)}><Pencil /> Renombrar</DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem onSelect={() => eliminar(s.nombre, s.count)} className="text-danger [&_svg]:text-danger">
+                    {/* Eliminar sólo lo que no destruye nada: sección propia y vacía.
+                        El item queda visible pero deshabilitado y diciendo por qué, en
+                        vez de desaparecer y dejar pensando que la opción no existe. */}
+                    <DropdownMenuItem
+                      disabled={SECCIONES_BASE.has(s.nombre) || s.count > 0}
+                      title={SECCIONES_BASE.has(s.nombre) ? 'Sección base'
+                        : s.count > 0 ? 'Mové o borrá los nodos primero' : undefined}
+                      onSelect={() => eliminar(s.nombre, s.count)}
+                      className="text-danger [&_svg]:text-danger"
+                    >
                       <Trash2 /> Eliminar sección
                     </DropdownMenuItem>
+                    {(SECCIONES_BASE.has(s.nombre) || s.count > 0) && (
+                      <div className="px-2 pb-1 text-[10.5px] text-ink-dim">
+                        {SECCIONES_BASE.has(s.nombre) ? 'Sección base' : 'Mové o borrá los nodos primero'}
+                      </div>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}

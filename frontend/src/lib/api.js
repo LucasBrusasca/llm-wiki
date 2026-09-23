@@ -73,6 +73,7 @@ export function renameSection(from, to, password) {
   });
 }
 
+/** Borrar una sección. `password` sólo hace falta si la sección tiene documentos. */
 export function deleteSection(nombre, password) {
   return fetch('/api/sections/delete', {
     method: 'POST',

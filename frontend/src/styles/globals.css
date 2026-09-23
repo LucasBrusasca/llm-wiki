@@ -76,6 +76,13 @@
 
   /* Grafos y secciones */
   --edge: #3a4466;
+  /* El 3D pide una arista más clara: sobre fondo negro y con niebla, el tono del 2D
+     (que va sobre superficie clara) se apagaba tanto que las líneas sólo aparecían al
+     acercarse. Mismo rol, otra luz. */
+  --edge-3d: #6b79b8;
+  /* El grafo 2D dibuja sobre el lienzo oscuro: con el tono base las líneas quedaban
+     por debajo del umbral de "se ve algo ahí". */
+  --edge-grafo: #5f6da8;
   --grid-dot: #141a2d;
   --sec-0: #22d3ee; --sec-1: #a78bfa; --sec-2: #fbbf24; --sec-3: #4ade80; --sec-4: #f472b6; --sec-5: #60a5fa;
 }

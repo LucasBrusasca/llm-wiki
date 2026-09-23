@@ -1327,6 +1327,13 @@ def _campos_editables(body: dict) -> dict:
     return cambios
 
 
+# Secciones que no se eliminan ni vacías. `personal` es el dominio por defecto de
+# cualquier nodo sin sección, así que borrarla dejaría documentos apuntando a un rótulo
+# inexistente: esa es estructural. Las otras dos son decisión del usuario, y esta lista
+# es el único lugar donde cambiarlo.
+SECCIONES_BASE = {"personal", "finanzas", "maestria"}
+
+
 async def _asegurar_seccion(db: AsyncSession, nombre: str):
     """Crea la fila de sección si no existe (idempotente)."""
     if (await db.execute(select(Section).where(Section.nombre == nombre))).scalar_one_or_none() is None:
@@ -1418,12 +1425,16 @@ async def delete_section(request: Request, db: AsyncSession = Depends(get_async_
     nombre = (body.get("nombre") or "").strip()
     if not nombre:
         raise HTTPException(400, "Falta el nombre de la sección.")
-    if not _check_password(body.get("password")):
-        raise HTTPException(403, "Clave de seguridad incorrecta.")
-    # Borra los documentos de la sección (las aristas caen por cascade). No toca issues.
+    if nombre in SECCIONES_BASE:
+        raise HTTPException(400, "Las secciones base no se eliminan.")
+    # Documentos de la sección (las aristas caen por cascade). No toca issues.
     ids = (await db.execute(
         select(Node.id).where(Node.dominio == nombre, Node.is_issue == False)
     )).scalars().all()
+    # La clave protege la destrucción de documentos. Una sección vacía no tiene nada
+    # que destruir: es un rótulo. Pedir la clave ahí sólo entrena a escribirla sin mirar.
+    if ids and not _check_password(body.get("password")):
+        raise HTTPException(403, "Clave de seguridad incorrecta.")
     if ids:
         await db.execute(sql_delete(Edge).where(Edge.source.in_(ids) | Edge.target.in_(ids)))
         await db.execute(sql_delete(Node).where(Node.id.in_(ids)))

@@ -42,6 +42,24 @@ function Resaltado({ texto, terms }) {
   return out;
 }
 
+/** Casilla de selección múltiple. Una sola pieza para la fila, el grupo y la cabecera:
+ *  si se ven distintas, se leen como cosas distintas. `parcial` = algunos, no todos. */
+function Casilla({ on, parcial = false, className }) {
+  return (
+    <span
+      className={cn(
+        'grid size-3.5 shrink-0 place-items-center rounded-[3px] border transition-opacity',
+        on ? 'border-accent bg-accent' : 'border-hair-strong',
+        className,
+      )}
+    >
+      {on
+        ? <svg viewBox="0 0 10 10" className="size-2 text-accent-ink"><path d="M2 5.2 4.1 7.2 8 3" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg>
+        : parcial && <span className="h-[2px] w-2 rounded-full bg-ink-dim" />}
+    </span>
+  );
+}
+
 function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, semantic, marcado, marcando, onMarca }) {
   const ref = useRef(null);
   useEffect(() => {
@@ -79,13 +97,9 @@ function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, se
         aria-checked={marcado}
         aria-label="Marcar para acciones en lote"
         onClick={(e) => { e.stopPropagation(); onMarca(node.id); }}
-        className={cn(
-          'grid size-3.5 place-items-center rounded-[3px] border transition-opacity',
-          marcado ? 'border-accent bg-accent opacity-100' : 'border-hair-strong',
-          !marcado && (marcando ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'),
-        )}
+        className={cn(!marcado && (marcando ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'))}
       >
-        {marcado && <svg viewBox="0 0 10 10" className="size-2 text-accent-ink"><path d="M2 5.2 4.1 7.2 8 3" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg>}
+        <Casilla on={marcado} />
       </span>
       <Thumb
         node={node}
@@ -133,13 +147,27 @@ function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, se
   );
 }
 
-function Encabezado({ grupo, abierto, onToggle, compact, onNombrarTemas }) {
+function Encabezado({ grupo, abierto, onToggle, compact, onNombrarTemas, todos, onTodos }) {
   return (
     <button
       type="button"
       onClick={onToggle}
       className="sticky top-0 z-10 flex h-9 w-full items-center gap-2 hairline-b bg-canvas/90 px-4 text-left backdrop-blur-md"
     >
+      {/* Marca el grupo entero. Va antes del chevron porque es la acción sobre lo que
+          el encabezado nombra; plegar el grupo es lo secundario. */}
+      {onTodos && (
+        <span
+          role="checkbox"
+          aria-checked={todos}
+          aria-label={`Seleccionar ${grupo.items.length} de ${grupo.title || 'la biblioteca'}`}
+          tabIndex={-1}
+          onClick={(e) => { e.stopPropagation(); onTodos(); }}
+          className="-ml-0.5"
+        >
+          <Casilla on={todos} />
+        </span>
+      )}
       <ChevronRight className={cn('size-3 text-ink-dim transition-transform', abierto && 'rotate-90')} />
       {grupo.semantic
         ? <Sparkles className="size-3 text-accent-soft" />
@@ -268,6 +296,9 @@ export default function Library({
   ];
   const hayFiltros = chips.length > 0 || query.trim().length > 0;
   const semCount = grupos.find((g) => g.semantic)?.items.length || 0;
+  // Lo que se puede seleccionar de una: exactamente lo que está listado ahora.
+  const idsVisibles = useMemo(() => grupos.flatMap((g) => g.items.map((n) => n.id)), [grupos]);
+  const todosMarcados = idsVisibles.length > 0 && idsVisibles.every((id) => marcados.has(id));
 
   let cuerpo;
   if (status === 'loading' && totalNodes === 0) {
@@ -306,6 +337,14 @@ export default function Library({
                   grupo={{ ...g, first: gi === 0 }}
                   abierto={abierto}
                   compact={compact}
+                  todos={g.items.length > 0 && g.items.every((n) => marcados.has(n.id))}
+                  onTodos={() => {
+                    const ids = g.items.map((n) => n.id);
+                    const todos = ids.every((id) => marcados.has(id));
+                    const next = new Set(marcados);
+                    ids.forEach((id) => (todos ? next.delete(id) : next.add(id)));
+                    onMarcarVarios([...next]);
+                  }}
                   onToggle={() => setCerrados((prev) => {
                     const next = new Set(prev);
                     if (next.has(g.key)) next.delete(g.key); else next.add(g.key);
@@ -340,6 +379,21 @@ export default function Library({
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Barra de la biblioteca: título, búsqueda local, agrupar, ordenar */}
       <div className="flex h-11 shrink-0 items-center gap-2 hairline-b px-4">
+        {/* Selecciona lo que se está viendo (filtros + búsqueda aplicados), nunca "todo
+            el universo": marcar a ciegas 200 documentos que no están en pantalla es una
+            trampa, no un atajo. */}
+        {idsVisibles.length > 0 && (
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={todosMarcados}
+            onClick={() => (todosMarcados ? onLimpiarMarcas() : onMarcarVarios(idsVisibles))}
+            title={todosMarcados ? 'Deseleccionar' : `Seleccionar ${idsVisibles.length} ${hayFiltros ? 'filtrados' : 'documentos'}`}
+            className="grid place-items-center rounded-xs p-0.5 text-ink-dim hover:text-ink"
+          >
+            <Casilla on={todosMarcados} parcial={marcados.size > 0} />
+          </button>
+        )}
         <h1 className="text-[13px] font-semibold tracking-[-0.01em]">Biblioteca</h1>
         <span className="text-[11.5px] text-ink-dim">
           {hayFiltros ? `${visibleCount} de ${totalNodes}` : totalNodes || ''}
@@ -400,16 +454,20 @@ export default function Library({
 
       {marcados.size > 0 && (
         <div className="flex shrink-0 items-center gap-2 hairline-b bg-accent/[0.06] px-4 py-1.5 text-[12px]">
-          <span className="text-ink">{marcados.size} {marcados.size === 1 ? 'marcado' : 'marcados'}</span>
+          <span className="text-ink">{marcados.size} {marcados.size === 1 ? 'seleccionado' : 'seleccionados'}</span>
           <Button variant="outline" size="sm" onClick={onMoverMarcados}><FolderInput /> Mover a sección…</Button>
-          <button
-            type="button"
-            onClick={() => onMarcarVarios(grupos.flatMap((g) => g.items.map((n) => n.id)))}
-            className="text-[11.5px] text-ink-dim hover:text-ink"
-          >
-            Marcar los {visibleCount} visibles
+          {!todosMarcados && (
+            <button
+              type="button"
+              onClick={() => onMarcarVarios(idsVisibles)}
+              className="text-[11.5px] text-ink-dim hover:text-ink"
+            >
+              Seleccionar los {idsVisibles.length} visibles
+            </button>
+          )}
+          <button type="button" onClick={onLimpiarMarcas} className="ml-auto text-[11.5px] text-ink-dim hover:text-ink">
+            Deseleccionar · Esc
           </button>
-          <button type="button" onClick={onLimpiarMarcas} className="ml-auto text-[11.5px] text-ink-dim hover:text-ink">Desmarcar</button>
         </div>
       )}
       {(chips.length > 0 || highlightIds.size > 0) && (

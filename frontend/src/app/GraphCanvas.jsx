@@ -355,8 +355,10 @@ function Lienzo({
         type: 'straight',
         focusable: false,
         style: {
-          stroke: fijada || (propia && !pin && (!ego || enEgo(e))) ? 'var(--color-accent)' : 'var(--edge)',
-          strokeWidth: fijada ? 2 : 1,
+          stroke: fijada || (propia && !pin && (!ego || enEgo(e))) ? 'var(--color-accent)' : 'var(--edge-grafo)',
+          // El grosor sigue al score: una relación fuerte se lee como tal sin abrir el
+          // panel. Entre 1 y 1.8 px — más que eso tapa los nodos.
+          strokeWidth: fijada ? 2.4 : 1 + Math.max(0, Math.min(1, ((e.score || 0) - 0.6) / 0.3)) * 0.8,
           opacity,
         },
         zIndex: fijada ? 2 : propia ? 1 : 0,

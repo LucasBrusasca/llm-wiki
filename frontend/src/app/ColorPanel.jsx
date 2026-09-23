@@ -21,13 +21,21 @@ export function calcularLeyenda(nodes, visibleIds, colorMode, temas, max = 8) {
     cur.n += 1;
     m.set(k, cur);
   }
-  return [...m.values()]
-    .sort((a, b) => (a.k === 'sin-tema') - (b.k === 'sin-tema') || b.n - a.n)
-    .slice(0, max);
+  const todas = [...m.values()].sort((a, b) => (a.k === 'sin-tema') - (b.k === 'sin-tema') || b.n - a.n);
+  const total = todas.reduce((acc, x) => acc + x.n, 0);
+  // Si una sola clase se lleva casi todo, colorear por ese criterio no informa nada y,
+  // peor, el ojo lee grupos donde sólo hay un color repetido. Se dice en voz alta en
+  // vez de dejar que parezca un cluster.
+  const dominante = total && todas[0] && todas[0].n / total >= 0.9
+    ? { label: todas[0].label, pct: Math.round((todas[0].n / total) * 100) }
+    : null;
+  return { items: todas.slice(0, max), total, dominante };
 }
 
 /** Selector de "color por" + leyenda. Lo usan el grafo 2D y el 3D. */
 export default function ColorPanel({ modo, onModo, leyenda, compacto = false }) {
+  const items = leyenda?.items || [];
+  const dominante = leyenda?.dominante || null;
   // En columnas angostas (Split) la leyenda arranca plegada para no tapar el grafo.
   const [abierta, setAbierta] = useState(!compacto);
   return (
@@ -46,7 +54,7 @@ export default function ColorPanel({ modo, onModo, leyenda, compacto = false }) 
             {m.label}
           </button>
         ))}
-        {leyenda.length > 0 && (
+        {items.length > 0 && (
           <button
             type="button"
             onClick={() => setAbierta((a) => !a)}
@@ -57,9 +65,14 @@ export default function ColorPanel({ modo, onModo, leyenda, compacto = false }) 
           </button>
         )}
       </div>
-      {abierta && leyenda.length > 0 && (
+      {dominante && (
+        <p className="px-1 text-[10.5px] leading-tight text-ink-dim">
+          casi todos son {dominante.label} ({dominante.pct}%): este color no separa nada
+        </p>
+      )}
+      {abierta && items.length > 0 && (
         <ul className="flex flex-col gap-0.5 px-1">
-          {leyenda.map((l) => (
+          {items.map((l) => (
             <li key={l.k} className="flex min-w-0 items-center gap-1.5 text-[11px] text-ink-muted" style={{ '--c': l.color }}>
               <span className="size-2 shrink-0 rounded-full dot-cat" />
               <span className="truncate">{l.label}</span>

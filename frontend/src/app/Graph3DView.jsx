@@ -324,7 +324,7 @@ export default function Graph3DView({
     acento: resolverColor('var(--color-accent)', '#22d3ee'),
     tinta: resolverColor('var(--color-ink)', '#e9edf7'),
     superficie: resolverColor('var(--color-surface)', '#0a0c16'),
-    arista: resolverColor('var(--edge)', '#3a4466'),
+    arista: resolverColor('var(--edge-3d)', '#6b79b8'),
   }), []);
 
   const colorDe = useCallback((n) => resolverColor(colorVar(n)), [colorVar]);
@@ -561,14 +561,23 @@ export default function Graph3DView({
     if (ego) {
       const dentro = ego.ids.has(s) && ego.ids.has(t);
       if (!dentro) return rgba(paleta.arista, 0.07);
-      return propia && !pin ? rgba(paleta.acento, 0.75) : rgba(paleta.arista, pin ? 0.3 : 0.7);
+      return propia && !pin ? rgba(paleta.acento, 0.8) : rgba(paleta.arista, pin ? 0.3 : 0.6);
     }
-    if (pin) return rgba(paleta.arista, propia ? 0.25 : 0.08);
-    if (propia) return rgba(paleta.acento, 0.65);
-    return rgba(paleta.arista, selectedId ? 0.15 : 0.55);
+    if (pin) return rgba(paleta.arista, propia ? 0.3 : 0.08);
+    if (propia) return rgba(paleta.acento, 0.8);
+    return rgba(paleta.arista, selectedId ? 0.18 : 0.5);
   }, [selectedId, pin, ego, esPin, paleta]);
 
-  const linkWidth = useCallback((l) => (esPin(l) ? 1.1 : 0), [esPin]);
+  // Con `width = 0` three.js dibuja una línea de UN píxel: a distancia, con niebla y
+  // sobre fondo oscuro, desaparece. Dándole grosor real la arista es un cilindro que
+  // se ve desde el encuadre inicial. El grosor sigue al score, así que una relación
+  // fuerte se lee como más gruesa sin tener que abrir el panel.
+  const linkWidth = useCallback((l) => {
+    if (esPin(l)) return 1.4;
+    const s = l.score || 0;
+    const base = 0.3 + Math.max(0, Math.min(1, (s - 0.6) / 0.3)) * 0.25;
+    return l.fuerte ? base : base * 0.7;
+  }, [esPin]);
 
 
   // Sólo en desarrollo: acceso a la instancia para depurar desde la consola.
@@ -579,7 +588,7 @@ export default function Graph3DView({
     const fg = fgRef.current;
     if (!fg) return;
     const scene = fg.scene();
-    scene.fog = new THREE.FogExp2(paleta.fondo, 0.00045);
+    scene.fog = new THREE.FogExp2(paleta.fondo, 0.00030);
   }, [paleta]);
 
   // Encuadre calculado a mano: las posiciones son fijas y conocidas, así que no
@@ -703,9 +712,6 @@ export default function Graph3DView({
       )}
 
       <div className="pointer-events-none absolute left-3 right-3 top-3 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">
-        <span className="whitespace-nowrap rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
-          Explorar 3D · {data.nodes.length} nodos · arrastrá para orbitar · acercate para ver un documento
-        </span>
         {pin && (
           <span className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
             <Link2 className="size-3 text-accent" />

@@ -15,6 +15,7 @@ import TaxonomiaDialog from '@/app/TaxonomiaDialog';
 import Splitter from '@/app/Splitter';
 import MoverDialog from '@/app/MoverDialog';
 import PestanaInspector from '@/app/PestanaInspector';
+import PestanaRail from '@/app/PestanaRail';
 import { normalizar } from '@/lib/utils';
 
 // React Flow pesa: sólo se carga cuando el usuario abre Split o Grafo.
@@ -88,6 +89,11 @@ export default function App() {
   // ── Apariencia ─────────────────────────────────────────────────────
   const [colorMode, setColorMode] = useState(() => LS.get('algedi_color', 'cluster'));
   useEffect(() => LS.set('algedi_color', colorMode), [colorMode]);
+  // El 3D lleva su propio modo de color y arranca por Origen: ahí "Tipo" es casi
+  // mono-clase y "Tema" pinta un bloque enorme, que hace parecer que el layout
+  // agrupa por categoría cuando las posiciones salen sólo de los embeddings.
+  const [colorMode3d, setColorMode3d] = useState(() => LS.get('algedi_color_3d', 'fuente'));
+  useEffect(() => LS.set('algedi_color_3d', colorMode3d), [colorMode3d]);
 
   // ── Filtros ────────────────────────────────────────────────────────
   const [query, setQuery] = useState('');
@@ -111,6 +117,8 @@ export default function App() {
 
   // Panel derecho: se puede ocultar para que el centro use todo el ancho. Por
   // defecto, elegir un documento NO lo abre solo: se respeta lo que el usuario dejó.
+  const [railAbierto, setRailAbierto] = useState(() => LS.get('algedi_rail', '1') !== '0');
+  useEffect(() => LS.set('algedi_rail', railAbierto ? '1' : '0'), [railAbierto]);
   const [inspectorAbierto, setInspectorAbierto] = useState(() => LS.get('algedi_inspector', '1') !== '0');
   const [autoAbrir, setAutoAbrir] = useState(() => LS.get('algedi_inspector_auto', '0') === '1');
   useEffect(() => LS.set('algedi_inspector', inspectorAbierto ? '1' : '0'), [inspectorAbierto]);
@@ -212,6 +220,18 @@ export default function App() {
       return next;
     });
   }, []);
+  // Al eliminar una sección hay que olvidarla TAMBIÉN acá: si queda en la lista local
+  // de vacías, vuelve a aparecer en el próximo render y la migración la recrea en el
+  // backend. Borrarla en un solo lado es la receta para que "vuelva sola".
+  const olvidarSeccion = useCallback((nombre) => {
+    setExtrasSecciones((prev) => {
+      const next = prev.filter((n) => n !== nombre);
+      guardarExtras(next);
+      return next;
+    });
+    loadSections();
+  }, [loadSections]);
+
   const crearSeccion = useCallback(async (nombre) => {
     const n = (nombre || '').trim().toLowerCase();
     if (!n) return;
@@ -470,7 +490,8 @@ export default function App() {
       if (e.key === 'Escape') {
         // Si hay un diálogo Radix abierto, el Esc es para cerrarlo, no para soltar la selección.
         if (document.querySelector('[role="dialog"][data-state="open"]')) return;
-        if (pinnedEdge) setPinnedEdge(null);
+        if (marcados.size) setMarcados(new Set());
+        else if (pinnedEdge) setPinnedEdge(null);
         else if (ego) setEgo(null);
         else setSelectedId(null);
         return;
@@ -480,6 +501,7 @@ export default function App() {
       if (e.key === '3') setVista('grafo');
       if (e.key === '4') setVista('3d');
       if (e.key === ']') { e.preventDefault(); setInspectorAbierto((v) => !v); }
+      if (e.key === '[') { e.preventDefault(); setRailAbierto((v) => !v); }
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'j' || e.key === 'k') {
         if (!orden.length) return;
         e.preventDefault();
@@ -491,15 +513,16 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [orden, selectedId, pinnedEdge, ego, seleccionar]);
+  }, [orden, selectedId, pinnedEdge, ego, seleccionar, marcados]);
 
   const selected = selectedId ? nodesById.get(selectedId) : null;
   const seccionInfo = sections.find((s) => s.nombre === seccion);
   const visibleIds = useMemo(() => new Set(orden), [orden]);
 
+  const modoColor = vista === '3d' ? colorMode3d : colorMode;
   const colorDe = useCallback(
-    (n) => (colorMode === 'cluster' ? temaDe(temas, n).color : (MODOS_COLOR[colorMode] || MODOS_COLOR.cluster).de(n)),
-    [colorMode, temas],
+    (n) => (modoColor === 'cluster' ? temaDe(temas, n).color : (MODOS_COLOR[modoColor] || MODOS_COLOR.cluster).de(n)),
+    [modoColor, temas],
   );
   const propsGrafo = {
     nodes: graph.nodes,
@@ -516,8 +539,8 @@ export default function App() {
     onClearPin: () => setPinnedEdge(null),
     onSelect: elegirEnGrafo,
     relIndex,
-    colorMode,
-    onColorMode: setColorMode,
+    colorMode: modoColor,
+    onColorMode: vista === '3d' ? setColorMode3d : setColorMode,
   };
   const grafo = (
     <Suspense fallback={<div className="grid h-full place-items-center text-[12px] text-ink-dim">Cargando grafo…</div>}>
@@ -538,9 +561,13 @@ export default function App() {
           loading={status === 'loading'}
           inspectorAbierto={inspectorAbierto}
           onInspector={() => setInspectorAbierto((v) => !v)}
+          railAbierto={railAbierto}
+          onRail={() => setRailAbierto((v) => !v)}
         />
 
         <div className="flex min-h-0">
+          {railAbierto ? (
+          <>
           <Rail
             sections={sectionsVista}
             seccion={seccion}
@@ -562,6 +589,7 @@ export default function App() {
             onScripts={() => setScriptsOpen(true)}
             onNuevaNota={nuevaNota}
             onSeccionesCambiadas={(activa) => { cambiarSeccion(activa); recargar(); }}
+            onSeccionEliminada={olvidarSeccion}
             ancho={anchoRail}
           />
           <Splitter
@@ -570,6 +598,10 @@ export default function App() {
             onDrag={(dx, base) => setAnchoRail(acotar(base + dx, PANELES.rail))}
             onReset={() => setAnchoRail(PANELES.rail.def)}
           />
+          </>
+          ) : (
+            <PestanaRail seccion={seccion} onAbrir={() => setRailAbierto(true)} />
+          )}
 
           <main ref={mainRef} className="flex min-w-0 flex-1">
             {(vista === 'lista' || vista === 'split') && (
@@ -663,7 +695,6 @@ export default function App() {
               onMover={(ids) => setMoverIds(ids)}
               temas={temas}
               onTema={(k) => toggleIn(setTemasSel)(k)}
-              onOcultar={() => setInspectorAbierto(false)}
             />
             </>
           ) : (
@@ -710,6 +741,7 @@ export default function App() {
           sections={sections}
           seccion={seccion}
           inspectorAbierto={inspectorAbierto}
+          railAbierto={railAbierto}
           autoAbrir={autoAbrir}
           onSelect={(id) => { seleccionar(id); setPaletteOpen(false); }}
           onSeccion={(s) => { cambiarSeccion(s); setPaletteOpen(false); }}
@@ -720,6 +752,7 @@ export default function App() {
             if (a === 'agent') preguntarSobre(null);
             if (a === 'inspector') setInspectorAbierto((v) => !v);
             if (a === 'auto-inspector') setAutoAbrir((v) => !v);
+            if (a === 'rail') setRailAbierto((v) => !v);
             if (VISTAS.includes(a)) setVista(a);
           }}
         />
