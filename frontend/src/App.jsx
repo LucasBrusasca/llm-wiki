@@ -8,6 +8,7 @@ import AgentFab from '@/app/AgentFab';
 import IngestDialog from '@/app/IngestDialog';
 import ScriptsSheet from '@/app/ScriptsSheet';
 import CommandPalette from '@/app/CommandPalette';
+import JobsPanel, { useJobs, JobsBadge } from '@/app/JobsPanel';
 import { fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota } from '@/lib/api';
 import { AGRUPADORES, MODOS_COLOR, indexarRelaciones } from '@/lib/nodes';
 import { construirTemas, temaKey, temaDe } from '@/lib/temas';
@@ -109,6 +110,7 @@ export default function App() {
   const [ingestOpen, setIngestOpen] = useState(false);
   const [scriptsOpen, setScriptsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [jobsOpen, setJobsOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
   const [agentContext, setAgentContext] = useState(null);
   const [taxonomiaOpen, setTaxonomiaOpen] = useState(false);
@@ -196,6 +198,14 @@ export default function App() {
     setReloadKey((k) => k + 1);
     loadSections();
   }, [loadSections]);
+
+  // ── Jobs en background ─────────────────────────────────────────────
+  const onJobDone = useCallback((job) => {
+    if (job?.seccion === seccion || job?.node_id) {
+      recargar();
+    }
+  }, [seccion, recargar]);
+  const { active: activeJobs, recent: recentJobs, refresh: refreshJobs } = useJobs(onJobDone);
 
   const cambiarSeccion = useCallback((nombre) => {
     setSeccion(nombre);
@@ -563,6 +573,7 @@ export default function App() {
           onInspector={() => setInspectorAbierto((v) => !v)}
           railAbierto={railAbierto}
           onRail={() => setRailAbierto((v) => !v)}
+          jobsBadge={<JobsBadge active={activeJobs} onClick={() => setJobsOpen(true)} />}
         />
 
         <div className="flex min-h-0">
@@ -724,6 +735,14 @@ export default function App() {
           onDone={tras_mover}
         />
         <TaxonomiaDialog open={taxonomiaOpen} onOpenChange={setTaxonomiaOpen} temas={temas} onDone={recargar} />
+        <JobsPanel
+          open={jobsOpen}
+          onOpenChange={setJobsOpen}
+          active={activeJobs}
+          recent={recentJobs}
+          onRefresh={refreshJobs}
+          onSelectNode={(id) => { seleccionar(id); setJobsOpen(false); }}
+        />
         <ScriptsSheet
           open={scriptsOpen}
           onOpenChange={setScriptsOpen}

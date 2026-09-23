@@ -211,6 +211,37 @@ export async function ingestStatus() {
   return fetch('/api/ingest/status').then(jsonOrThrow);
 }
 
+// ── Jobs (ingesta en background) ──────────────────────────────────────
+export async function createJob(file, seccion) {
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('seccion', seccion);
+  return fetch('/api/jobs', { method: 'POST', body: fd }).then(jsonOrThrow);
+}
+
+export async function createUrlJob(url, seccion) {
+  const fd = new FormData();
+  fd.append('url', url);
+  fd.append('seccion', seccion);
+  return fetch('/api/jobs', { method: 'POST', body: fd }).then(jsonOrThrow);
+}
+
+export async function getActiveJobs() {
+  return fetch('/api/jobs/active').then(jsonOrThrow);
+}
+
+export async function getJob(jobId) {
+  return fetch(`/api/jobs/${encodeURIComponent(jobId)}`).then(jsonOrThrow);
+}
+
+export async function retryJob(jobId) {
+  return fetch(`/api/jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST' }).then(jsonOrThrow);
+}
+
+export async function cancelJob(jobId) {
+  return fetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }).then(jsonOrThrow);
+}
+
 // ── Scripts (registry versionado — contrato a preservar) ──────────────
 export async function fetchScripts() {
   const d = await fetch('/api/scripts').then(jsonOrThrow);
