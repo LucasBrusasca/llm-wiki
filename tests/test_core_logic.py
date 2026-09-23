@@ -33,8 +33,12 @@ from processor import (
     METODO_INCREMENTAL,
     _auto_relaciones,
     _clasificar_base,
+    _conceptos_compartidos,
     _describir_relacion,
     _resolver_tema,
+    _tokens_concepto,
+    admite_vinculo,
+    palabras_genericas,
     crear_chunks,
     crear_chunks_paginas,
     relaciones_incrementales,
@@ -449,15 +453,84 @@ class DescripcionDeRelacionTests(unittest.TestCase):
     def test_la_etiqueta_describe_la_fuerza_del_vinculo(self):
         fuerte = _describir_relacion("a", "b", 0.80, ["uno", "dos"])
         self.assertEqual(fuerte["label"], "COMPLEMENTA_A")
+        # "Profundiza" exige pasar el piso duro; 0.60 queda debajo de 0.62 y sólo entra
+        # por conceptos compartidos, asi que se nombra mas flojo.
         media = _describir_relacion("a", "b", 0.60, ["uno", "dos"])
-        self.assertEqual(media["label"], "PROFUNDIZA_EN")
+        self.assertEqual(media["label"], "RELACIONADO_CON")
+        clara = _describir_relacion("a", "b", 0.68, ["uno", "dos"])
+        self.assertEqual(clara["label"], "PROFUNDIZA_EN")
         floja = _describir_relacion("a", "b", 0.10, [])
         self.assertEqual(floja["label"], "SEMANTICAMENTE_SIMILAR_A")
+
+    def test_la_etiqueta_sigue_al_piso_cuando_se_lo_cambia(self):
+        """Si se sube el piso por env, las etiquetas no pueden quedar todas arriba."""
+        con_piso_alto = _describir_relacion("a", "b", 0.68, ["uno", "dos"],
+                                            piso=0.75, piso_medido=True)
+        self.assertEqual(con_piso_alto["label"], "RELACIONADO_CON")
 
     def test_la_descripcion_menciona_los_conceptos_compartidos(self):
         rel = _describir_relacion("a", "b", 0.50, ["chunking", "trazabilidad"])
         self.assertIn("chunking", rel["description"])
         self.assertIn("2 conceptos", rel["description"])
+
+
+class AdmisionDeVinculosTests(unittest.TestCase):
+    """Una arista dice "estos dos documentos tienen que ver". Si entra cualquier par, el
+    grafo miente. Estos tests fijan por dónde se puede entrar."""
+
+    def test_coseno_alto_alcanza_solo(self):
+        self.assertTrue(admite_vinculo(0.70, [], piso=0.62))
+
+    def test_coseno_bajo_no_entra_aunque_comparta_conceptos(self):
+        """El caso que ensuciaba el grafo: 1079 pares del corpus real compartian dos
+        conceptos con coseno <0.5 y entraban igual."""
+        self.assertFalse(admite_vinculo(0.31, ["Gestion de datos", "Fuentes de datos"],
+                                        piso=0.62))
+
+    def test_conceptos_compartidos_bajan_el_piso_pero_no_lo_anulan(self):
+        self.assertTrue(admite_vinculo(0.55, ["chunking", "trazabilidad"], piso=0.62))
+        self.assertFalse(admite_vinculo(0.45, ["chunking", "trazabilidad"], piso=0.62))
+
+    def test_un_solo_concepto_no_rescata_un_vinculo_flojo(self):
+        self.assertFalse(admite_vinculo(0.55, ["chunking"], piso=0.62))
+
+
+class ConceptosGenericosTests(unittest.TestCase):
+    """El vocabulario de fondo de un silo no vincula a nadie: si "datos" esta en el 46%
+    de los documentos, compartir "datos" no es evidencia de nada."""
+
+    def _corpus(self, repetido, n=20):
+        """n documentos que comparten una palabra y tienen cada uno la suya propia."""
+        propias = ["chunking", "amortizacion", "turbina", "kubernetes", "serotonina",
+                   "ferroviario", "cartografia", "enzimatico", "polifonia", "arancel",
+                   "vulcanizado", "hidroponia", "tipografia", "sismologia", "bordado",
+                   "apicultura", "criogenia", "heraldica", "vitivinicola", "nautico"]
+        return [[f"{repetido} generico", propias[i % len(propias)]] for i in range(n)]
+
+    def test_detecta_la_palabra_que_dicen_todos(self):
+        genericas = palabras_genericas(self._corpus("datos"))
+        self.assertIn("datos", genericas)
+        self.assertNotIn("chunking", genericas)
+
+    def test_corpus_chico_no_inventa_estadistica(self):
+        """Con 6 documentos la frecuencia documental no mide nada: mejor no filtrar."""
+        self.assertEqual(palabras_genericas(self._corpus("datos", n=6)), set())
+
+    def test_dos_conceptos_genericos_ya_no_cuentan_como_compartidos(self):
+        nombres = ["Gestion de datos", "Fuentes de datos heterogeneas"]
+        toks_a = [_tokens_concepto(c) for c in nombres]
+        toks_b = [_tokens_concepto(c) for c in ["Entrada manual de datos"]]
+        sin_filtro = _conceptos_compartidos(nombres, toks_a, toks_b)
+        con_filtro = _conceptos_compartidos(nombres, toks_a, toks_b, {"datos"})
+        self.assertEqual(len(sin_filtro), 2)
+        self.assertEqual(con_filtro, [])
+
+    def test_el_concepto_propio_sobrevive_al_filtro(self):
+        nombres = ["Gestion de datos", "Chunking semantico"]
+        toks_a = [_tokens_concepto(c) for c in nombres]
+        toks_b = [_tokens_concepto(c) for c in ["Chunking por parrafos", "Datos abiertos"]]
+        self.assertEqual(_conceptos_compartidos(nombres, toks_a, toks_b, {"datos"}),
+                         ["Chunking semantico"])
 
 
 class ResolucionDeTemaTests(unittest.TestCase):

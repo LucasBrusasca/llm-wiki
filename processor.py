@@ -820,21 +820,72 @@ def _palabra_comun(ta: set, tb: set) -> bool:
 
 
 # Vínculos que conserva cada nodo (kNN). Hace de parámetro tipo "clustering": con K
-# chico el grafo queda legible; subirlo rearma la telaraña.
-RELACIONES_K = 5
+# chico el grafo queda legible; subirlo rearma la telaraña. Medido sobre este corpus:
+# con K=5 el grado mediano daba 6 y el máximo 29; con K=4 da 4-5 y ~20. Ver docs/RELACIONES.md.
+RELACIONES_K = int(os.getenv("ALGEDI_K_RELACIONES", "4"))
+
+# Piso de coseno para que dos documentos queden unidos SÓLO por similitud vectorial.
+# 0.62 no es un número elegido a ojo: es ~percentil 95 de los pares reales de este corpus
+# (personal p95=0.624, maestria p93≈0.62) y coincide con el piso que ya se exigía para
+# citar (ALGEDI_CITA_UMBRAL). Si un pasaje por debajo de eso no es citable, tampoco
+# merece dibujarse como relación. Configurable porque depende del modelo y del corpus.
+PISO_SIMILITUD = float(os.getenv("ALGEDI_PISO_RELACION", "0.62"))
+
+# Piso más bajo que se acepta cuando además comparten conceptos NO genéricos. Compartir
+# vocabulario propio es evidencia inspeccionable, así que compra 0.10 de coseno — no más.
+# Antes compartir conceptos salteaba el piso por completo: 1079 pares con coseno <0.5
+# entraban al grafo por dos palabras genéricas ("Gestión de datos" + "Flujo de trabajo").
+PISO_CON_CONCEPTOS = float(os.getenv("ALGEDI_PISO_CONCEPTOS", "0.52"))
+
+# Una palabra que aparece en esta fracción de los documentos de la sección no distingue
+# nada: es el vocabulario de fondo del silo ("datos" está en el 46% de `maestria`,
+# "modelos" en el 49% de `personal`). No cuenta como concepto compartido.
+DF_GENERICO = float(os.getenv("ALGEDI_DF_GENERICO", "0.15"))
+
+# Debajo de este tamaño la frecuencia documental no mide nada (en 6 documentos, "3 de 6"
+# es ruido). Se prefiere no filtrar antes que filtrar por una estadística inventada.
+MIN_DOCS_PARA_GENERICAS = 12
+
 # Piso de similitud cuando todavía no se corrió un recálculo global que lo mida.
 # Sólo se usa en el camino incremental y como red de seguridad.
-PISO_SIMILITUD_DEFAULT = 0.35
+PISO_SIMILITUD_DEFAULT = PISO_SIMILITUD
 
 
-def _conceptos_compartidos(nombres_a, toks_a, toks_b) -> list:
-    """Conceptos de A que comparten palabra completa con algún concepto de B.
-    Devuelve los nombres originales de A, deduplicados y en orden."""
+def palabras_genericas(conceptos_por_doc: list) -> set:
+    """Palabras que aparecen en demasiados documentos de la sección como para distinguir.
+
+    Es un filtro MEDIDO, no una lista de palabras prohibidas escrita a mano: cada silo
+    tiene su propio vocabulario de fondo ("datos" en el de estadística, "modelos" en el
+    de LLMs) y una lista fija no lo adivinaría. Se calcula sobre la sección porque un
+    término genérico acá puede ser el término distintivo de otra.
+    """
+    n_docs = len(conceptos_por_doc)
+    if n_docs < MIN_DOCS_PARA_GENERICAS:
+        return set()
+    frecuencia = {}
+    for conceptos in conceptos_por_doc:
+        vistas = set()
+        for concepto in (conceptos or []):
+            vistas |= _tokens_concepto(concepto)
+        for palabra in vistas:
+            frecuencia[palabra] = frecuencia.get(palabra, 0) + 1
+    return {w for w, k in frecuencia.items() if k / n_docs >= DF_GENERICO}
+
+
+def _conceptos_compartidos(nombres_a, toks_a, toks_b, genericas=frozenset()) -> list:
+    """Conceptos de A que comparten palabra COMPLETA y NO genérica con algún concepto de B.
+
+    Devuelve los nombres originales de A, deduplicados y en orden. `genericas` saca del
+    cotejo las palabras de fondo de la sección: sin eso, "Gestión de datos" y "Fuentes de
+    datos heterogéneas" contaban como concepto compartido en un corpus donde "datos"
+    aparece en casi la mitad de los documentos.
+    """
     shared = []
     for indice, ta in enumerate(toks_a):
-        if not ta:
+        utiles = (ta - genericas) if genericas else ta
+        if not utiles:
             continue
-        if any(tb and _palabra_comun(ta, tb) for tb in toks_b):
+        if any(tb and _palabra_comun(utiles, tb) for tb in toks_b):
             shared.append(nombres_a[indice])
     return list(dict.fromkeys(shared))
 
@@ -850,6 +901,32 @@ CONCEPTOS_PARA_EXPLICITA = 2
 METODO_INCREMENTAL = "knn_incremental"
 METODO_GLOBAL = "recalculo_global"
 METODO_MANUAL = "manual"
+
+
+def _piso_conceptos(piso: float | None) -> float:
+    """El piso rebajado que compran los conceptos compartidos: 0.10 por debajo del piso
+    duro, nunca menos que `PISO_CON_CONCEPTOS` cuando el piso duro es el configurado."""
+    if piso is None:
+        return PISO_CON_CONCEPTOS
+    return piso - (PISO_SIMILITUD - PISO_CON_CONCEPTOS)
+
+
+def admite_vinculo(sim: float, shared: list, piso: float | None) -> bool:
+    """¿Esta par merece una arista? ÚNICA puerta de entrada al grafo.
+
+    Dos formas de entrar, y ninguna es gratis:
+    - Coseno por encima del piso, sin más.
+    - Coseno algo menor PERO compartiendo ≥2 conceptos no genéricos.
+
+    Lo que ya no existe es la tercera forma, que era la que ensuciaba: "comparten
+    conceptos" alcanzaba sin mirar el coseno. Un documento de gestión de inventario y
+    uno de MLOps compartían "Gestión de datos" y quedaban unidos con coseno 0.31.
+    """
+    if piso is None:
+        piso = PISO_SIMILITUD
+    if sim >= piso:
+        return True
+    return len(shared) >= CONCEPTOS_PARA_EXPLICITA and sim >= _piso_conceptos(piso)
 
 
 def _clasificar_base(sim: float, shared: list, piso: float | None,
@@ -886,11 +963,14 @@ def _describir_relacion(source: str, target: str, sim: float, shared: list,
     y el panel los presenta separados.
     """
     comparten = len(shared) >= CONCEPTOS_PARA_EXPLICITA
+    # Los cortes van atados al piso vigente: si se sube el piso por env, las etiquetas
+    # siguen describiendo lo mismo en vez de quedar todas en la categoría más fuerte.
+    piso_efectivo = PISO_SIMILITUD if piso is None else piso
     if sim >= 0.75:
         label = "COMPLEMENTA_A"
-    elif sim >= 0.55 and comparten:
+    elif comparten and sim >= piso_efectivo:
         label = "PROFUNDIZA_EN"
-    elif sim >= 0.38 and comparten:
+    elif comparten and sim >= _piso_conceptos(piso_efectivo):
         label = "RELACIONADO_CON"
     elif comparten:
         label = "COMPARTE_CONCEPTOS_CON"
@@ -914,13 +994,19 @@ def _describir_relacion(source: str, target: str, sim: float, shared: list,
             "conceptos_compartidos": list(shared),
             "n_conceptos_compartidos": len(shared),
             "comparte_conceptos_suficientes": comparten,
+            # Por cuál de las dos puertas entró: sirve para no decirle "comparten
+            # conceptos" al usuario cuando en realidad la sostiene sólo el vector.
+            "piso_conceptos": round(_piso_conceptos(PISO_SIMILITUD if piso is None else piso), 3),
+            "admitida_por": ("similitud" if (piso is not None and sim >= piso)
+                             else ("conceptos" if comparten else "similitud")),
             "k_vecinos": RELACIONES_K,
             "modelo_embeddings": EMBED_MODEL_NAME,
         },
     }
 
 
-def relaciones_incrementales(nodo: dict, vecinos: list, piso: float | None = None) -> list:
+def relaciones_incrementales(nodo: dict, vecinos: list, piso: float | None = None,
+                             genericas=frozenset()) -> list:
     """Aristas de UN nodo contra un conjunto de vecinos ya preseleccionado.
 
     Es el camino de la ingesta. `vecinos` viene de una consulta kNN por pgvector (índice
@@ -951,21 +1037,23 @@ def relaciones_incrementales(nodo: dict, vecinos: list, piso: float | None = Non
         if vecino.get("id") == nodo.get("id"):
             continue
         toks_b = [_tokens_concepto(c) for c in (vecino.get("conceptos") or [])]
-        shared = _conceptos_compartidos(nombres_a, toks_a, toks_b)
+        shared = _conceptos_compartidos(nombres_a, toks_a, toks_b, genericas)
         sim = vecino.get("sim")
         if sim is None:
             sim = calcular_similitud_coseno(nodo.get("embedding"), vecino.get("embedding"))
         sim = round(float(sim), 2) if sim else 0.0
         candidatos.append({
             "id": vecino["id"], "sim": sim, "shared": shared,
-            "comparten": len(shared) >= 2,
-            "strength": sim + 0.06 * min(len(shared), 4),
+            "comparten": len(shared) >= CONCEPTOS_PARA_EXPLICITA,
+            # El empujón por conceptos ordena el top-K, no decide la admisión: con 0.06
+            # por concepto un par de coseno 0.45 con 4 conceptos le ganaba a uno de 0.68.
+            "strength": sim + 0.03 * min(len(shared), 3),
         })
 
     candidatos.sort(key=lambda c: c["strength"], reverse=True)
     rels = []
     for c in candidatos[:RELACIONES_K]:
-        if c["sim"] >= piso or c["comparten"]:
+        if admite_vinculo(c["sim"], c["shared"], piso):
             rels.append(_describir_relacion(
                 nodo["id"], c["id"], c["sim"], c["shared"],
                 metodo=METODO_INCREMENTAL, piso=piso, piso_medido=piso_medido,
@@ -981,11 +1069,12 @@ def _auto_relaciones(nodos, stats: dict | None = None):
     similitudes del corpus. No corre en la ingesta (ahí va `relaciones_incrementales`),
     sino cuando se pide explícitamente reagrupar el grafo.
 
-    Dos mejoras sobre el enfoque anterior:
-    - Conceptos compartidos por PALABRA COMPLETA (no substring) → menos falsos positivos.
-    - Umbral DATA-DRIVEN: kNN por nodo (cada nodo se queda con sus K vínculos más
-      fuertes) + piso por percentil de la distribución real de similitudes. Sin el 0.38
-      mágico → se adapta solo al modelo de embeddings y al corpus.
+    Cómo decide (ver docs/RELACIONES.md para los números medidos):
+    - Conceptos compartidos por PALABRA COMPLETA (no substring) y descartando el
+      vocabulario de fondo de la sección → menos falsos positivos.
+    - kNN por nodo: cada nodo se queda con sus K vínculos más fuertes.
+    - Piso = max(configurado, percentil 90 observado). Compartir conceptos lo baja
+      0.10, no lo anula.
 
     Si se pasa `stats`, se deja ahí el piso medido para que la ingesta incremental use el
     mismo criterio en vez de inventar uno.
@@ -997,6 +1086,12 @@ def _auto_relaciones(nodos, stats: dict | None = None):
     toks = {n["id"]: [_tokens_concepto(c) for c in (n.get("conceptos") or [])] for n in docs}
     names = {n["id"]: (n.get("conceptos") or []) for n in docs}
 
+    # 0. Vocabulario de fondo POR SECCIÓN: lo que todos dicen no vincula a nadie.
+    por_seccion = {}
+    for n in docs:
+        por_seccion.setdefault(n.get("dominio") or "personal", []).append(n.get("conceptos") or [])
+    genericas = {sec: palabras_genericas(cs) for sec, cs in por_seccion.items()}
+
     # 1. Candidatos: similitud coseno + conceptos compartidos (palabra completa) por par.
     cand = []
     for i, a in enumerate(docs):
@@ -1006,26 +1101,39 @@ def _auto_relaciones(nodos, stats: dict | None = None):
             if (a.get("dominio") or "personal") != (b.get("dominio") or "personal"):
                 continue
             tb_list = toks[b["id"]]
-            shared = _conceptos_compartidos(names[a["id"]], ta_list, tb_list)
+            seccion = a.get("dominio") or "personal"
+            shared = _conceptos_compartidos(names[a["id"]], ta_list, tb_list,
+                                            genericas.get(seccion, frozenset()))
 
             sim = calcular_similitud_coseno(a.get("embedding"), b.get("embedding"))
             sim = round(sim, 2) if sim else 0.0
-            comparten = len(shared) >= 2
-            strength = sim + 0.06 * min(len(shared), 4)  # conceptos compartidos suman
+            comparten = len(shared) >= CONCEPTOS_PARA_EXPLICITA
+            strength = sim + 0.03 * min(len(shared), 3)  # ordena el top-K, no admite
             cand.append({"a": a["id"], "b": b["id"], "sim": sim,
                          "shared": shared, "comparten": comparten, "strength": strength})
 
     if not cand:
         return []
 
-    # 2. Umbral data-driven: piso = percentil 40 de las similitudes reales. Con un modelo
-    #    de embeddings mejor, la distribución baja y el piso baja SOLO (sin re-tunear).
+    # 2. Piso: lo más alto entre el configurado y el percentil 90 MEDIDO en este corpus.
+    #
+    #    Antes era sólo el percentil 40, que sobre este corpus daba 0.387: cuatro de cada
+    #    diez pares posibles quedaban habilitados. Un percentil solo no sirve de piso
+    #    porque siempre deja pasar la misma proporción, tenga sentido o no; y un número
+    #    fijo solo no se adapta a un modelo de embeddings distinto. Por eso van los dos:
+    #    el configurado pone el mínimo de decencia, el percentil lo sube si el corpus es
+    #    tan homogéneo que hasta los pares mediocres pasarían.
     sims = sorted(c["sim"] for c in cand)
-    floor = sims[int(len(sims) * 0.40)]
+    percentil_90 = sims[min(len(sims) - 1, int(len(sims) * 0.90))]
+    floor = max(PISO_SIMILITUD, percentil_90)
     if stats is not None:
         stats["floor"] = floor
+        stats["percentil_90"] = percentil_90
+        stats["piso_configurado"] = PISO_SIMILITUD
+        stats["piso_conceptos"] = round(_piso_conceptos(floor), 3)
         stats["n_docs"] = len(docs)
         stats["n_pares"] = len(cand)
+        stats["genericas"] = {sec: sorted(g) for sec, g in genericas.items()}
 
     # 3. kNN por nodo: cada nodo conserva sus K vínculos más fuertes (por encima del piso).
     #    Una arista sobrevive si está en el top-K de ALGUNO de sus extremos, o si
@@ -1040,10 +1148,8 @@ def _auto_relaciones(nodos, stats: dict | None = None):
     for lst in por_nodo.values():
         lst.sort(key=lambda c: c["strength"], reverse=True)
         for c in lst[:K]:
-            # Piso data-driven, salvo que compartan conceptos explícitos (señal fuerte que
-            # puede valer aunque el coseno sea algo menor). Igual respeta el tope top-K por
-            # nodo → no rearma el hairball.
-            if c["sim"] >= floor or c["comparten"]:
+            # Misma puerta que usa la ingesta: compartir conceptos baja el piso, no lo anula.
+            if admite_vinculo(c["sim"], c["shared"], floor):
                 keep.add((c["a"], c["b"]))
 
     # 4. Relaciones finales con label/description (el label describe la fuerza, no filtra).

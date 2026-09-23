@@ -408,6 +408,27 @@ def _leer_piso_similitud(session) -> float | None:
     return None
 
 
+def _leer_genericas(session, dominio: str) -> frozenset:
+    """Vocabulario de fondo que midió el último recálculo global para esa sección.
+
+    La ingesta incremental no puede medirlo: ve un documento y sus vecinos, no el silo
+    entero. Sin esto, un documento recién subido se vincularía por palabras que el
+    recálculo global ya había descartado, y las dos vistas del grafo dirían cosas
+    distintas sobre el mismo par.
+    """
+    from database.models import GraphStat as GraphStatModel
+    try:
+        fila = session.query(GraphStatModel).filter(
+            GraphStatModel.key == "relaciones"
+        ).one_or_none()
+        if fila and isinstance(fila.value, dict):
+            genericas = (fila.value.get("genericas") or {}).get(dominio) or []
+            return frozenset(genericas)
+    except Exception as exc:
+        print(f"Warning: no se pudieron leer las palabras genéricas: {exc}")
+    return frozenset()
+
+
 def _guardar_piso_similitud(session, stats: dict):
     """Persiste lo que midió el recálculo global para que la ingesta lo reutilice."""
     from database.models import GraphStat as GraphStatModel
@@ -415,6 +436,10 @@ def _guardar_piso_similitud(session, stats: dict):
         return
     valores = {
         "floor": stats.get("floor"),
+        "percentil_90": stats.get("percentil_90"),
+        "piso_configurado": stats.get("piso_configurado"),
+        "piso_conceptos": stats.get("piso_conceptos"),
+        "genericas": stats.get("genericas") or {},
         "n_docs": stats.get("n_docs"),
         "n_pares": stats.get("n_pares"),
         "medido_en": datetime.now(timezone.utc).isoformat(),
@@ -646,6 +671,7 @@ def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
             {**nodo_data, "dominio": dominio},
             vecinos,
             piso=_leer_piso_similitud(session),
+            genericas=_leer_genericas(session, dominio),
         )
 
         # Sólo se reemplazan las aristas de ESTE nodo. Las del resto del grafo quedan
@@ -1483,6 +1509,10 @@ async def recompute_relations(db: AsyncSession = Depends(get_async_session)):
     if stats:
         valores = {
             "floor": stats.get("floor"),
+            "percentil_90": stats.get("percentil_90"),
+            "piso_configurado": stats.get("piso_configurado"),
+            "piso_conceptos": stats.get("piso_conceptos"),
+            "genericas": stats.get("genericas") or {},
             "n_docs": stats.get("n_docs"),
             "n_pares": stats.get("n_pares"),
             "medido_en": datetime.now(timezone.utc).isoformat(),
