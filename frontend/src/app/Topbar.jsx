@@ -1,5 +1,5 @@
 import React from 'react';
-import { Search, List, Columns2, Share2, Orbit, RotateCw } from 'lucide-react';
+import { Search, List, Columns2, Share2, Orbit, RotateCw, PanelRight, PanelRightClose } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -51,7 +51,7 @@ function Segmentado({ items, value, onChange, etiqueta, hint }) {
   );
 }
 
-export default function Topbar({ seccion, total, vista, onVista, onOpenPalette, onReload, loading }) {
+export default function Topbar({ seccion, total, vista, onVista, onOpenPalette, onReload, loading, inspectorAbierto, onInspector }) {
   const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
   return (
     <header className="flex items-center gap-3 hairline-b bg-surface/90 px-3 backdrop-blur">
@@ -85,6 +85,18 @@ export default function Topbar({ seccion, total, vista, onVista, onOpenPalette, 
           onChange={onVista}
           hint={(v) => `${v.label} · tecla ${v.key}`}
         />
+        <Hint texto={`${inspectorAbierto ? 'Ocultar' : 'Mostrar'} panel derecho · tecla ]`}>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onInspector}
+            aria-label={inspectorAbierto ? 'Ocultar panel derecho' : 'Mostrar panel derecho'}
+            aria-pressed={!inspectorAbierto}
+            className={cn(!inspectorAbierto && 'text-accent')}
+          >
+            {inspectorAbierto ? <PanelRightClose /> : <PanelRight />}
+          </Button>
+        </Hint>
       </div>
     </header>
   );

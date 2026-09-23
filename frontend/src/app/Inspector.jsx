@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   X, ExternalLink, MessageSquare, Share2, ArrowUpRight, ArrowDownLeft, ArrowRight, Copy, Check,
-  Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight, Pencil, FolderInput, Loader2,
+  Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight, Pencil, FolderInput, Loader2, PanelRightClose,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -330,7 +330,7 @@ function Panorama({ seccion, seccionCount, edgesCount, relIndex, nodesById, topC
 export default function Inspector({
   node, nodesById, relIndex, seccion, seccionCount, edgesCount, topConceptos,
   onSelect, onClose, onAsk, onConcepto, onVerEnGrafo, vista, pinnedEdge, onPin, onClearPin,
-  onAbrir, camino = [], onVolver, temas, onTema, ego, onFijar, ancho = 420, onGuardar, onMover,
+  onAbrir, camino = [], onVolver, temas, onTema, ego, onFijar, ancho = 420, onGuardar, onMover, onOcultar,
 }) {
   // Vista previa primero; si el documento no tiene nada que previsualizar, Resumen.
   const [tab, setTab] = useState('preview');
@@ -349,6 +349,11 @@ export default function Inspector({
   if (!node) {
     return (
       <aside className={shell} style={{ width: ancho }} aria-label="Detalle">
+        <div className="flex h-8 shrink-0 items-center justify-end px-1.5">
+          <Hint texto="Ocultar el panel · tecla ]">
+            <Button variant="ghost" size="icon-sm" onClick={onOcultar} aria-label="Ocultar panel derecho"><PanelRightClose /></Button>
+          </Hint>
+        </div>
         <Panorama
           seccion={seccion}
           seccionCount={seccionCount}
@@ -453,6 +458,9 @@ export default function Inspector({
             </Hint>
             <Hint texto="Cerrar · Esc">
               <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Cerrar detalle"><X /></Button>
+            </Hint>
+            <Hint texto="Ocultar el panel · tecla ]">
+              <Button variant="ghost" size="icon-sm" onClick={onOcultar} aria-label="Ocultar panel derecho"><PanelRightClose /></Button>
             </Hint>
           </div>
         </div>

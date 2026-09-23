@@ -14,6 +14,7 @@ import { construirTemas, temaKey, temaDe } from '@/lib/temas';
 import TaxonomiaDialog from '@/app/TaxonomiaDialog';
 import Splitter from '@/app/Splitter';
 import MoverDialog from '@/app/MoverDialog';
+import PestanaInspector from '@/app/PestanaInspector';
 import { normalizar } from '@/lib/utils';
 
 // React Flow pesa: sólo se carga cuando el usuario abre Split o Grafo.
@@ -107,6 +108,13 @@ export default function App() {
   const [taxonomiaOpen, setTaxonomiaOpen] = useState(false);
   const [moverIds, setMoverIds] = useState(null);          // ids a mover de sección (diálogo)
   const [marcados, setMarcados] = useState(() => new Set()); // selección múltiple en la lista
+
+  // Panel derecho: se puede ocultar para que el centro use todo el ancho. Por
+  // defecto, elegir un documento NO lo abre solo: se respeta lo que el usuario dejó.
+  const [inspectorAbierto, setInspectorAbierto] = useState(() => LS.get('algedi_inspector', '1') !== '0');
+  const [autoAbrir, setAutoAbrir] = useState(() => LS.get('algedi_inspector_auto', '0') === '1');
+  useEffect(() => LS.set('algedi_inspector', inspectorAbierto ? '1' : '0'), [inspectorAbierto]);
+  useEffect(() => LS.set('algedi_inspector_auto', autoAbrir ? '1' : '0'), [autoAbrir]);
 
   const searchRef = useRef(null);
   const mainRef = useRef(null);
@@ -344,10 +352,11 @@ export default function App() {
 
   // Elegir "desde afuera" (lista, búsqueda, teclado): empieza un camino nuevo.
   const seleccionar = useCallback((id) => {
+    if (autoAbrir) setInspectorAbierto(true);
     setCamino([]);
     setEgo((e) => (e && id && e.ids.has(id) ? e : null));
     setSelectedId(id);
-  }, []);
+  }, [autoAbrir]);
 
   // Seguir un vínculo: el documento actual pasa al camino y la arista usada queda fijada.
   const abrirVinculo = useCallback((id, edge) => {
@@ -470,6 +479,7 @@ export default function App() {
       if (e.key === '2') setVista('split');
       if (e.key === '3') setVista('grafo');
       if (e.key === '4') setVista('3d');
+      if (e.key === ']') { e.preventDefault(); setInspectorAbierto((v) => !v); }
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'j' || e.key === 'k') {
         if (!orden.length) return;
         e.preventDefault();
@@ -526,6 +536,8 @@ export default function App() {
           onOpenPalette={() => setPaletteOpen(true)}
           onReload={recargar}
           loading={status === 'loading'}
+          inspectorAbierto={inspectorAbierto}
+          onInspector={() => setInspectorAbierto((v) => !v)}
         />
 
         <div className="flex min-h-0">
@@ -616,40 +628,47 @@ export default function App() {
             {vista !== 'lista' && <section className="relative min-w-0 flex-1 overflow-hidden">{grafo}</section>}
           </main>
 
-          <Splitter
-            etiqueta="Ancho del inspector"
-            onStart={() => anchoInsp}
-            onDrag={(dx, base) => setAnchoInsp(acotar(base - dx, PANELES.insp))}
-            onReset={() => setAnchoInsp(PANELES.insp.def)}
-          />
-          <Inspector
-            ancho={anchoInsp}
-            node={selected}
-            nodesById={nodesById}
-            relIndex={relIndex}
-            seccion={seccion}
-            seccionCount={graph.nodes.length}
-            edgesCount={graph.edges.length}
-            topConceptos={topConceptos}
-            onSelect={seleccionar}
-            onClose={() => setSelectedId(null)}
-            onAsk={preguntarSobre}
-            onConcepto={(k) => toggleIn(setConceptos)(k)}
-            onVerEnGrafo={() => setVista((v) => (v === 'lista' ? 'split' : v))}
-            vista={vista}
-            pinnedEdge={pinnedEdge}
-            onPin={fijarRelacion}
-            onClearPin={() => setPinnedEdge(null)}
-            onAbrir={abrirVinculo}
-            camino={ego ? (selectedId && selectedId !== ego.origen ? [ego.origen] : []) : camino}
-            onVolver={ego ? () => setSelectedId(ego.origen) : volverA}
-            ego={ego}
-            onFijar={fijarVecindario}
-            onGuardar={guardarNodo}
-            onMover={(ids) => setMoverIds(ids)}
-            temas={temas}
-            onTema={(k) => toggleIn(setTemasSel)(k)}
-          />
+          {inspectorAbierto ? (
+            <>
+            <Splitter
+              etiqueta="Ancho del inspector"
+              onStart={() => anchoInsp}
+              onDrag={(dx, base) => setAnchoInsp(acotar(base - dx, PANELES.insp))}
+              onReset={() => setAnchoInsp(PANELES.insp.def)}
+            />
+            <Inspector
+              ancho={anchoInsp}
+              node={selected}
+              nodesById={nodesById}
+              relIndex={relIndex}
+              seccion={seccion}
+              seccionCount={graph.nodes.length}
+              edgesCount={graph.edges.length}
+              topConceptos={topConceptos}
+              onSelect={seleccionar}
+              onClose={() => setSelectedId(null)}
+              onAsk={preguntarSobre}
+              onConcepto={(k) => toggleIn(setConceptos)(k)}
+              onVerEnGrafo={() => setVista((v) => (v === 'lista' ? 'split' : v))}
+              vista={vista}
+              pinnedEdge={pinnedEdge}
+              onPin={fijarRelacion}
+              onClearPin={() => setPinnedEdge(null)}
+              onAbrir={abrirVinculo}
+              camino={ego ? (selectedId && selectedId !== ego.origen ? [ego.origen] : []) : camino}
+              onVolver={ego ? () => setSelectedId(ego.origen) : volverA}
+              ego={ego}
+              onFijar={fijarVecindario}
+              onGuardar={guardarNodo}
+              onMover={(ids) => setMoverIds(ids)}
+              temas={temas}
+              onTema={(k) => toggleIn(setTemasSel)(k)}
+              onOcultar={() => setInspectorAbierto(false)}
+            />
+            </>
+          ) : (
+            <PestanaInspector node={selected} onAbrir={() => setInspectorAbierto(true)} />
+          )}
         </div>
 
         <AgentFab
@@ -690,6 +709,8 @@ export default function App() {
           haystack={haystack}
           sections={sections}
           seccion={seccion}
+          inspectorAbierto={inspectorAbierto}
+          autoAbrir={autoAbrir}
           onSelect={(id) => { seleccionar(id); setPaletteOpen(false); }}
           onSeccion={(s) => { cambiarSeccion(s); setPaletteOpen(false); }}
           onAction={(a) => {
@@ -697,6 +718,8 @@ export default function App() {
             if (a === 'ingest') setIngestOpen(true);
             if (a === 'scripts') setScriptsOpen(true);
             if (a === 'agent') preguntarSobre(null);
+            if (a === 'inspector') setInspectorAbierto((v) => !v);
+            if (a === 'auto-inspector') setAutoAbrir((v) => !v);
             if (VISTAS.includes(a)) setVista(a);
           }}
         />

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Upload, Terminal, MessageSquare, List, Columns2, Share2, Orbit, Layers, Sparkles } from 'lucide-react';
+import { Upload, Terminal, MessageSquare, List, Columns2, Share2, Orbit, Layers, Sparkles, PanelRight } from 'lucide-react';
 import {
   CommandDialog, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem,
 } from '@/components/ui/command';
@@ -19,6 +19,7 @@ const ACCIONES = [
 
 export default function CommandPalette({
   open, onOpenChange, nodes, haystack, sections, seccion, onSelect, onSeccion, onAction,
+  inspectorAbierto = true, autoAbrir = false,
 }) {
   const [q, setQ] = useState('');
   const [sem, setSem] = useState([]);
@@ -48,7 +49,18 @@ export default function CommandPalette({
     return () => clearTimeout(t);
   }, [q, docs, nodes]);
 
-  const acciones = ACCIONES.filter((a) => !terms.length || terms.every((t) => normalizar(a.label).includes(t)));
+  // Acciones que dependen del estado actual del panel derecho.
+  const ACCIONES_PANEL = [
+    { id: 'inspector', label: inspectorAbierto ? 'Ocultar panel derecho' : 'Mostrar panel derecho', icon: PanelRight },
+    {
+      id: 'auto-inspector',
+      label: autoAbrir
+        ? 'Panel derecho: dejar de abrirlo al elegir un documento'
+        : 'Panel derecho: abrirlo al elegir un documento',
+      icon: PanelRight,
+    },
+  ];
+  const acciones = [...ACCIONES, ...ACCIONES_PANEL].filter((a) => !terms.length || terms.every((t) => normalizar(a.label).includes(t)));
   const secciones = sections.filter((s) => s.nombre !== seccion
     && (!terms.length || terms.every((t) => normalizar(s.nombre).includes(t))));
 
