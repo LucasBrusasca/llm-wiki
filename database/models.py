@@ -172,3 +172,24 @@ class ScriptRun(Base):
     context_nodes  = Column(JSON, default=list)
     duration_ms    = Column(Integer)
     created_at     = Column(DateTime, server_default=func.now())
+
+
+class IngestJob(Base):
+    """Trabajo de ingesta en background. Permite que el usuario siga usando la UI
+    mientras se procesa el documento/URL."""
+    __tablename__ = "ingest_jobs"
+    id             = Column(String, primary_key=True)
+    status         = Column(String, default="queued")  # queued | running | done | failed
+    kind           = Column(String, nullable=False)    # file | url | youtube
+    label          = Column(String)                    # nombre del archivo o URL truncada
+    seccion        = Column(String, default="personal")
+    entrada        = Column(Text)                      # path del archivo o URL
+    progress       = Column(Integer, default=0)        # 0-100
+    message        = Column(String, default="")        # mensaje de progreso para el usuario
+    error_message  = Column(Text)                      # mensaje de error si falló (español)
+    node_id        = Column(String, ForeignKey("nodes.id", ondelete="SET NULL"))
+    retries        = Column(Integer, default=0)
+    created_at     = Column(DateTime, server_default=func.now())
+    started_at     = Column(DateTime)
+    finished_at    = Column(DateTime)
+    updated_at     = Column(DateTime, server_default=func.now(), onupdate=func.now())

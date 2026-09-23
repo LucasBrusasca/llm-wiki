@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Upload, Link as LinkIcon, CheckCircle2, AlertTriangle, Loader2, FileText } from 'lucide-react';
+import { Upload, Link as LinkIcon, CheckCircle2, AlertTriangle, Loader2, FileText, Zap } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { ingestFile, ingestUrls, ingestStatus } from '@/lib/api';
+import { ingestFile, ingestUrls, ingestStatus, createJob, createUrlJob } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
-const ACEPTA = '.pdf,.docx,.pptx,.pptm,.xlsx,.xls,.txt,.md,.html,.htm';
+const ACEPTA = '.pdf,.docx,.pptx,.pptm,.xlsx,.xls,.txt,.md,.html,.htm,.csv,.py,.ipynb';
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Espera a que la ingesta en curso termine. Devuelve el último estado. */
@@ -20,19 +20,20 @@ async function esperarFin(onTick, cancelado) {
   }
 }
 
-export default function IngestDialog({ open, onOpenChange, seccion, onDone }) {
+export default function IngestDialog({ open, onOpenChange, seccion, onDone, useBackground = true }) {
   const [archivos, setArchivos] = useState([]);    // [{ file, estado, msg }]
   const [urls, setUrls] = useState('');
   const [drag, setDrag] = useState(false);
   const [corriendo, setCorriendo] = useState(false);
-  const [actual, setActual] = useState(null);        // estado del backend
+  const [actual, setActual] = useState(null);        // estado del backend (modo síncrono)
   const [error, setError] = useState(null);
+  const [jobsCreados, setJobsCreados] = useState(0);
   const inputRef = useRef(null);
   const cancelRef = useRef(false);
 
   useEffect(() => {
     if (open) { cancelRef.current = false; return; }
-    if (!corriendo) { setArchivos([]); setUrls(''); setActual(null); setError(null); }
+    if (!corriendo) { setArchivos([]); setUrls(''); setActual(null); setError(null); setJobsCreados(0); }
   }, [open, corriendo]);
 
   const agregar = (lista) => {
@@ -43,7 +44,6 @@ export default function IngestDialog({ open, onOpenChange, seccion, onDone }) {
   const patch = (i, p) => setArchivos((prev) => prev.map((a, k) => (k === i ? { ...a, ...p } : a)));
 
   async function subirUno(fn) {
-    // Si hay otra ingesta corriendo (409), esperar y reintentar.
     for (let intento = 0; intento < 60; intento++) {
       try { return await fn(); } catch (e) {
         if (!String(e.message).includes('409')) throw e;
@@ -53,7 +53,46 @@ export default function IngestDialog({ open, onOpenChange, seccion, onDone }) {
     throw new Error('La cola del backend no se liberó');
   }
 
-  async function empezar() {
+  async function empezarBackground() {
+    setError(null);
+    setCorriendo(true);
+    let creados = 0;
+
+    try {
+      const pendientes = archivos.map((a, i) => ({ ...a, i })).filter((a) => a.estado === 'pendiente');
+
+      for (const { file, i } of pendientes) {
+        if (cancelRef.current) break;
+        patch(i, { estado: 'procesando', msg: 'Creando job…' });
+        try {
+          await createJob(file, seccion);
+          patch(i, { estado: 'ok', msg: 'Job creado' });
+          creados++;
+        } catch (e) {
+          patch(i, { estado: 'error', msg: e.message });
+        }
+      }
+
+      if (urls.trim() && !cancelRef.current) {
+        try {
+          const result = await createUrlJob(urls.trim(), seccion);
+          creados += result.count || 1;
+          setUrls('');
+        } catch (e) {
+          setError(e.message);
+        }
+      }
+
+      setJobsCreados(creados);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setCorriendo(false);
+      if (creados > 0) onDone();
+    }
+  }
+
+  async function empezarSincrono() {
     setError(null);
     setCorriendo(true);
     let hubo = false;
@@ -65,7 +104,6 @@ export default function IngestDialog({ open, onOpenChange, seccion, onDone }) {
         const ultimo = k === pendientes.length - 1 && !urls.trim();
         patch(i, { estado: 'procesando', msg: 'Subiendo…' });
         try {
-          // El layout global (UMAP) se recalcula sólo al final del lote.
           await subirUno(() => ingestFile(file, seccion, { skipUmap: !ultimo }));
           const st = await esperarFin((s) => { setActual(s); patch(i, { msg: s.message }); }, () => cancelRef.current);
           patch(i, { estado: st.state === 'done' ? 'ok' : 'error', msg: st.message || '' });
@@ -86,6 +124,8 @@ export default function IngestDialog({ open, onOpenChange, seccion, onDone }) {
       if (hubo) onDone();
     }
   }
+
+  const empezar = useBackground ? empezarBackground : empezarSincrono;
 
   const pendientes = archivos.filter((a) => a.estado === 'pendiente').length + (urls.trim() ? 1 : 0);
 
@@ -131,6 +171,17 @@ export default function IngestDialog({ open, onOpenChange, seccion, onDone }) {
                 </li>
               ))}
             </ul>
+          )}
+
+          {jobsCreados > 0 && (
+            <div className="mt-3 flex items-center gap-2 rounded-sm bg-accent/10 px-3 py-2 text-[12.5px] text-accent">
+              <Zap className="size-4" />
+              <span>
+                {jobsCreados === 1
+                  ? 'Job creado. Podés cerrar y seguir trabajando.'
+                  : `${jobsCreados} jobs creados. Podés cerrar y seguir trabajando.`}
+              </span>
+            </div>
           )}
 
           <label className="mt-4 block">

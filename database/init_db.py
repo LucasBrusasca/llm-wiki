@@ -115,6 +115,10 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw
             ON chunks USING hnsw (embedding vector_cosine_ops)
         """))
+        await conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_ingest_jobs_status
+            ON ingest_jobs (status)
+        """))
     await _backfill_traceability()
     print("✓ Base de datos inicializada")
 
