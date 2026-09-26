@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2, Sparkles, StickyNote, PanelLeftClose } from 'lucide-react';
+import { Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2, Sparkles, StickyNote } from 'lucide-react';
 import { hayNombresAutomaticos } from '@/lib/temas';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
@@ -7,7 +7,7 @@ import {
 import { renameSection, deleteSection } from '@/lib/api';
 import { pedirClave, avisarClaveIncorrecta } from '@/security.js';
 import { Button } from '@/components/ui/button';
-import { Hint } from '@/components/ui/tooltip';
+import { BotonPanel } from '@/app/PanelLateral';
 import { tipoMeta, fuenteLabel, iconoDe, colorFuente, colorTipo, colorSeccion } from '@/lib/nodes';
 import { cn } from '@/lib/utils';
 
@@ -118,20 +118,18 @@ export default function Rail({
 
   return (
     <aside className="flex shrink-0 flex-col hairline-r bg-surface" style={{ width: ancho }}>
-      <div className="flex items-center gap-2 hairline-b p-2.5">
+      {/* Misma altura que la barra de la biblioteca (h-11): las líneas de las
+          cabeceras quedan a la misma altura en las tres columnas. */}
+      <div className="flex h-11 shrink-0 items-center gap-2 hairline-b pl-2 pr-2.5">
+        {onCollapse && (
+          <BotonPanel lado="izquierda" texto="Ocultar barra lateral" atajo="[" onClick={onCollapse} />
+        )}
         <Button variant="default" size="lg" className="flex-1 glow-sel" onClick={onIngest}>
           <Upload /> Ingestar
         </Button>
         <Button variant="outline" size="lg" className="flex-1" onClick={onNuevaNota}>
           <StickyNote /> Nota
         </Button>
-        {onCollapse && (
-          <Hint texto="Ocultar panel · [">
-            <Button variant="ghost" size="icon" onClick={onCollapse} aria-label="Ocultar panel izquierdo" className="shrink-0">
-              <PanelLeftClose className="size-4" />
-            </Button>
-          </Hint>
-        )}
       </div>
 
       <nav className="min-h-0 flex-1 overflow-y-auto pb-4">

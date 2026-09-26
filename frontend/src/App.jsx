@@ -15,8 +15,7 @@ import { construirTemas, temaKey, temaDe } from '@/lib/temas';
 import TaxonomiaDialog from '@/app/TaxonomiaDialog';
 import Splitter from '@/app/Splitter';
 import MoverDialog from '@/app/MoverDialog';
-import PestanaInspector from '@/app/PestanaInspector';
-import PestanaRail from '@/app/PestanaRail';
+import { PanelPlegado } from '@/app/PanelLateral';
 import { normalizar } from '@/lib/utils';
 
 // React Flow pesa: sólo se carga cuando el usuario abre Split o Grafo.
@@ -608,7 +607,7 @@ export default function App() {
           />
           </>
           ) : (
-            <PestanaRail seccion={seccion} onAbrir={() => setRailAbierto(true)} />
+            <PanelPlegado lado="izquierda" texto="Mostrar barra lateral" atajo="[" onAbrir={() => setRailAbierto(true)} />
           )}
 
           <main ref={mainRef} className="flex min-w-0 flex-1">
@@ -684,7 +683,6 @@ export default function App() {
               seccion={seccion}
               seccionCount={graph.nodes.length}
               edgesCount={graph.edges.length}
-              topConceptos={topConceptos}
               onSelect={seleccionar}
               onClose={() => setSelectedId(null)}
               onAsk={preguntarSobre}
@@ -707,7 +705,13 @@ export default function App() {
             />
             </>
           ) : (
-            <PestanaInspector node={selected} onAbrir={() => setInspectorAbierto(true)} />
+            <PanelPlegado
+              lado="derecha"
+              texto={selected ? `Mostrar detalle de «${selected.label}»` : 'Mostrar detalle'}
+              atajo="]"
+              marca={!!selected}
+              onAbrir={() => setInspectorAbierto(true)}
+            />
           )}
         </div>
 

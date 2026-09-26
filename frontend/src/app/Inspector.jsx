@@ -2,11 +2,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   X, ExternalLink, MessageSquare, Share2, ArrowUpRight, ArrowDownLeft, ArrowRight, Copy, Check,
   Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight, Pencil, FolderInput, Loader2,
-  PanelRightClose,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Hint } from '@/components/ui/tooltip';
+import { BotonPanel } from '@/app/PanelLateral';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import {
   iconoDe, tipoMeta, fuenteLabel, relacionLabel, procedenciaLabel, RELACIONES,
@@ -255,7 +255,7 @@ function Preview({ node, onGuardar }) {
 }
 
 /** Sin selección: panorama de la sección en vez de un hueco vacío. */
-function Panorama({ seccion, seccionCount, edgesCount, relIndex, nodesById, topConceptos, onSelect, onConcepto }) {
+function Panorama({ seccionCount, edgesCount, relIndex, nodesById, onSelect }) {
   const conectados = useMemo(
     () => [...relIndex.entries()]
       .map(([id, arr]) => ({ node: nodesById.get(id), n: arr.length }))
@@ -268,10 +268,8 @@ function Panorama({ seccion, seccionCount, edgesCount, relIndex, nodesById, topC
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto pb-24">
-      <div className="px-4 pt-4">
-        <p className="text-[10.5px] font-medium uppercase tracking-[0.08em] text-ink-dim">Sección</p>
-        <p className="mt-0.5 text-[15px] font-semibold capitalize tracking-[-0.01em]">{seccion}</p>
-        <dl className="mt-3 grid grid-cols-3 gap-px overflow-hidden rounded-sm border border-hair bg-hair">
+      <div className="px-4 pt-1">
+        <dl className="grid grid-cols-3 gap-px overflow-hidden rounded-sm border border-hair bg-hair">
           {[
             ['Nodos', seccionCount],
             ['Relaciones', edgesCount],
@@ -329,7 +327,7 @@ function Panorama({ seccion, seccionCount, edgesCount, relIndex, nodesById, topC
 }
 
 export default function Inspector({
-  node, nodesById, relIndex, seccion, seccionCount, edgesCount, topConceptos,
+  node, nodesById, relIndex, seccion, seccionCount, edgesCount,
   onSelect, onClose, onAsk, onConcepto, onVerEnGrafo, vista, pinnedEdge, onPin, onClearPin,
   onAbrir, camino = [], onVolver, temas, onTema, ego, onFijar, ancho = 420, onGuardar, onMover,
   onCollapse,
@@ -348,18 +346,28 @@ export default function Inspector({
 
   const shell = 'flex shrink-0 flex-col hairline-l bg-surface';
 
+  // El único control de plegar: siempre en la primera fila, esquina superior
+  // derecha (h-11, como el rail y la biblioteca). Plegado, la franja lo deja en
+  // el mismo punto de la pantalla.
+  const plegar = onCollapse && (
+    <BotonPanel lado="derecha" texto="Ocultar detalle" atajo="]" onClick={onCollapse} />
+  );
+  const divisor = <span className="mx-1 h-4 w-px shrink-0 bg-hair-strong" aria-hidden />;
+
   if (!node) {
     return (
       <aside className={shell} style={{ width: ancho }} aria-label="Detalle">
+        <div className="flex h-11 shrink-0 items-center gap-2 pl-4 pr-2">
+          <span className="text-[10.5px] font-medium uppercase tracking-[0.08em] text-ink-dim">Sección</span>
+          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold capitalize tracking-[-0.01em]">{seccion}</span>
+          {plegar}
+        </div>
         <Panorama
-          seccion={seccion}
           seccionCount={seccionCount}
           edgesCount={edgesCount}
           relIndex={relIndex}
           nodesById={nodesById}
-          topConceptos={topConceptos}
           onSelect={onSelect}
-          onConcepto={onConcepto}
         />
       </aside>
     );
@@ -376,10 +384,12 @@ export default function Inspector({
     }).catch(() => {});
   };
 
+  const hayCamino = camino.length > 0 || !!ego;
+
   return (
     <aside className={shell} style={{ width: ancho }} aria-label="Detalle del documento">
-      {(camino.length > 0 || ego) && (
-        <nav aria-label="Camino" className="flex shrink-0 items-center gap-1 hairline-b bg-accent/[0.04] px-3 py-1.5 text-[11px]">
+      {hayCamino && (
+        <nav aria-label="Camino" className="flex h-11 shrink-0 items-center gap-1 hairline-b bg-accent/[0.04] pl-3 pr-2 text-[11px]">
           <span className="flex shrink-0 items-center gap-1 text-ink-dim">
             {ego ? <><Pin className="size-3 text-accent" /> Vecindario</> : 'Camino'}
           </span>
@@ -410,10 +420,11 @@ export default function Inspector({
           >
             <Undo2 className="size-3" /> Origen
           </button>
+          {plegar && <>{divisor}{plegar}</>}
         </nav>
       )}
-      <header className="shrink-0 px-4 pb-3 pt-3">
-        <div className="flex items-center gap-1.5 text-[11.5px] text-ink-dim">
+      <header className="shrink-0 px-4 pb-3">
+        <div className="-mr-2 flex h-11 items-center gap-1.5 text-[11.5px] text-ink-dim">
           <span className="chip-cat flex items-center gap-1 rounded-xs px-1.5 py-px text-[10.5px] font-medium" style={{ '--c': colorTipo(node.type) }}>
             <Icon className="size-3" /> {tipoMeta(node.type).label}
           </span>
@@ -453,16 +464,11 @@ export default function Inspector({
                 {copiado ? <Check className="text-accent" /> : <Copy />}
               </Button>
             </Hint>
-            <Hint texto="Cerrar documento · Esc">
-              <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Cerrar detalle"><X /></Button>
+            <Hint texto="Cerrar documento (volver al panorama) · Esc">
+              <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Cerrar documento"><X /></Button>
             </Hint>
-            {onCollapse && (
-              <Hint texto="Ocultar panel · ]">
-                <Button variant="ghost" size="icon-sm" onClick={onCollapse} aria-label="Ocultar panel derecho">
-                  <PanelRightClose />
-                </Button>
-              </Hint>
-            )}
+            {/* Con camino, el control de plegar está en esa fila (la primera). */}
+            {plegar && !hayCamino && <>{divisor}{plegar}</>}
           </div>
         </div>
         {editando ? (
@@ -475,7 +481,7 @@ export default function Inspector({
           />
         ) : (
           <h2
-            className="mt-1.5 text-[15px] font-semibold leading-snug tracking-[-0.01em] text-ink"
+            className="text-[15px] font-semibold leading-snug tracking-[-0.01em] text-ink"
             onDoubleClick={() => setEditando(true)}
             title="Doble clic para editar"
           >
