@@ -79,7 +79,18 @@ async def lifespan(app: FastAPI):
     from database.init_db import init_db
     await init_db()
     _start_vault_watcher()
+    _start_job_manager()
     yield
+
+
+def _start_job_manager():
+    """Arranca el sistema de jobs de ingesta en background."""
+    from job_manager import init_job_manager
+    try:
+        init_job_manager(_run_ingest_for_job, _run_umap)
+        print("[jobs] Sistema de jobs iniciado")
+    except Exception as e:
+        print(f"[jobs] No se pudo iniciar el sistema de jobs: {e}")
 
 
 def _start_vault_watcher():
@@ -3406,6 +3417,92 @@ def _cerrar_lote(skip_umap: bool):
             print(f"Error al calcular posiciones 3D (UMAP/HDBSCAN): {e}")
 
 
+def _run_umap():
+    """Ejecuta UMAP para recalcular posiciones 3D. Usado por el job manager."""
+    import embeddings_engine
+    embeddings_engine.main()
+
+
+def _run_ingest_for_job(entrada: str, skip_umap: bool = True, seccion: str = "personal",
+                        progress_callback=None):
+    """Versión de _run_ingest para el sistema de jobs en background.
+
+    A diferencia del path síncrono, NO usa la máquina de estado global (_ingest)
+    ni el gate, porque los jobs ya están serializados por el job manager.
+    El callback de progreso actualiza el job en la DB en vez del estado global.
+    """
+    from processor import asignar_temas_pendientes
+
+    def _prog(pct, msg):
+        if progress_callback:
+            progress_callback(pct, msg)
+
+    try:
+        if entrada.startswith("http") and _es_playlist_youtube(entrada):
+            _prog(15, "Es una playlist de YouTube…")
+            return _ingest_playlist_for_job(entrada, seccion, progress_callback)
+
+        _prog(15, "Extrayendo contenido…")
+        resultado = _extraer_documento(entrada)
+
+        _prog(60, "Guardando en el grafo…")
+        for nodo in resultado.get("nodos", []):
+            nodo["dominio"] = seccion or "personal"
+            node_chunks = [c for c in resultado.get("chunks", [])
+                           if c.get("node_id") == nodo["id"]]
+            _save_node_sync(nodo, node_chunks if "chunks" in resultado else None)
+
+        _prog(75, "Clasificando temas…")
+        asignar_temas_pendientes()
+
+        node_id = resultado["nodos"][0]["id"] if resultado.get("nodos") else None
+        return {"success": True, "node_id": node_id}
+
+    except Exception as e:
+        print(f"[job] Error en ingesta: {e}")
+        raise
+
+
+def _ingest_playlist_for_job(url: str, seccion: str, progress_callback=None):
+    """Versión de _ingest_playlist para jobs. Ingiere cada video de la playlist."""
+    from processor import expandir_playlist, procesar_youtube, asignar_temas_pendientes
+
+    def _prog(pct, msg):
+        if progress_callback:
+            progress_callback(pct, msg)
+
+    _prog(8, "Leyendo lista de videos…")
+    videos_all = expandir_playlist(url, limite=200)
+    if not videos_all:
+        raise RuntimeError("La playlist está vacía o no se pudo acceder")
+
+    a_cargar = videos_all[:PLAYLIST_LIMIT]
+    total = len(videos_all)
+    n = len(a_cargar)
+
+    _prog(10, f"Playlist con {total} videos (cargando {n})…")
+    ok = 0
+    for i, v in enumerate(a_cargar):
+        titulo = (v.get("title") or "")[:35]
+        _prog(10 + int(70 * i / max(1, n)), f"Video {i+1}/{n}: {titulo}…")
+        try:
+            resultado = procesar_youtube(v["url"], title_hint=v.get("title"),
+                                         author_hint=v.get("channel"))
+            for nodo in resultado.get("nodos", []):
+                nodo["dominio"] = seccion or "personal"
+                node_chunks = [c for c in resultado.get("chunks", [])
+                               if c.get("node_id") == nodo["id"]]
+                _save_node_sync(nodo, node_chunks)
+                ok += 1
+        except Exception as e:
+            print(f"[job] Error con video {v.get('title', v.get('url'))}: {e}")
+
+    _prog(85, "Clasificando temas…")
+    asignar_temas_pendientes()
+
+    return {"success": True, "node_id": None, "videos_ok": ok, "videos_total": total}
+
+
 def _run_ingest_batch(entradas: list, seccion: str = "personal"):
     """Ingiere varios documentos: extracción EN PARALELO, guardado en serie, y cierre
     (temas + UMAP) una sola vez.
@@ -3642,6 +3739,112 @@ def vault_rescan():
         raise HTTPException(400, "La Ingesta Continua no está activa")
     threading.Thread(target=w.rescan, daemon=True).start()
     return {"ok": True}
+
+
+# ── Jobs: Ingesta en background ───────────────────────────────────────
+
+class JobCreate(BaseModel):
+    url: str = None
+    seccion: str = "personal"
+
+
+@app.get("/api/jobs")
+def list_jobs(active_only: bool = False, limit: int = 20):
+    """Lista los jobs de ingesta recientes."""
+    from job_manager import get_job_manager
+    mgr = get_job_manager()
+    if active_only:
+        return {"jobs": mgr.active_jobs()}
+    return {"jobs": mgr.list_jobs(limit=limit)}
+
+
+@app.get("/api/jobs/active")
+def active_jobs():
+    """Jobs en cola o en ejecución (para polling desde el frontend)."""
+    from job_manager import get_job_manager
+    mgr = get_job_manager()
+    active = mgr.active_jobs()
+    recent = mgr.recent_completed(limit=3)
+    return {"active": active, "recent": recent}
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str):
+    """Estado de un job específico."""
+    from job_manager import get_job_manager
+    mgr = get_job_manager()
+    job = mgr.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job no encontrado")
+    return job
+
+
+@app.post("/api/jobs")
+async def create_job(
+    file: UploadFile = File(default=None),
+    url: str = Form(default=None),
+    seccion: str = Form(default="personal"),
+):
+    """Crea un job de ingesta en background.
+
+    A diferencia de /api/ingest, esto retorna inmediatamente con el ID del job.
+    El frontend puede hacer polling de /api/jobs/active para ver el progreso.
+    """
+    from job_manager import get_job_manager, JOB_KIND_FILE, JOB_KIND_URL, JOB_KIND_YOUTUBE
+
+    mgr = get_job_manager()
+    seccion = (seccion or "personal").strip() or "personal"
+
+    if file and file.filename:
+        try:
+            save_path = await _save_upload(file, INGEST_EXTENSIONS)
+        except HTTPException:
+            raise
+        job = mgr.create_job(
+            kind=JOB_KIND_FILE,
+            entrada=str(save_path),
+            seccion=seccion,
+            label=file.filename,
+        )
+        return {"ok": True, "job": job}
+
+    if url and url.strip():
+        urls = re.split(r"[,\n]+", url)
+        urls = [u.strip() for u in urls if u.strip().startswith("http")]
+        if not urls:
+            raise HTTPException(400, "Ninguna URL válida (http/https)")
+
+        jobs = []
+        for u in urls:
+            kind = JOB_KIND_YOUTUBE if any(d in u for d in ("youtube.com", "youtu.be")) else JOB_KIND_URL
+            job = mgr.create_job(kind=kind, entrada=u, seccion=seccion)
+            jobs.append(job)
+
+        return {"ok": True, "jobs": jobs, "count": len(jobs)}
+
+    raise HTTPException(400, "Enviá un archivo o al menos una URL válida")
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_job(job_id: str):
+    """Reintenta un job fallido."""
+    from job_manager import get_job_manager
+    mgr = get_job_manager()
+    result = mgr.retry_job(job_id)
+    if "error" in result:
+        raise HTTPException(result.get("status", 400), result["error"])
+    return {"ok": True, "job": result}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    """Cancela un job encolado (no se puede cancelar uno en ejecución)."""
+    from job_manager import get_job_manager
+    mgr = get_job_manager()
+    result = mgr.cancel_job(job_id)
+    if "error" in result:
+        raise HTTPException(result.get("status", 400), result["error"])
+    return {"ok": True, "job": result}
 
 
 # ── Issue module ──────────────────────────────────────────────────────
