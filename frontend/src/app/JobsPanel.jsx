@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
-  Loader2, CheckCircle2, AlertTriangle, Clock, RefreshCw, X, FileText, Link as LinkIcon, Youtube,
+  Loader2, CheckCircle2, AlertTriangle, Clock, RefreshCw, X, FileText, Link as LinkIcon, Video,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -26,7 +26,7 @@ const STATUS_LABELS = {
 const KIND_ICONS = {
   file: FileText,
   url: LinkIcon,
-  youtube: Youtube,
+  youtube: Video,
 };
 
 function JobRow({ job, onRetry, onCancel, onDone }) {
