@@ -569,10 +569,6 @@ export default function App() {
           onOpenPalette={() => setPaletteOpen(true)}
           onReload={recargar}
           loading={status === 'loading'}
-          inspectorAbierto={inspectorAbierto}
-          onInspector={() => setInspectorAbierto((v) => !v)}
-          railAbierto={railAbierto}
-          onRail={() => setRailAbierto((v) => !v)}
           jobsBadge={<JobsBadge active={activeJobs} onClick={() => setJobsOpen(true)} />}
         />
 
@@ -602,6 +598,7 @@ export default function App() {
             onSeccionesCambiadas={(activa) => { cambiarSeccion(activa); recargar(); }}
             onSeccionEliminada={olvidarSeccion}
             ancho={anchoRail}
+            onCollapse={() => setRailAbierto(false)}
           />
           <Splitter
             etiqueta="Ancho del panel izquierdo"
@@ -706,6 +703,7 @@ export default function App() {
               onMover={(ids) => setMoverIds(ids)}
               temas={temas}
               onTema={(k) => toggleIn(setTemasSel)(k)}
+              onCollapse={() => setInspectorAbierto(false)}
             />
             </>
           ) : (
