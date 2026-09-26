@@ -1,26 +1,57 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph3D from 'react-force-graph-3d';
 import * as THREE from 'three';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { Maximize, Pin, PinOff, Link2, X, Expand } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
 import ColorPanel, { calcularLeyenda } from '@/app/ColorPanel';
 import NodoTooltip from '@/app/NodoTooltip';
-import { resolverColor, fuenteLabel } from '@/lib/nodes';
+import Etiquetas3D, { TARJETA, medirChip } from '@/app/Etiquetas3D';
+import { resolverColor } from '@/lib/nodes';
 
 /**
  * Vista "Explorar 3D": modo de impacto, nunca el home.
  *
  * - Posiciones FIJAS desde la proyección 3D del backend (embeddings → UMAP):
  *   no hay simulación corriendo, nada se mueve ni titila.
- * - Aristas: líneas GL de 1px, quietas. Sólo la relación fijada se engrosa.
- * - Lejos: puntos livianos. Cerca o al elegir: UNA tarjeta con miniatura real +
- *   título. Hover: tooltip con el título completo. "Más aire" separa la vista.
+ * - Aristas: quietas. Sólo la relación fijada se engrosa.
+ * - El detalle depende de cuán cerca de la cámara está CADA nodo (no el centro de
+ *   la nube): lejos es un punto; más cerca lleva un chip con su título; cerca, el
+ *   nodo ES su tarjeta (miniatura + título) y la esfera desaparece. Hay tope de
+ *   tarjetas y chips, y ninguno se encima con otro ni con los paneles del lienzo.
+ * - Tarjetas y chips son HTML (Etiquetas3D sobre CSS2DRenderer). Hover sobre
+ *   cualquier nodo, chip o tarjeta → tooltip con el título completo.
  * - Clic en un nodo → mismo Inspector. Clic en el vacío → suelta el pin.
  */
 
 const ESCALA = 320;
 const K_FUERTES = 2;
-const MAX_ETIQUETAS = 8;
+
+const MAX_TARJETAS = 6;
+const MAX_CHIPS = 10;
+const AIRE_PX = 5;            // separación mínima entre piezas, en px de pantalla
+const R_MIN_PX = 2.2;         // radio de la esfera en pantalla: ni polvo de lejos…
+const R_MAX_PX = 9;           // …ni un globo que tape todo de cerca
+const R_MAX_PX_FUERTE = 13;
+
+/**
+ * Cuándo gana detalle cada nodo, en px de pantalla por unidad de escena medidos en
+ * SU posición (focal / distancia a la cámara). `prio` decide quién se queda con el
+ * lugar cuando no entra todo: el elegido primero, después el vínculo fijado, el
+ * origen del vecindario, los vecinos (y lo que marcó el agente), los más conectados
+ * y el resto. Con algo elegido, lo que no tiene relación con él queda en punto.
+ *
+ * Referencia: el encuadre inicial deja la nube entre ~0.5 y ~1.1, así que la vista
+ * de conjunto queda en puntos; el vuelo al elegido lo deja cerca de 2.4.
+ */
+const DETALLE = {
+  sel: { prio: 0, tarjeta: 0.8, chip: 0 },
+  pin: { prio: 1, tarjeta: 1.1, chip: 0 },
+  origen: { prio: 2, tarjeta: 1.2, chip: 0.45 },
+  vecino: { prio: 3, tarjeta: 1.8, chip: 0.75 },
+  hito: { prio: 4, tarjeta: 2, chip: 1.15 },
+  normal: { prio: 5, tarjeta: 2.2, chip: 1.35 },
+};
 
 function podar(edges, k) {
   const por = new Map();
@@ -62,194 +93,26 @@ function texturaHalo() {
   return haloTex;
 }
 
-/**
- * Chip de etiqueta: título corto, sin miniatura, ancho máximo fijo. Mide lo mismo
- * en pantalla a cualquier distancia (sizeAttenuation=false), así que no crece ni
- * se pierde al orbitar.
- */
-const CHIP_ANCHO_MAX = 140;   // px de pantalla
-const CHIP_ALTO = 22;
+// Una sola geometría de esfera (radio 1) para todos los nodos: el radio va en la escala.
+const esferaGeo = new THREE.SphereGeometry(1, 20, 14);
+const _p = new THREE.Vector3();
 
-function spriteEtiqueta(texto, { fuerte, acento, fondo, tinta, vh }) {
-  const K = 2;                                   // canvas al doble: texto nítido
-  const pad = 7 * K;
-  const fs = 12 * K;
-  const c = document.createElement('canvas');
-  const g = c.getContext('2d');
-  g.font = `500 ${fs}px Inter, system-ui, sans-serif`;
-  // Recortar hasta que entre en el ancho máximo.
-  let t = String(texto || '');
-  const maxTexto = CHIP_ANCHO_MAX * K - pad * 2;
-  if (g.measureText(t).width > maxTexto) {
-    while (t.length > 1 && g.measureText(`${t}…`).width > maxTexto) t = t.slice(0, -1);
-    t = `${t}…`;
-  }
-  const w = Math.min(CHIP_ANCHO_MAX * K, Math.ceil(g.measureText(t).width) + pad * 2);
-  const h = CHIP_ALTO * K;
-  c.width = w;
-  c.height = h;
-  g.font = `500 ${fs}px Inter, system-ui, sans-serif`;
-  g.fillStyle = rgba(fondo, 0.92);
-  rectRedondeado(g, 1, 1, w - 2, h - 2, 7 * K);
-  g.fill();
-  g.lineWidth = 1.5 * K;
-  g.strokeStyle = fuerte ? acento : rgba(tinta, 0.28);
-  g.stroke();
-  g.fillStyle = fuerte ? '#ffffff' : rgba(tinta, 0.92);
-  g.textBaseline = 'middle';
-  g.fillText(t, pad, h / 2 + 1);
-
-  const tex = new THREE.CanvasTexture(c);
-  tex.minFilter = THREE.LinearFilter;
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: tex, transparent: true, depthWrite: false, depthTest: false, sizeAttenuation: false,
-  }));
-  const alto = CHIP_ALTO / (vh || 840);          // fracción del alto del lienzo
-  sp.scale.set(alto * (w / h), alto, 1);
-  sp.renderOrder = 10;
-  return sp;
-}
-
-function rectRedondeado(g, x, y, w, h, r) {
-  g.beginPath();
-  g.moveTo(x + r, y); g.lineTo(x + w - r, y); g.quadraticCurveTo(x + w, y, x + w, y + r);
-  g.lineTo(x + w, y + h - r); g.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  g.lineTo(x + r, y + h); g.quadraticCurveTo(x, y + h, x, y + h - r);
-  g.lineTo(x, y + r); g.quadraticCurveTo(x, y, x + r, y);
-  g.closePath();
-}
-
-/** Parte un título en hasta `max` líneas que entren en `ancho`, con elipsis. */
-function lineas(g, texto, ancho, max) {
-  const palabras = String(texto || '').split(/\s+/);
-  const out = [];
-  let cur = '';
-  for (const w of palabras) {
-    const prueba = cur ? `${cur} ${w}` : w;
-    if (g.measureText(prueba).width <= ancho) { cur = prueba; continue; }
-    if (cur) out.push(cur);
-    cur = w;
-    if (out.length === max) break;
-  }
-  if (out.length < max && cur) out.push(cur);
-  if (out.length === max && palabras.join(' ').length > out.join(' ').length) {
-    let u = out[max - 1];
-    while (u.length > 1 && g.measureText(`${u}…`).width > ancho) u = u.slice(0, -1);
-    out[max - 1] = `${u}…`;
-  }
-  return out.slice(0, max);
+/** El raycast de three.js no mira `visible`: sin esto, lo oculto seguiría atrapando hover y clic. */
+function raycastSiVisible(raycaster, intersects) {
+  if (this.visible) Object.getPrototypeOf(this).raycast.call(this, raycaster, intersects);
 }
 
 /**
- * Tarjeta de previsualización: UNA sola a la vez, con medidas fijas
- * (200×168, miniatura 120×90 en 4:3 y barra de título de dos líneas).
- * Tamaño constante en pantalla: no crece al acercar la cámara.
+ * Hit-box de la tarjeta o del chip: no se dibuja, sólo recibe hover y clic. Gana
+ * siempre, porque lo que se ve arriba es la pieza HTML aunque detrás haya una
+ * esfera más cerca de la cámara.
  */
-const CARD_W = 200;
-const CARD_H = 168;
-const THUMB_W = 120;
-const THUMB_H = 90;
-
-const tarjetas = new Map();
-function tarjetaDe(node, { borde, fondo, tinta, origen, vh }) {
-  const clave = `${node.id}|${borde}|${Math.round((vh || 840) / 40)}`;
-  const hit = tarjetas.get(clave);
-  if (hit) return hit;
-
-  const K = 2;                                   // canvas al doble para que se lea
-  const W = CARD_W * K;
-  const H = CARD_H * K;
-  const tw = THUMB_W * K;
-  const th = THUMB_H * K;
-  const tx = (W - tw) / 2;
-  const ty = 9 * K;
-  const c = document.createElement('canvas');
-  c.width = W; c.height = H;
-  const g = c.getContext('2d');
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.minFilter = THREE.LinearFilter;
-
-  const fondoTarjeta = () => {
-    g.clearRect(0, 0, W, H);
-    rectRedondeado(g, 2, 2, W - 4, H - 4, 8 * K);
-    g.fillStyle = rgba(fondo, 0.96);
-    g.fill();
-  };
-  const marcoThumb = () => {
-    rectRedondeado(g, tx, ty, tw, th, 7 * K);
-    g.fillStyle = rgba(borde, 0.14);
-    g.fill();
-  };
-  const placeholder = () => {
-    g.save();
-    rectRedondeado(g, tx, ty, tw, th, 7 * K);
-    g.clip();
-    g.fillStyle = rgba(borde, 0.16);
-    g.fillRect(tx, ty, tw, th);
-    g.fillStyle = rgba(borde, 0.95);
-    g.font = `700 ${20 * K}px Inter, system-ui, sans-serif`;
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.fillText(origen || 'DOC', W / 2, ty + th / 2);
-    g.restore();
-    g.textAlign = 'left';
-  };
-  const titulo = () => {
-    // Barra de título: 2 líneas como máximo, 12px, con elipsis.
-    g.textAlign = 'left';
-    g.textBaseline = 'top';
-    g.font = `500 ${12 * K}px Inter, system-ui, sans-serif`;
-    g.fillStyle = rgba(tinta, 0.97);
-    const pad = 10 * K;
-    lineas(g, node.label, W - pad * 2, 2).forEach((l, i) => g.fillText(l, pad, ty + th + 9 * K + i * 16 * K));
-    // Borde del color del origen/tema, al final para que quede por encima.
-    rectRedondeado(g, 2, 2, W - 4, H - 4, 8 * K);
-    g.lineWidth = 2 * K;
-    g.strokeStyle = borde;
-    g.stroke();
-    tex.needsUpdate = true;
-  };
-
-  fondoTarjeta(); marcoThumb(); placeholder(); titulo();
-
-  if (node.fuente_path || node.fuente_url) {
-    const img = new Image();
-    img.decoding = 'async';
-    img.onload = () => {
-      fondoTarjeta();
-      g.save();
-      rectRedondeado(g, tx, ty, tw, th, 7 * K);
-      g.clip();
-      g.fillStyle = '#ffffff';
-      g.fillRect(tx, ty, tw, th);
-      // object-fit: cover, anclado arriba (la primera página manda).
-      const esc = Math.max(tw / img.width, th / img.height);
-      g.drawImage(img, tx + (tw - img.width * esc) / 2, ty, img.width * esc, img.height * esc);
-      g.restore();
-      titulo();
-    };
-    img.src = `/thumb/${encodeURIComponent(node.id)}`;   // mismo origen: el canvas no queda "tainted"
-  }
-
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: tex, transparent: true, depthWrite: false, depthTest: false, sizeAttenuation: false,
-  }));
-  const alto = CARD_H / (vh || 840);
-  sp.scale.set(alto * (CARD_W / CARD_H), alto, 1);
-  sp.center.set(0.5, 0);
-  sp.renderOrder = 20;
-  tarjetas.set(clave, sp);
-  return sp;
+function raycastPieza(raycaster, intersects) {
+  if (!this.visible) return;
+  const antes = intersects.length;
+  THREE.Sprite.prototype.raycast.call(this, raycaster, intersects);
+  for (let i = antes; i < intersects.length; i++) intersects[i].distance -= 1e6;
 }
-
-// Niveles de detalle según cuán cerca está la cámara del conjunto:
-//   lejos  → sólo puntos (máximo rendimiento)
-//   medio  → puntos + chips del elegido / vecindario
-//   cerca  → tarjetas de preview en los nodos cercanos a la cámara
-const LOD_LEJOS = 1.5;    // × el radio de la nube
-const LOD_CERCA = 0.75;
-const MAX_TARJETAS = 8;   // máximo de tarjetas visibles simultáneas (rendimiento)
 
 // "Más aire": factor de separación de la VISTA (no toca embeddings ni posiciones guardadas).
 const NIVELES_AIRE = [1, 1.4, 2];
@@ -298,13 +161,24 @@ export default function Graph3DView({
 }) {
   const fgRef = useRef(null);
   const cajaRef = useRef(null);
-  const objs = useRef(new Map());      // id → { g, r, et, estado, fuerte, node, color, tarjeta }
+  const objs = useRef(new Map());      // id → { g, esfera, halo, blanco, r, hs, estado, fuerte, node, modo, dim, sep }
+  const piezas = useRef(new Map());    // `${tipo}:${id}` → CSS2DObject (tarjeta o chip), reusados entre frames
+  const capaRef = useRef(null);        // grupo en la escena raíz con las piezas HTML
+  const etiquetasRef = useRef(null);   // API de <Etiquetas3D>
+  const firmaRef = useRef('');
+  const hudRef = useRef({ t: -Infinity, rects: [] });
   const hoverRef = useRef(null);
   const mouseRef = useRef({ x: 0, y: 0, ancho: 0, alto: 0 });
+  // El motor sigue haciendo raycast en la última posición conocida del puntero aunque
+  // el mouse ya esté en la lista o el panel: al volar la cámara, un nodo que "pasa por
+  // debajo" disparaba un tooltip fantasma. Sólo cuenta el hover con el puntero adentro.
+  const adentroRef = useRef(false);
   const [hover, setHover] = useState(null);
   const [aire, setAire] = useState(0);   // índice en NIVELES_AIRE
   const rafRef = useRef(0);
   const [tam, setTam] = useState({ w: 0, h: 0 });
+  // Renderer HTML encima del WebGL: prop de inicio, se crea una sola vez.
+  const extraRenderers = useMemo(() => [new CSS2DRenderer()], []);
 
   useEffect(() => {
     const el = cajaRef.current;
@@ -323,8 +197,6 @@ export default function Graph3DView({
   const paleta = useMemo(() => ({
     fondo: resolverColor('var(--color-canvas)', '#05060c'),
     acento: resolverColor('var(--color-accent)', '#22d3ee'),
-    tinta: resolverColor('var(--color-ink)', '#e9edf7'),
-    superficie: resolverColor('var(--color-surface)', '#0a0c16'),
     arista: resolverColor('var(--edge-3d)', '#6b79b8'),
   }), []);
 
@@ -368,32 +240,16 @@ export default function Graph3DView({
     return { nodes: ns, links };
   }, [nodes, edges, visibleIds, aire, ego]);
 
-  // Qué nodos llevan etiqueta persistente.
-  const etiquetados = useMemo(() => {
-    const out = new Set();
-    if (selectedId) out.add(selectedId);
-    if (pinOtro) out.add(pinOtro);
-    if (ego) {
-      out.add(ego.origen);
-      for (const id of ego.ids) { if (out.size >= MAX_ETIQUETAS + 4) break; if (visibleIds.has(id)) out.add(id); }
-      return out;
-    }
-    highlightIds.forEach((id) => out.size < MAX_ETIQUETAS && out.add(id));
-    if (selectedId && !pinOtro) {
-      for (const r of relIndex.get(selectedId) || []) {
-        if (out.size >= MAX_ETIQUETAS) break;
-        if (visibleIds.has(r.otherId)) out.add(r.otherId);
-      }
-    }
-    if (!selectedId) {
-      [...relIndex.entries()]
-        .filter(([id]) => visibleIds.has(id))
-        .sort((a, b) => b[1].length - a[1].length)
-        .slice(0, 4)
-        .forEach(([id]) => out.add(id));
-    }
-    return out;
-  }, [selectedId, pinOtro, ego, highlightIds, relIndex, visibleIds]);
+  // Sin selección, los más conectados funcionan como hitos: son los primeros en
+  // mostrar su nombre al acercarse.
+  const hitos = useMemo(() => {
+    if (selectedId || ego) return new Set();
+    return new Set([...relIndex.entries()]
+      .filter(([id]) => visibleIds.has(id))
+      .sort((a, b) => b[1].length - a[1].length)
+      .slice(0, 6)
+      .map(([id]) => id));
+  }, [selectedId, ego, relIndex, visibleIds]);
 
   const estadoDe = useCallback((id) => {
     if (ego) {
@@ -408,6 +264,14 @@ export default function Graph3DView({
     return vecinos?.has(id) ? 'vecino' : 'tenue';
   }, [selectedId, pinOtro, vecinos, ego]);
 
+  /** Qué fila de DETALLE le toca a un nodo (null = queda en punto). */
+  const claseDe = useCallback((id, estado) => {
+    if (estado === 'sel' || estado === 'pin' || estado === 'origen') return estado;
+    if (estado === 'vecino' || highlightIds.has(id)) return 'vecino';
+    if (estado === 'tenue') return null;
+    return hitos.has(id) ? 'hito' : 'normal';
+  }, [highlightIds, hitos]);
+
   const nodeObject = useCallback((d) => {
     const estado = estadoDe(d.id);
     const fuerte = estado === 'sel' || estado === 'pin';
@@ -417,9 +281,11 @@ export default function Graph3DView({
 
     const g = new THREE.Group();
     const esfera = new THREE.Mesh(
-      new THREE.SphereGeometry(r, 20, 14),
+      esferaGeo,
       new THREE.MeshBasicMaterial({ color, transparent: alpha < 1, opacity: alpha }),
     );
+    esfera.scale.setScalar(r);
+    esfera.raycast = raycastSiVisible;
     g.add(esfera);
 
     // Halo suave (additive). Más intenso en el elegido; apagado en los tenues.
@@ -433,146 +299,161 @@ export default function Graph3DView({
     }));
     const hs = r * (fuerte ? 4.5 : 3.2);   // halo contenido: de cerca no se vuelve un globo
     halo.scale.set(hs, hs, 1);
+    halo.raycast = raycastSiVisible;
     g.add(halo);
 
-    let et = null;
-    if (etiquetados.has(d.id)) {
-      et = spriteEtiqueta(d.node.label, {
-        fuerte, acento: paleta.acento, fondo: paleta.superficie, tinta: paleta.tinta, vh: tam.h,
-      });
-      et.center.set(-0.06, 0.5);   // un poco a la derecha del nodo, en unidades de pantalla
-      et.position.set(r * 1.3, 0, 0);
-      g.add(et);
-    }
-    objs.current.set(d.id, { g, r, et, estado, fuerte, node: d.node, color: `#${color.getHexString()}` });
+    // Hit-box de la tarjeta o el chip: tamaño fijo en pantalla, no se dibuja.
+    const blanco = new THREE.Sprite(new THREE.SpriteMaterial({ sizeAttenuation: false, visible: false }));
+    blanco.visible = false;
+    blanco.raycast = raycastPieza;
+    g.add(blanco);
+
+    objs.current.set(d.id, { g, esfera, halo, blanco, r, hs, estado, fuerte, node: d.node, modo: null });
     return g;
-  }, [estadoDe, colorDe, grado, etiquetados, paleta, tam.h]);
+  }, [estadoDe, colorDe, grado, paleta]);
 
-  // Centro y radio de la nube: definen los umbrales de detalle (LOD).
-  const encuadre = useMemo(() => {
-    const ns = data.nodes;
-    if (!ns.length) return { centro: new THREE.Vector3(), radio: 1 };
-    let cx = 0; let cy = 0; let cz = 0;
-    for (const d of ns) { cx += d.fx / ns.length; cy += d.fy / ns.length; cz += d.fz / ns.length; }
-    let radio = 1;
-    for (const d of ns) radio = Math.max(radio, Math.hypot(d.fx - cx, d.fy - cy, d.fz - cz));
-    return { centro: new THREE.Vector3(cx, cy, cz), radio };
-  }, [data.nodes]);
+  // Paneles del lienzo (color, pin, vecindario, controles): nada se dibuja debajo.
+  // Se miden cada tanto, no en cada frame.
+  const rectsHud = useCallback(() => {
+    const h = hudRef.current;
+    const ahora = performance.now();
+    if (ahora - h.t < 400) return h.rects;
+    const caja = cajaRef.current;
+    if (!caja) return [];
+    const base = caja.getBoundingClientRect();
+    h.rects = [...caja.querySelectorAll('[data-hud]')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return [r.left - base.left, r.top - base.top, r.right - base.left, r.bottom - base.top];
+    });
+    h.t = ahora;
+    return h.rects;
+  }, []);
 
-  // ── Detalle por distancia: puntos → chips → tarjetas de preview ──
-  const actualizarTarjetas = useCallback(() => {
+  // ── Detalle por nodo: punto → chip → tarjeta ──
+  const actualizarDetalle = useCallback(() => {
     const fg = fgRef.current;
-    if (!fg) return;
-    const cam = fg.camera().position;
-    const camara = fg.camera();
-    const dist = cam.distanceTo(encuadre.centro);
-    const nivel = dist > encuadre.radio * LOD_LEJOS ? 'lejos'
-      : dist < encuadre.radio * LOD_CERCA ? 'cerca' : 'medio';
+    const capa = capaRef.current;
+    const W = tam.w;
+    const H = tam.h;
+    if (!fg || !capa || !W || !H) return;
+    const cam = fg.camera();
+    cam.updateMatrixWorld();   // el evento 'change' llega antes del render que la actualiza
+    const focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
+    const entra = (r) => r[0] >= 0 && r[1] >= 0 && r[2] <= W && r[3] <= H;
+    const choca = (r, lista) => lista.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
 
-    // Prioridad de nodos: determina orden para tarjetas y chips.
-    const prioridad = (id) => (id === selectedId ? 0 : id === pinOtro ? 1 : ego && id === ego.origen ? 2 : vecinos?.has(id) ? 3 : 4);
+    // 1) Cada nodo: esfera acotada en pantalla y, si le corresponde, candidato a detalle.
+    const cands = [];
+    for (const [id, o] of objs.current) {
+      if (!o.g.parent) { objs.current.delete(id); continue; }   // objeto viejo, fuera de escena
+      o.modo = null;
+      o.g.getWorldPosition(_p);
+      const dist = Math.max(1, cam.position.distanceTo(_p));
+      const pxu = focal / dist;
+      const rpx = o.r * pxu;
+      const tope = o.fuerte ? R_MAX_PX_FUERTE : R_MAX_PX;
+      const k = rpx > tope ? tope / rpx : rpx < R_MIN_PX ? R_MIN_PX / rpx : 1;
+      o.esfera.scale.setScalar(o.r * k);
+      o.halo.scale.set(o.hs * k, o.hs * k, 1);
+      o.rpx = rpx * k;
 
-    // En LOD "cerca": mostrar tarjetas de preview en los nodos cercanos a la cámara.
-    // En "medio": sólo el seleccionado. En "lejos": ninguna.
-    const conTarjeta = new Set();
-    if (nivel !== 'lejos') {
-      // Calcular qué nodos deben mostrar tarjetas, ordenados por prioridad y distancia.
-      const candidatosTarjeta = [...objs.current.entries()]
-        .filter(([, o]) => o.g.parent)
-        .map(([id, o]) => ({ id, o, p: prioridad(id), d: cam.distanceTo(o.g.position) }))
-        .sort((a, b) => a.p - b.p || a.d - b.d);
+      const clase = claseDe(id, o.estado);
+      if (!clase) continue;
+      _p.project(cam);
+      if (_p.z < -1 || _p.z > 1) continue;                     // detrás de la cámara
+      const x = (_p.x * 0.5 + 0.5) * W;
+      const y = (-_p.y * 0.5 + 0.5) * H;
+      if (x < -60 || x > W + 60 || y < -60 || y > H + 60) continue;
+      // Entre pares, primero lo más cercano y más al centro de la vista.
+      const alCentro = Math.hypot((x - W / 2) / (W / 2), (y - H / 2) / (H / 2));
+      const u = DETALLE[clase];
+      cands.push({ o, u, pxu, x, y, orden: u.prio * 1e7 + dist * (1 + 0.6 * alCentro) });
+    }
+    cands.sort((a, b) => a.orden - b.orden);
 
-      // Anti-colisión para tarjetas: proyectamos a pantalla y evitamos superposiciones.
-      const rectsTarjeta = [];
-      const limiteT = nivel === 'cerca' ? MAX_TARJETAS : (selectedId ? 1 : 0);
-
-      for (const { id, o } of candidatosTarjeta) {
-        if (conTarjeta.size >= limiteT) break;
-        const v = o.g.position.clone().project(camara);
-        if (v.z > 1) continue;   // detrás de la cámara
-        const x = (v.x * 0.5 + 0.5) * tam.w;
-        const y = (-v.y * 0.5 + 0.5) * tam.h;
-        // Rectángulo de la tarjeta en pantalla (CARD_W × CARD_H en pixels, escalado).
-        const altoT = CARD_H / (tam.h || 840);
-        const anchoT = altoT * (CARD_W / CARD_H) * tam.h;
-        const altoTpx = altoT * tam.h;
-        const r = [x - anchoT / 2 - 4, y - altoTpx - 8, x + anchoT / 2 + 4, y + 4];
-        const choca = rectsTarjeta.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
-        if (!choca) {
-          conTarjeta.add(id);
-          rectsTarjeta.push(r);
+    // 2) Por prioridad: tarjeta si está cerca y entra; si no, chip; si no, punto.
+    const puestas = rectsHud().slice();
+    let nT = 0;
+    let nC = 0;
+    for (const { o, u, pxu, x, y } of cands) {
+      const obligado = u.prio <= 1;   // el elegido y el otro extremo del vínculo pueden quedar a medias en el borde
+      if (nT < MAX_TARJETAS && pxu >= u.tarjeta) {
+        const t = u.prio === 0 ? TARJETA.grande : TARJETA.chica;
+        const r = [x - t.w / 2 - AIRE_PX, y - t.h / 2 - AIRE_PX, x + t.w / 2 + AIRE_PX, y + t.h / 2 + AIRE_PX];
+        if ((obligado || entra(r)) && !choca(r, puestas)) {
+          puestas.push(r);
+          nT += 1;
+          o.modo = 'tarjeta';
+          o.dim = t;
+          continue;
+        }
+      }
+      if (nC < MAX_CHIPS && pxu >= u.chip) {
+        const m = medirChip(o.node.label);
+        const sep = Math.round(o.rpx + 6);
+        const r = [x + sep - AIRE_PX, y - m.h / 2 - AIRE_PX, x + sep + m.w + AIRE_PX, y + m.h / 2 + AIRE_PX];
+        if ((obligado || entra(r)) && !choca(r, puestas)) {
+          puestas.push(r);
+          nC += 1;
+          o.modo = 'chip';
+          o.dim = m;
+          o.sep = sep;
         }
       }
     }
 
-    // Actualizar visibilidad de tarjetas.
+    // 3) Aplicar. La tarjeta reemplaza a la esfera; el hit-box copia lo que se ve.
+    const items = [];
+    const usadas = new Set();
     for (const [id, o] of objs.current) {
-      if (!o.g.parent) { objs.current.delete(id); continue; }
-      const ver = conTarjeta.has(id);
-      if (ver) {
-        const t = tarjetaDe(o.node, {
-          borde: o.fuerte ? paleta.acento : o.color,
-          fondo: paleta.superficie,
-          tinta: paleta.tinta,
-          origen: fuenteLabel(o.node),
-          vh: tam.h,
-        });
-        if (o.tarjeta && o.tarjeta !== t) o.tarjeta.visible = false;
-        if (t.parent !== o.g) o.g.add(t);
-        t.position.set(0, o.r * 1.25, 0);
-        t.visible = true;
-        o.tarjeta = t;
-      } else if (o.tarjeta) {
-        o.tarjeta.visible = false;
+      const tarjeta = o.modo === 'tarjeta';
+      o.esfera.visible = !tarjeta;
+      o.halo.visible = !tarjeta;
+      o.blanco.visible = !!o.modo;
+      if (!o.modo) continue;
+      o.blanco.scale.set(o.dim.w / focal, o.dim.h / focal, 1);   // sizeAttenuation=false: escala = px / focal
+      o.blanco.center.set(tarjeta ? 0.5 : -o.sep / o.dim.w, 0.5);
+
+      const clave = `${o.modo}:${id}`;
+      usadas.add(clave);
+      let pieza = piezas.current.get(clave);
+      if (!pieza) {
+        pieza = new CSS2DObject(document.createElement('div'));
+        pieza.element.style.pointerEvents = 'none';
+        pieza.center.set(tarjeta ? 0.5 : 0, 0.5);   // tarjeta centrada en el nodo; chip a su derecha
+        piezas.current.set(clave, pieza);
       }
+      o.g.getWorldPosition(pieza.position);
+      if (pieza.parent !== capa) capa.add(pieza);
+      if (!tarjeta && pieza.sep !== o.sep) {
+        pieza.sep = o.sep;
+        pieza.element.style.setProperty('--sep', `${o.sep}px`);
+      }
+      items.push({
+        clave, id, tipo: o.modo, el: pieza.element, node: o.node, estado: o.estado,
+        color: colorVar(o.node), grande: o.dim === TARJETA.grande, medida: tarjeta ? null : o.dim,
+      });
     }
-
-    // Chips: nunca de lejos, nunca en nodos con tarjeta, y nunca encimados.
-    // Se proyectan a pantalla y se colocan por prioridad; el que pisaría a otro
-    // ya puesto o a una tarjeta, no se dibuja.
-    const rectsChip = [];
-    // Agregar rectángulos de tarjetas visibles para evitar chips encima.
-    for (const id of conTarjeta) {
-      const o = objs.current.get(id);
-      if (!o || !o.g.parent) continue;
-      const v = o.g.position.clone().project(camara);
-      if (v.z > 1) continue;
-      const x = (v.x * 0.5 + 0.5) * tam.w;
-      const y = (-v.y * 0.5 + 0.5) * tam.h;
-      const altoT = CARD_H / (tam.h || 840);
-      const anchoT = altoT * (CARD_W / CARD_H) * tam.h;
-      const altoTpx = altoT * tam.h;
-      rectsChip.push([x - anchoT / 2 - 4, y - altoTpx - 8, x + anchoT / 2 + 4, y + 4]);
+    // Lo que dejó de verse sale de la capa (el CSS2DObject saca su elemento del DOM).
+    for (const [clave, pieza] of piezas.current) {
+      if (!usadas.has(clave) && pieza.parent) pieza.parent.remove(pieza);
     }
-
-    const candidatosChip = [...objs.current.entries()]
-      .filter(([id, o]) => o.et && !conTarjeta.has(id))
-      .map(([id, o]) => ({ id, o, p: prioridad(id), d: cam.distanceTo(o.g.position) }))
-      .sort((a, b) => a.p - b.p || a.d - b.d);
-
-    for (const { o } of candidatosChip) {
-      if (nivel === 'lejos') { o.et.visible = false; continue; }
-      const v = o.g.position.clone().project(camara);
-      if (v.z > 1) { o.et.visible = false; continue; }
-      const x = (v.x * 0.5 + 0.5) * tam.w;
-      const y = (-v.y * 0.5 + 0.5) * tam.h;
-      const ancho = o.et.scale.x * tam.h;
-      const alto = o.et.scale.y * tam.h;
-      const r = [x + 6, y - alto / 2 - 2, x + 6 + ancho, y + alto / 2 + 2];
-      const choca = rectsChip.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
-      o.et.visible = !choca;
-      if (!choca) rectsChip.push(r);
+    const firma = items.map((it) => `${it.clave}|${it.estado}|${it.color}`).join(',');
+    if (firma !== firmaRef.current) {
+      firmaRef.current = firma;
+      etiquetasRef.current?.mostrar(items);
     }
-  }, [selectedId, pinOtro, paleta, encuadre, tam.h, tam.w, ego, vecinos]);
+  }, [tam.w, tam.h, claseDe, colorVar, rectsHud]);
 
   // Recalcular como mucho una vez por frame.
   const programar = useCallback(() => {
     if (rafRef.current) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = 0;
-      actualizarTarjetas();
+      actualizarDetalle();
     });
-  }, [actualizarTarjetas]);
+  }, [actualizarDetalle]);
+  useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
 
   const esPin = useCallback((l) => {
     if (!pin) return false;
@@ -689,27 +570,57 @@ export default function Graph3DView({
     return () => clearTimeout(t);
   }, [listo, firma, ego ? `ego:${ego.origen}` : selectedId, ego ? null : pinOtro]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Capa de piezas HTML: un grupo propio en la escena raíz, así sobrevive a que el
+  // motor recree los objetos de nodo en cada cambio de selección.
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!listo || !fg) return undefined;
+    const capa = new THREE.Group();
+    fg.scene().add(capa);
+    capaRef.current = capa;
+    const mapa = piezas.current;
+    return () => {
+      // Sacar cada pieza de a una: el evento 'removed' es el que quita su elemento del DOM.
+      [...capa.children].forEach((p) => capa.remove(p));
+      fg.scene().remove(capa);
+      capaRef.current = null;
+      mapa.clear();
+      firmaRef.current = '';
+      etiquetasRef.current?.mostrar([]);
+    };
+  }, [listo]);
+
   useEffect(() => {
     const fg = fgRef.current;
     if (!listo || !fg) return undefined;
     const ctr = fg.controls();
     ctr.addEventListener('change', programar);
+    programar();                                   // objetos recién creados: esconder esferas bajo tarjetas ya
     const t = setTimeout(programar, 120);          // después de que el motor ubicó los objetos
     const t2 = setTimeout(programar, 1100);        // y al terminar el vuelo de cámara
     return () => { ctr.removeEventListener('change', programar); clearTimeout(t); clearTimeout(t2); };
   }, [listo, programar, nodeObject, data]);
 
   const leyenda = useMemo(() => calcularLeyenda(nodes, visibleIds, colorMode, temas), [nodes, visibleIds, colorMode, temas]);
+  const pinLabel = pin ? data.nodes.find((d) => d.id === pinOtro)?.node.label : null;
+  const egoLabel = ego ? data.nodes.find((d) => d.id === ego.origen)?.node.label : null;
 
   return (
     <div
       ref={cajaRef}
       onMouseMove={(e) => {
+        adentroRef.current = true;
         const r = cajaRef.current.getBoundingClientRect();
         mouseRef.current = { x: e.clientX - r.left, y: e.clientY - r.top, ancho: r.width, alto: r.height };
         if (hoverRef.current) setHover((h) => (h ? { ...h, ...mouseRef.current } : h));
       }}
-      onMouseLeave={() => { hoverRef.current = null; setHover(null); }}
+      onMouseLeave={() => {
+        adentroRef.current = false;
+        hoverRef.current = null;
+        setHover(null);
+        etiquetasRef.current?.resaltar(null);
+        if (cajaRef.current) cajaRef.current.style.cursor = '';
+      }}
       onPointerDown={() => setHover(null)}
       className="relative size-full overflow-hidden"
       style={{
@@ -720,45 +631,53 @@ export default function Graph3DView({
         <div className="absolute inset-0 grid place-items-center text-[12px] text-ink-dim">Sin nodos para graficar.</div>
       )}
       {tam.w > 0 && nodes.length > 0 && (
-        <ForceGraph3D
-          ref={fgRef}
-          width={tam.w}
-          height={tam.h}
-          graphData={data}
-          backgroundColor="rgba(0,0,0,0)"
-          showNavInfo={false}
-          controlType="orbit"
-          enableNodeDrag={false}
-          cooldownTicks={1}
-          warmupTicks={0}
-          nodeThreeObject={nodeObject}
-          onNodeHover={(d) => {
-            hoverRef.current = d?.id || null;
-            if (cajaRef.current) cajaRef.current.style.cursor = d ? 'pointer' : '';
-            setHover(d ? { node: d.node, ...mouseRef.current } : null);
-          }}
-          linkVisibility={linkVisible}
-          linkColor={linkColor}
-          linkWidth={linkWidth}
-          linkOpacity={1}
-          linkDirectionalParticles={0}
-          onNodeClick={(d) => onSelect(d.id)}
-          onBackgroundClick={() => pinnedEdge && onClearPin?.()}
-        />
+        // `isolate`: los z-index que el renderer HTML pone a cada pieza quedan acá
+        // adentro y nunca pasan por encima de los paneles del lienzo.
+        <div className="absolute inset-0 isolate">
+          <ForceGraph3D
+            ref={fgRef}
+            width={tam.w}
+            height={tam.h}
+            graphData={data}
+            backgroundColor="rgba(0,0,0,0)"
+            showNavInfo={false}
+            controlType="orbit"
+            extraRenderers={extraRenderers}
+            enableNodeDrag={false}
+            cooldownTicks={1}
+            warmupTicks={0}
+            nodeThreeObject={nodeObject}
+            onNodeHover={(n) => {
+              const d = adentroRef.current ? n : null;
+              hoverRef.current = d?.id || null;
+              if (cajaRef.current) cajaRef.current.style.cursor = d ? 'pointer' : '';
+              setHover(d ? { node: d.node, ...mouseRef.current } : null);
+              etiquetasRef.current?.resaltar(d?.id || null);
+            }}
+            linkVisibility={linkVisible}
+            linkColor={linkColor}
+            linkWidth={linkWidth}
+            linkOpacity={1}
+            linkDirectionalParticles={0}
+            onNodeClick={(d) => onSelect(d.id)}
+            onBackgroundClick={() => pinnedEdge && onClearPin?.()}
+          />
+        </div>
       )}
+      <Etiquetas3D ref={etiquetasRef} />
 
       <div className="pointer-events-none absolute left-3 right-3 top-3 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">
         {pin && (
-          <span className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
+          <span data-hud className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
             <Link2 className="size-3 text-accent" />
-            <span className="max-w-[220px] truncate">{data.nodes.find((d) => d.id === pinOtro)?.node.label}</span>
+            <span className="max-w-[220px] truncate" title={pinLabel || undefined}>{pinLabel}</span>
             <button type="button" onClick={onClearPin} className="text-ink-dim hover:text-ink" aria-label="Soltar vínculo"><X className="size-3" /></button>
           </span>
         )}
         {ego && (
-          <span className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
+          <span data-hud className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
             <Pin className="size-3 text-accent" />
-            <span className="max-w-[220px] truncate">Vecindario de {data.nodes.find((d) => d.id === ego.origen)?.node.label}</span>
+            <span className="max-w-[220px] truncate" title={egoLabel ? `Vecindario de ${egoLabel}` : undefined}>Vecindario de {egoLabel}</span>
             <span className="text-ink-dim">{ego.ids.size}</span>
             <button type="button" onClick={onFijar} className="text-ink-dim hover:text-ink" aria-label="Desfijar vecindario"><X className="size-3" /></button>
           </span>
@@ -768,7 +687,7 @@ export default function Graph3DView({
 
       {hover && <NodoTooltip node={hover.node} x={hover.x} y={hover.y} ancho={hover.ancho} alto={hover.alto} temas={temas} />}
 
-      <div className="absolute bottom-3 left-3 flex flex-col overflow-hidden rounded-sm border border-hair bg-surface">
+      <div data-hud className="absolute bottom-3 left-3 flex flex-col overflow-hidden rounded-sm border border-hair bg-surface">
         {(selectedId || ego) && (
           <>
             <Hint texto={ego ? 'Desfijar vecindario · Esc' : 'Fijar relaciones del elegido'} side="right">

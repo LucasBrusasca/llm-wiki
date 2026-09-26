@@ -39,7 +39,8 @@ export default function ColorPanel({ modo, onModo, leyenda, compacto = false }) 
   // En columnas angostas (Split) la leyenda arranca plegada para no tapar el grafo.
   const [abierta, setAbierta] = useState(!compacto);
   return (
-    <div className={cn('pointer-events-auto ml-auto flex shrink-0 flex-col gap-1.5 rounded-sm border border-hair bg-surface/90 p-1.5 backdrop-blur', abierta ? 'w-[250px]' : 'w-auto')}>
+    // data-hud: el 3D no ubica tarjetas ni chips debajo de este panel.
+    <div data-hud className={cn('pointer-events-auto ml-auto flex shrink-0 flex-col gap-1.5 rounded-sm border border-hair bg-surface/90 p-1.5 backdrop-blur', abierta ? 'w-[250px]' : 'w-auto')}>
       <div className="flex items-center gap-1">
         {Object.entries(MODOS_COLOR).map(([k, m]) => (
           <button
@@ -75,7 +76,7 @@ export default function ColorPanel({ modo, onModo, leyenda, compacto = false }) 
           {items.map((l) => (
             <li key={l.k} className="flex min-w-0 items-center gap-1.5 text-[11px] text-ink-muted" style={{ '--c': l.color }}>
               <span className="size-2 shrink-0 rounded-full dot-cat" />
-              <span className="truncate">{l.label}</span>
+              <span className="truncate" title={l.label}>{l.label}</span>
               <span className="ml-auto text-ink-dim">{l.n}</span>
             </li>
           ))}

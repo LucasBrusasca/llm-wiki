@@ -38,9 +38,10 @@ export default function NodoTooltip({ node, x, y, ancho, alto, temas }) {
             </span>
           )}
           {t && t.key !== 'sin-tema' && (
-            <span className="flex min-w-0 items-center gap-1 text-[10.5px] text-ink-muted">
+            <span className="flex min-w-0 items-center gap-1 text-[10.5px] leading-4 text-ink-muted">
               <span className="size-1.5 shrink-0 rounded-full dot-cat" style={{ '--c': t.color }} />
-              <span className="truncate">{t.nombre}</span>
+              {/* El tooltip no recibe el mouse: lo que no entre, que baje de línea. */}
+              <span>{t.nombre}</span>
             </span>
           )}
         </div>
