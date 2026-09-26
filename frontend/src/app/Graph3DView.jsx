@@ -244,11 +244,12 @@ function tarjetaDe(node, { borde, fondo, tinta, origen, vh }) {
 }
 
 // Niveles de detalle según cuán cerca está la cámara del conjunto:
-//   lejos  → sólo puntos
+//   lejos  → sólo puntos (máximo rendimiento)
 //   medio  → puntos + chips del elegido / vecindario
-//   cerca  → además, UNA tarjeta de preview
+//   cerca  → tarjetas de preview en los nodos cercanos a la cámara
 const LOD_LEJOS = 1.5;    // × el radio de la nube
 const LOD_CERCA = 0.75;
+const MAX_TARJETAS = 8;   // máximo de tarjetas visibles simultáneas (rendimiento)
 
 // "Más aire": factor de separación de la VISTA (no toca embeddings ni posiciones guardadas).
 const NIVELES_AIRE = [1, 1.4, 2];
@@ -458,33 +459,56 @@ export default function Graph3DView({
     return { centro: new THREE.Vector3(cx, cy, cz), radio };
   }, [data.nodes]);
 
-  // ── Detalle por distancia: puntos → chips → una tarjeta ──
+  // ── Detalle por distancia: puntos → chips → tarjetas de preview ──
   const actualizarTarjetas = useCallback(() => {
     const fg = fgRef.current;
     if (!fg) return;
     const cam = fg.camera().position;
+    const camara = fg.camera();
     const dist = cam.distanceTo(encuadre.centro);
     const nivel = dist > encuadre.radio * LOD_LEJOS ? 'lejos'
       : dist < encuadre.radio * LOD_CERCA ? 'cerca' : 'medio';
 
-    // La tarjeta es la del elegido; sin selección, la del nodo más cercano, y
-    // sólo de cerca. De lejos no hay ninguna: la vista queda en puntos.
-    let unica = null;
+    // Prioridad de nodos: determina orden para tarjetas y chips.
+    const prioridad = (id) => (id === selectedId ? 0 : id === pinOtro ? 1 : ego && id === ego.origen ? 2 : vecinos?.has(id) ? 3 : 4);
+
+    // En LOD "cerca": mostrar tarjetas de preview en los nodos cercanos a la cámara.
+    // En "medio": sólo el seleccionado. En "lejos": ninguna.
+    const conTarjeta = new Set();
     if (nivel !== 'lejos') {
-      if (selectedId && objs.current.has(selectedId)) unica = selectedId;
-      else if (nivel === 'cerca') {
-        let mejor = Infinity;
-        for (const [id, o] of objs.current) {
-          if (!o.g.parent) { objs.current.delete(id); continue; }
-          const d = cam.distanceTo(o.g.position);
-          if (d < mejor) { mejor = d; unica = id; }
+      // Calcular qué nodos deben mostrar tarjetas, ordenados por prioridad y distancia.
+      const candidatosTarjeta = [...objs.current.entries()]
+        .filter(([, o]) => o.g.parent)
+        .map(([id, o]) => ({ id, o, p: prioridad(id), d: cam.distanceTo(o.g.position) }))
+        .sort((a, b) => a.p - b.p || a.d - b.d);
+
+      // Anti-colisión para tarjetas: proyectamos a pantalla y evitamos superposiciones.
+      const rectsTarjeta = [];
+      const limiteT = nivel === 'cerca' ? MAX_TARJETAS : (selectedId ? 1 : 0);
+
+      for (const { id, o } of candidatosTarjeta) {
+        if (conTarjeta.size >= limiteT) break;
+        const v = o.g.position.clone().project(camara);
+        if (v.z > 1) continue;   // detrás de la cámara
+        const x = (v.x * 0.5 + 0.5) * tam.w;
+        const y = (-v.y * 0.5 + 0.5) * tam.h;
+        // Rectángulo de la tarjeta en pantalla (CARD_W × CARD_H en pixels, escalado).
+        const altoT = CARD_H / (tam.h || 840);
+        const anchoT = altoT * (CARD_W / CARD_H) * tam.h;
+        const altoTpx = altoT * tam.h;
+        const r = [x - anchoT / 2 - 4, y - altoTpx - 8, x + anchoT / 2 + 4, y + 4];
+        const choca = rectsTarjeta.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
+        if (!choca) {
+          conTarjeta.add(id);
+          rectsTarjeta.push(r);
         }
       }
     }
 
+    // Actualizar visibilidad de tarjetas.
     for (const [id, o] of objs.current) {
-      if (!o.g.parent) { objs.current.delete(id); continue; }   // objeto viejo, fuera de escena
-      const ver = id === unica;
+      if (!o.g.parent) { objs.current.delete(id); continue; }
+      const ver = conTarjeta.has(id);
       if (ver) {
         const t = tarjetaDe(o.node, {
           borde: o.fuerte ? paleta.acento : o.color,
@@ -499,35 +523,47 @@ export default function Graph3DView({
         t.visible = true;
         o.tarjeta = t;
       } else if (o.tarjeta) {
-        o.tarjeta.visible = false;                                // nunca quedan dos abiertas
+        o.tarjeta.visible = false;
       }
     }
 
-    // Chips: nunca de lejos, y nunca encimados. Se proyectan a pantalla y se
-    // colocan por prioridad (elegido → origen del vecindario → vecinos → resto);
-    // el que pisaría a otro ya puesto, no se dibuja.
-    const camara = fg.camera();
-    const rects = [];
-    const prioridad = (id) => (id === selectedId ? 0 : ego && id === ego.origen ? 1 : vecinos?.has(id) ? 2 : 3);
-    const candidatos = [...objs.current.entries()]
-      .filter(([id, o]) => o.et && id !== unica)
+    // Chips: nunca de lejos, nunca en nodos con tarjeta, y nunca encimados.
+    // Se proyectan a pantalla y se colocan por prioridad; el que pisaría a otro
+    // ya puesto o a una tarjeta, no se dibuja.
+    const rectsChip = [];
+    // Agregar rectángulos de tarjetas visibles para evitar chips encima.
+    for (const id of conTarjeta) {
+      const o = objs.current.get(id);
+      if (!o || !o.g.parent) continue;
+      const v = o.g.position.clone().project(camara);
+      if (v.z > 1) continue;
+      const x = (v.x * 0.5 + 0.5) * tam.w;
+      const y = (-v.y * 0.5 + 0.5) * tam.h;
+      const altoT = CARD_H / (tam.h || 840);
+      const anchoT = altoT * (CARD_W / CARD_H) * tam.h;
+      const altoTpx = altoT * tam.h;
+      rectsChip.push([x - anchoT / 2 - 4, y - altoTpx - 8, x + anchoT / 2 + 4, y + 4]);
+    }
+
+    const candidatosChip = [...objs.current.entries()]
+      .filter(([id, o]) => o.et && !conTarjeta.has(id))
       .map(([id, o]) => ({ id, o, p: prioridad(id), d: cam.distanceTo(o.g.position) }))
       .sort((a, b) => a.p - b.p || a.d - b.d);
 
-    for (const { o } of candidatos) {
+    for (const { o } of candidatosChip) {
       if (nivel === 'lejos') { o.et.visible = false; continue; }
       const v = o.g.position.clone().project(camara);
-      if (v.z > 1) { o.et.visible = false; continue; }          // detrás de la cámara
+      if (v.z > 1) { o.et.visible = false; continue; }
       const x = (v.x * 0.5 + 0.5) * tam.w;
       const y = (-v.y * 0.5 + 0.5) * tam.h;
-      const ancho = o.et.scale.x * tam.h;                        // el sprite mide en fracción de alto
+      const ancho = o.et.scale.x * tam.h;
       const alto = o.et.scale.y * tam.h;
       const r = [x + 6, y - alto / 2 - 2, x + 6 + ancho, y + alto / 2 + 2];
-      const choca = rects.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
+      const choca = rectsChip.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
       o.et.visible = !choca;
-      if (!choca) rects.push(r);
+      if (!choca) rectsChip.push(r);
     }
-  }, [selectedId, paleta, encuadre, tam.h, tam.w, ego, vecinos]);
+  }, [selectedId, pinOtro, paleta, encuadre, tam.h, tam.w, ego, vecinos]);
 
   // Recalcular como mucho una vez por frame.
   const programar = useCallback(() => {
