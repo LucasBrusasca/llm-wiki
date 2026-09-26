@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   X, ExternalLink, MessageSquare, Share2, ArrowUpRight, ArrowDownLeft, ArrowRight, Copy, Check,
   Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight, Pencil, FolderInput, Loader2,
+  PanelRightClose,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -331,6 +332,7 @@ export default function Inspector({
   node, nodesById, relIndex, seccion, seccionCount, edgesCount, topConceptos,
   onSelect, onClose, onAsk, onConcepto, onVerEnGrafo, vista, pinnedEdge, onPin, onClearPin,
   onAbrir, camino = [], onVolver, temas, onTema, ego, onFijar, ancho = 420, onGuardar, onMover,
+  onCollapse,
 }) {
   // Vista previa primero; si el documento no tiene nada que previsualizar, Resumen.
   const [tab, setTab] = useState('preview');
@@ -451,10 +453,16 @@ export default function Inspector({
                 {copiado ? <Check className="text-accent" /> : <Copy />}
               </Button>
             </Hint>
-            <Hint texto="Cerrar · Esc">
+            <Hint texto="Cerrar documento · Esc">
               <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Cerrar detalle"><X /></Button>
             </Hint>
-
+            {onCollapse && (
+              <Hint texto="Ocultar panel · ]">
+                <Button variant="ghost" size="icon-sm" onClick={onCollapse} aria-label="Ocultar panel derecho">
+                  <PanelRightClose />
+                </Button>
+              </Hint>
+            )}
           </div>
         </div>
         {editando ? (
