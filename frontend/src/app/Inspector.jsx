@@ -254,6 +254,58 @@ function Preview({ node, onGuardar }) {
   );
 }
 
+/** Edición manual de título, autor y tema (se guarda en la API). */
+function EditarNodo({ node, temas, onGuardar, onCancelar }) {
+  const [label, setLabel] = useState(node.label || '');
+  const [autor, setAutor] = useState(node.autor || '');
+  const [tema, setTema] = useState(node.tema && node.tema !== 'Sin clasificar' ? node.tema : '');
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState(null);
+  const sugerencias = [...(temas?.values() || [])].filter((t) => t.key !== 'sin-tema').map((t) => t.nombre);
+
+  async function guardar(e) {
+    e?.preventDefault();
+    const campos = {};
+    if (label.trim() !== (node.label || '').trim()) campos.label = label;
+    if (autor.trim() !== (node.autor || '').trim()) campos.autor = autor;
+    if (tema.trim() !== (node.tema && node.tema !== 'Sin clasificar' ? node.tema : '').trim()) campos.tema = tema;
+    if (!Object.keys(campos).length) { onCancelar(); return; }
+    setGuardando(true); setError(null);
+    try {
+      await onGuardar(campos);
+    } catch (err) {
+      setError(err.message);
+      setGuardando(false);
+    }
+  }
+
+  const campo = 'h-8 w-full rounded-sm border border-hair bg-surface-2 px-2 text-[12.5px] text-ink placeholder:text-ink-dim focus:border-accent/60 focus:outline-none';
+  return (
+    <form onSubmit={guardar} className="mt-2 flex flex-col gap-2" onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), onCancelar())}>
+      <label className="block">
+        <span className="mb-0.5 block text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Título</span>
+        <textarea value={label} onChange={(e) => setLabel(e.target.value)} rows={2} autoFocus className={cn(campo, 'h-auto resize-none py-1.5')} />
+      </label>
+      <label className="block">
+        <span className="mb-0.5 block text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Autor</span>
+        <input value={autor} onChange={(e) => setAutor(e.target.value)} placeholder="Sin autor" className={campo} />
+      </label>
+      <label className="block">
+        <span className="mb-0.5 block text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Tema</span>
+        <input value={tema} onChange={(e) => setTema(e.target.value)} list="algedi-temas" placeholder="Sin tema (usa el automático)" className={campo} />
+        <datalist id="algedi-temas">{sugerencias.map((t) => <option key={t} value={t} />)}</datalist>
+      </label>
+      {error && <p className="text-[12px] text-danger">{error}</p>}
+      <div className="flex gap-1.5">
+        <Button type="submit" variant="default" size="sm" disabled={guardando || !label.trim()}>
+          {guardando ? <Loader2 className="animate-spin" /> : <Check />} Guardar
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={onCancelar}>Cancelar</Button>
+      </div>
+    </form>
+  );
+}
+
 /** Sin selección: panorama de la sección en vez de un hueco vacío. */
 function Panorama({ seccionCount, edgesCount, relIndex, nodesById, onSelect }) {
   const conectados = useMemo(
