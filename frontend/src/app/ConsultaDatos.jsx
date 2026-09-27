@@ -4,12 +4,18 @@ import { Button } from '@/components/ui/button';
 import { consultarDatos, fetchEsquema } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
+/** Nombre de tabla listo para el SQL: con su esquema si no es `public`. */
+function refTabla(t) {
+  if (!t) return 'datos';
+  return t.esquema && t.esquema !== 'public' ? `"${t.esquema}"."${t.tabla}"` : `"${t.tabla}"`;
+}
+
 /**
  * Consulta SQL de sólo lectura sobre un nodo de datos, en el lugar.
  * - CSV/Excel: la hoja se consulta como tabla `datos` (SQLite en memoria; no toca el
  *   archivo), así que corre directo.
- * - Base SQLite real: el backend la abre en sólo lectura y primero propone; al
- *   confirmar, la consulta queda en Corridas.
+ * - Base real (SQLite o Postgres): el backend la abre en sólo lectura y primero
+ *   propone; al confirmar, la consulta queda en Corridas.
  * Ctrl/⌘ + Enter corre la consulta.
  */
 export default function ConsultaDatos({ node }) {
@@ -27,8 +33,7 @@ export default function ConsultaDatos({ node }) {
       .then((e) => {
         if (!vivo) return;
         setEsquema(e);
-        const tabla = e.tablas?.[0]?.tabla || 'datos';
-        setSql(`SELECT * FROM "${tabla}" LIMIT 50`);
+        setSql(`SELECT * FROM ${refTabla(e.tablas?.[0])} LIMIT 50`);
       })
       .catch((e) => vivo && setError(e.message));
     return () => { vivo = false; };
@@ -48,17 +53,30 @@ export default function ConsultaDatos({ node }) {
     }
   }
 
-  const sqlite = esquema?.motor === 'sqlite';
+  const real = esquema?.motor === 'sqlite' || esquema?.motor === 'postgres';
+  const cx = esquema?.conexion;
 
   return (
     <div className="flex flex-col gap-2">
+      {cx && (
+        <p className="text-[11px] text-ink-dim">
+          Postgres · <span className="text-ink-muted">{cx.base}</span> en {cx.host}:{cx.puerto} como{' '}
+          <span className="font-mono text-[10.5px]">{cx.usuario}</span> (conexión «{cx.nombre}»)
+        </p>
+      )}
       {esquema?.tablas?.length > 0 && (
         <div className="flex flex-wrap gap-1.5 text-[11px] text-ink-dim">
           <Database className="size-3.5" />
           {esquema.tablas.map((t) => (
-            <span key={t.tabla} className="rounded-xs border border-hair bg-surface-2 px-1.5" title={t.columnas.join(', ')}>
-              <span className="text-ink-muted">{t.tabla}</span> ({t.columnas.length})
-            </span>
+            <button
+              type="button"
+              key={`${t.esquema || ''}.${t.tabla}`}
+              onClick={() => setSql(`SELECT * FROM ${refTabla(t)} LIMIT 50`)}
+              className="rounded-xs border border-hair bg-surface-2 px-1.5 hover:border-hair-strong hover:text-ink-muted"
+              title={`${t.columnas.join(', ')}${t.vista ? ' · vista' : ''}${t.filas_aprox != null ? ` · ~${t.filas_aprox} filas` : ''}`}
+            >
+              <span className="text-ink-muted">{t.esquema && t.esquema !== 'public' ? `${t.esquema}.` : ''}{t.tabla}</span> ({t.columnas.length})
+            </button>
           ))}
           {esquema.total_filas != null && <span>{esquema.total_filas} filas</span>}
         </div>
@@ -78,7 +96,7 @@ export default function ConsultaDatos({ node }) {
           {cargando ? <Loader2 className="animate-spin" /> : <Play />} Consultar
         </Button>
         <span className="text-[11px] text-ink-dim">
-          sólo lectura · {sqlite ? 'base real: pide confirmar y queda en Corridas' : 'la hoja es la tabla «datos»'} · Ctrl+Enter
+          sólo lectura · {real ? 'base real: pide confirmar y queda en Corridas' : 'la hoja es la tabla «datos»'} · Ctrl+Enter
         </span>
       </div>
 

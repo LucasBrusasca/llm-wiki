@@ -12,11 +12,14 @@ con lo que usa— pero no su stack: acá sale de leer el AST del script, sin LLM
                        copiados a su carpeta temporal (lo que el script escriba queda
                        ahí y se descarta).
 - consultar_tabla / consultar_sqlite  SQL de sólo lectura sobre un nodo de datos.
+- conexiones_postgres / consultar_postgres  lo mismo contra una base Postgres externa,
+                       declarada en el entorno del backend.
 - detectar_pedido_ejecucion  si un mensaje al agente pide correr un script.
 """
 from __future__ import annotations
 
 import ast
+import decimal
 import hashlib
 import os
 import re
@@ -27,7 +30,7 @@ import sys
 import tempfile
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import date, datetime, time as hora, timezone
 from pathlib import Path
 
 # ── Tipos y extensiones ───────────────────────────────────────────────────────
@@ -464,6 +467,236 @@ def consultar_sqlite(ruta: Path, sql: str, *, limite: int = 500, timeout_s: floa
         return _ejecutar_consulta(conn, sql, limite, timeout_s)
     finally:
         conn.close()
+
+
+# ── Bases Postgres externas (sólo lectura) ────────────────────────────────────
+#
+# Cada conexión se declara en el entorno del backend, nunca en la base de Algedi:
+#     ALGEDI_PG_<NOMBRE>=postgresql://usuario:clave@host:5432/base
+# La clave no sale de ahí: el nodo guarda sólo `postgres:<nombre>` y la UI ve nombre,
+# host, base y usuario.
+#
+# Una consulta pasa por varias barreras, cada una suficiente para el caso común:
+#   1. tiene que empezar con SELECT, WITH, TABLE, VALUES, EXPLAIN o SHOW (se rechaza
+#      antes de conectar);
+#   2. corre como sentencia preparada: Postgres no deja encadenar otra con «;»;
+#   3. dentro de una transacción READ ONLY, en una sesión que además arranca con
+#      default_transaction_read_only: cualquier escritura la rechaza Postgres mismo;
+#   4. con statement_timeout, leyendo como mucho `limite + 1` filas con un cursor.
+# Y no usa un superusuario ni un rol que lea o escriba archivos del servidor: para
+# consultar desde acá hay que darle a Algedi un usuario de sólo lectura.
+
+PREFIJO_PG = "ALGEDI_PG_"
+_ESQUEMAS_PG = ("postgresql", "postgres")
+_PRIMERAS_PG = {"select", "with", "table", "values", "explain", "show"}
+_TEXTO_MAX = 2000     # caracteres por celda que viajan a la UI
+
+
+class ConexionFallida(ConsultaInvalida):
+    """No se pudo conectar: el mensaje ya dice a qué y por qué, sin la clave."""
+
+    def __init__(self, conexion: dict, motivo: str):
+        self.conexion = conexion
+        super().__init__(
+            f"No se pudo conectar a «{conexion['nombre']}» "
+            f"({conexion['host']}:{conexion['puerto']}/{conexion['base']}): {motivo}.")
+
+
+def conexiones_postgres(entorno=None) -> dict[str, dict]:
+    """Las conexiones declaradas como ALGEDI_PG_<NOMBRE>, por nombre en minúsculas.
+    Las que no son una URL postgresql:// válida se ignoran."""
+    from urllib.parse import unquote, urlsplit
+    entorno = os.environ if entorno is None else entorno
+    salida = {}
+    for clave, valor in entorno.items():
+        valor = str(valor or "").strip()
+        if not clave.upper().startswith(PREFIJO_PG) or not valor:
+            continue
+        nombre = re.sub(r"[^a-z0-9_]+", "_", clave[len(PREFIJO_PG):].lower()).strip("_")
+        try:
+            partes = urlsplit(valor)
+            puerto = partes.port or 5432
+        except ValueError:
+            continue
+        if not nombre or partes.scheme not in _ESQUEMAS_PG or not partes.hostname:
+            continue
+        usuario = unquote(partes.username or "")
+        salida[nombre] = {
+            "nombre": nombre,
+            "url": valor,
+            "host": partes.hostname,
+            "puerto": puerto,
+            "base": unquote(partes.path.lstrip("/")) or usuario,
+            "usuario": usuario,
+        }
+    return dict(sorted(salida.items()))
+
+
+def conexion_publica(conexion: dict) -> dict:
+    """Lo que se puede mostrar de una conexión: todo menos la URL, que lleva la clave."""
+    return {k: v for k, v in conexion.items() if k != "url"}
+
+
+def _sin_comentarios_iniciales(sql: str) -> str:
+    texto = sql.lstrip()
+    while True:
+        if texto.startswith("--"):
+            fin = texto.find("\n")
+            texto = "" if fin < 0 else texto[fin + 1:].lstrip()
+        elif texto.startswith("/*"):
+            fin = texto.find("*/")
+            texto = "" if fin < 0 else texto[fin + 2:].lstrip()
+        elif texto.startswith("("):
+            texto = texto[1:].lstrip()
+        else:
+            return texto
+
+
+def validar_consulta_pg(sql: str) -> str:
+    """La consulta sin el «;» final, o ConsultaInvalida si no empieza leyendo."""
+    sql = (sql or "").strip()
+    while sql.endswith(";"):
+        sql = sql[:-1].rstrip()
+    if not sql:
+        raise ConsultaInvalida("Escribí una consulta, por ejemplo: SELECT * FROM clientes LIMIT 20")
+    primera = re.match(r"[A-Za-z]+", _sin_comentarios_iniciales(sql))
+    if not primera or primera.group(0).lower() not in _PRIMERAS_PG:
+        raise ConsultaInvalida("Sólo se permiten consultas de lectura (SELECT).")
+    return sql
+
+
+def valor_json(v):
+    """Un valor de Postgres en algo que la UI puede mostrar tal cual."""
+    if v is None or isinstance(v, (bool, int)):
+        return v
+    if isinstance(v, str):
+        return v if len(v) <= _TEXTO_MAX else v[:_TEXTO_MAX] + "…"
+    if isinstance(v, float):
+        return v if v == v and abs(v) != float("inf") else str(v)
+    if isinstance(v, decimal.Decimal):
+        return float(v) if v.is_finite() else str(v)
+    if isinstance(v, (date, hora)):
+        return v.isoformat()
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return f"<{len(bytes(v))} bytes>"
+    if isinstance(v, (list, tuple)):
+        return [valor_json(x) for x in v]
+    return valor_json(str(v))
+
+
+def _motivo_conexion(e: BaseException) -> str:
+    nombre = type(e).__name__
+    texto = str(e)
+    if nombre == "InvalidPasswordError" or "password authentication failed" in texto:
+        return "usuario o clave incorrectos"
+    if nombre == "InvalidCatalogNameError":
+        return "esa base no existe en el servidor"
+    if isinstance(e, TimeoutError) or nombre == "TimeoutError":
+        return "el servidor no respondió a tiempo"
+    if "Name or service not known" in texto or "Temporary failure in name resolution" in texto \
+            or "nodename nor servname" in texto or "getaddrinfo failed" in texto:
+        return "no se encuentra el servidor"
+    if isinstance(e, ConnectionRefusedError) or "Connect call failed" in texto:
+        return "el servidor no acepta conexiones"
+    return texto or nombre
+
+
+async def _conectar_pg(conexion: dict, timeout_s: float):
+    import asyncpg
+    try:
+        conn = await asyncpg.connect(
+            conexion["url"], timeout=5,
+            server_settings={
+                "application_name": "algedi-workbench",
+                "default_transaction_read_only": "on",
+                "statement_timeout": str(int(timeout_s * 1000)),
+                "lock_timeout": "2000",
+                "idle_in_transaction_session_timeout": str(int(timeout_s * 1000) + 5000),
+            },
+        )
+    except Exception as e:
+        raise ConexionFallida(conexion, _motivo_conexion(e)) from None
+    try:
+        try:
+            peligroso = await conn.fetchval(
+                "SELECT rolsuper"
+                " OR pg_has_role(current_user, 'pg_read_server_files', 'MEMBER')"
+                " OR pg_has_role(current_user, 'pg_write_server_files', 'MEMBER')"
+                " OR pg_has_role(current_user, 'pg_execute_server_program', 'MEMBER')"
+                " FROM pg_roles WHERE rolname = current_user")
+        except asyncpg.exceptions.PostgresError:   # Postgres < 11: sin esos roles
+            peligroso = await conn.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
+        if peligroso:
+            raise ConsultaInvalida(
+                f"La conexión «{conexion['nombre']}» usa el usuario «{conexion['usuario']}», que es "
+                "superusuario o puede tocar archivos del servidor. Para consultar desde Algedi "
+                "configurá un usuario de sólo lectura.")
+    except BaseException:
+        await conn.close()
+        raise
+    return conn
+
+
+async def esquema_postgres(conexion: dict, *, timeout_s: float = 5.0) -> list[dict]:
+    """Tablas y vistas que el usuario de la conexión puede leer, con sus columnas y
+    (en tablas) las filas que estima Postgres."""
+    conn = await _conectar_pg(conexion, timeout_s)
+    try:
+        filas = await conn.fetch(
+            "SELECT c.table_schema AS esquema, c.table_name AS tabla,"
+            "       array_agg(c.column_name::text ORDER BY c.ordinal_position) AS columnas,"
+            "       max(pc.relkind::text) AS tipo, max(pc.reltuples)::bigint AS filas"
+            "  FROM information_schema.columns c"
+            "  LEFT JOIN pg_namespace pn ON pn.nspname = c.table_schema"
+            "  LEFT JOIN pg_class pc ON pc.relnamespace = pn.oid AND pc.relname = c.table_name"
+            " WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema')"
+            "   AND c.table_schema !~ '^pg_'"
+            " GROUP BY 1, 2 ORDER BY (c.table_schema <> 'public'), 1, 2 LIMIT 60")
+    except Exception as e:
+        raise ConsultaInvalida(f"No se pudo leer el esquema: {e}") from None
+    finally:
+        await conn.close()
+    return [{
+        "tabla": f["tabla"],
+        "esquema": f["esquema"],
+        "columnas": list(f["columnas"]),
+        "vista": f["tipo"] == "v",
+        "filas_aprox": (int(f["filas"]) if f["tipo"] in ("r", "p", "m")
+                        and f["filas"] is not None and f["filas"] >= 0 else None),
+    } for f in filas]
+
+
+async def consultar_postgres(conexion: dict, sql: str, *, limite: int = 500,
+                             timeout_s: float = 5.0) -> dict:
+    """SQL de sólo lectura sobre una base Postgres configurada (ver barreras arriba)."""
+    import asyncpg
+    sql = validar_consulta_pg(sql)
+    conn = await _conectar_pg(conexion, timeout_s)
+    inicio = time.time()
+    try:
+        async with conn.transaction(readonly=True):
+            sentencia = await conn.prepare(sql)
+            columnas = [a.name for a in sentencia.get_attributes()]
+            cursor = await sentencia.cursor()
+            filas = await cursor.fetch(limite + 1)
+    except asyncpg.exceptions.QueryCanceledError:
+        raise ConsultaInvalida(f"La consulta tardó más de {timeout_s:g} s y se cortó.") from None
+    except asyncpg.exceptions.ReadOnlySQLTransactionError:
+        raise ConsultaInvalida("Sólo se permiten consultas de lectura (SELECT).") from None
+    except asyncpg.exceptions.InsufficientPrivilegeError as e:
+        raise ConsultaInvalida(f"El usuario «{conexion['usuario']}» no tiene permiso: {e}") from None
+    except asyncpg.exceptions.PostgresError as e:
+        if "multiple commands" in str(e):
+            raise ConsultaInvalida("Una sola consulta por vez.") from None
+        raise ConsultaInvalida(str(e)) from None
+    finally:
+        await conn.close()
+    return {
+        "columnas": columnas,
+        "filas": [["" if v is None else valor_json(v) for v in f] for f in filas[:limite]],
+        "truncado": len(filas) > limite,
+        "ms": int((time.time() - inicio) * 1000),
+    }
 
 
 # ── Pedidos de ejecución dirigidos al agente ──────────────────────────────────

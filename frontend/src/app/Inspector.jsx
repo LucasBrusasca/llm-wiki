@@ -23,6 +23,7 @@ import NotaEditor from '@/app/NotaEditor';
 import { cn, fechaCorta, pct, normalizar } from '@/lib/utils';
 
 function urlFuente(node) {
+  if (node.fuente === 'postgres') return null;   // una base, no un archivo para abrir
   if (node.fuente_url) return node.fuente_url;
   if (node.fuente_path) return `/files/${encodeURIComponent(node.id)}`;
   return null;
@@ -254,7 +255,7 @@ function Preview({ node, onGuardar, onScriptGuardado, onCorrida }) {
       </div>
     );
   }
-  if (tipo === 'tabla' || tipo === 'sqlite') {
+  if (tipo === 'tabla' || tipo === 'sqlite' || tipo === 'postgres') {
     return (
       <div className="flex flex-col gap-1 pb-6">
         {tipo === 'tabla' && <div className="px-4 pt-4"><TablaPreview node={node} /></div>}

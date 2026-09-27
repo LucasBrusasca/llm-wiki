@@ -39,6 +39,10 @@ services:
       # No escribir .pyc/__pycache__ en la carpeta montada: era la fuente del "os error 5"
       # del watcher (churn de __pycache__ sobre el bind-mount de Windows).
       PYTHONDONTWRITEBYTECODE: "1"
+      # Bases Postgres que el Workbench puede consultar (sólo lectura), una variable
+      # ALGEDI_PG_<NOMBRE> por base; las propias van en .env. Ésta es la de prueba
+      # (servicio demo-db, más abajo): datos inventados y un usuario que sólo lee.
+      ALGEDI_PG_DEMO: postgresql://algedi_lector:lector_demo@demo-db:5432/algedi_demo
     env_file: .env
     ports:
       - "8000:8000"
@@ -72,6 +76,20 @@ services:
       # Bloom de postprocessing. Si los FPS caen por debajo de 30,
       # poné "false" para desactivarlo (backdrop y canales siguen funcionando).
       VITE_BLOOM_ENABLED: ${VITE_BLOOM_ENABLED:-false}
+
+  # Base Postgres de prueba para el Workbench: ventas inventadas de un almacén y un
+  # usuario de sólo lectura. No arranca con `docker compose up`; se levanta aparte:
+  #   docker compose --profile demo up -d demo-db
+  # La primera vez corre demo/postgres/01_demo.sql, que crea las tablas y los datos.
+  demo-db:
+    image: pgvector/pgvector:pg16
+    profiles: ["demo"]
+    environment:
+      POSTGRES_DB: algedi_demo
+      POSTGRES_USER: demo_admin
+      POSTGRES_PASSWORD: demo_admin
+    volumes:
+      - ./demo/postgres:/docker-entrypoint-initdb.d:ro
 
 volumes:
   postgres_data:

@@ -205,5 +205,115 @@ class PedidoAlAgenteTest(unittest.TestCase):
         self.assertEqual(wb.detectar_pedido_ejecucion("ejecutá ventas", scripts), {"ambiguo": ["b", "a"]})
 
 
+class PostgresConfigTest(unittest.TestCase):
+    """Sin red: cómo se leen las conexiones y qué consultas pasan el primer filtro."""
+
+    def test_lee_las_conexiones_del_entorno_sin_exponer_la_clave(self):
+        entorno = {
+            "ALGEDI_PG_DEMO": "postgresql://lector:secreta@demo-db:5432/algedi_demo",
+            "ALGEDI_PG_Ventas-2024": "postgres://ana@db.local/ventas",
+            "ALGEDI_PG_MYSQL": "mysql://x@y/z",
+            "ALGEDI_PG_PUERTO_MALO": "postgresql://x@y:abc/z",
+            "ALGEDI_PG_VACIA": "  ",
+            "OTRA": "postgresql://x@y/z",
+        }
+        c = wb.conexiones_postgres(entorno)
+        self.assertEqual(list(c), ["demo", "ventas_2024"])
+        self.assertEqual(c["ventas_2024"]["puerto"], 5432)
+        publica = wb.conexion_publica(c["demo"])
+        self.assertEqual(publica, {"nombre": "demo", "host": "demo-db", "puerto": 5432,
+                                   "base": "algedi_demo", "usuario": "lector"})
+        self.assertNotIn("secreta", repr(publica))
+
+    def test_solo_pasan_consultas_que_empiezan_leyendo(self):
+        for sql in ("SELECT 1", "  select 1;", "WITH t AS (SELECT 1) SELECT * FROM t",
+                    "TABLE clientes", "VALUES (1)", "EXPLAIN SELECT 1", "SHOW server_version",
+                    "-- comentario\nSELECT 1", "/* nota */ (SELECT 1)"):
+            self.assertTrue(wb.validar_consulta_pg(sql))
+        for sql in ("DELETE FROM ventas", "update ventas set cantidad = 0", "DROP TABLE ventas",
+                    "INSERT INTO ventas DEFAULT VALUES", "COPY ventas TO '/tmp/x'",
+                    "SET ROLE postgres", "BEGIN", "COMMIT", "CALL limpiar()",
+                    "GRANT ALL ON ventas TO public", "", ";;", "-- nada"):
+            with self.assertRaises(wb.ConsultaInvalida, msg=sql):
+                wb.validar_consulta_pg(sql)
+        self.assertEqual(wb.validar_consulta_pg("SELECT 1 ;; "), "SELECT 1")
+
+    def test_valores_que_la_ui_puede_mostrar(self):
+        import datetime as dt
+        from decimal import Decimal
+        self.assertEqual(wb.valor_json(Decimal("12.50")), 12.5)
+        self.assertEqual(wb.valor_json(dt.date(2026, 9, 27)), "2026-09-27")
+        self.assertEqual(wb.valor_json(b"\x00\x01"), "<2 bytes>")
+        self.assertEqual(wb.valor_json([Decimal("1"), None]), [1.0, None])
+        self.assertTrue(wb.valor_json("x" * 5000).endswith("…"))
+
+
+DEMO = wb.conexiones_postgres().get("demo")
+
+
+def _correr(corrutina):
+    import asyncio
+    return asyncio.run(corrutina)
+
+
+@unittest.skipUnless(DEMO, "sin ALGEDI_PG_DEMO en el entorno")
+class PostgresDemoTest(unittest.TestCase):
+    """Contra la base de prueba (docker compose --profile demo up -d demo-db). Si no
+    está levantada, se saltea."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            _correr(wb.esquema_postgres(DEMO))
+        except wb.ConexionFallida as e:
+            raise unittest.SkipTest(f"la base demo no está levantada: {e}")
+
+    def test_esquema_con_tablas_vistas_y_filas_estimadas(self):
+        tablas = {t["tabla"]: t for t in _correr(wb.esquema_postgres(DEMO))}
+        self.assertLessEqual({"clientes", "productos", "ventas", "ventas_por_mes"}, set(tablas))
+        self.assertEqual(tablas["ventas"]["columnas"][:3], ["id", "fecha", "cliente_id"])
+        self.assertTrue(tablas["ventas_por_mes"]["vista"])
+        self.assertEqual(tablas["ventas"]["filas_aprox"], 2400)
+
+    def test_consulta_con_tipos_de_postgres_y_tope_de_filas(self):
+        r = _correr(wb.consultar_postgres(
+            DEMO, "SELECT mes, facturado FROM ventas_por_mes ORDER BY mes", limite=5))
+        self.assertEqual(r["columnas"], ["mes", "facturado"])
+        self.assertEqual(len(r["filas"]), 5)
+        self.assertTrue(r["truncado"])
+        self.assertEqual(r["filas"][0][0], "2025-01-01")
+        self.assertIsInstance(r["filas"][0][1], float)
+
+    def test_postgres_rechaza_escrituras_escondidas_en_un_select(self):
+        for sql in ("WITH borradas AS (DELETE FROM ventas RETURNING id) SELECT count(*) FROM borradas",
+                    "SELECT nextval('ventas_id_seq')",
+                    "SELECT set_config('transaction_read_only', 'off', true)"):
+            with self.assertRaises(wb.ConsultaInvalida, msg=sql):
+                _correr(wb.consultar_postgres(DEMO, sql))
+        r = _correr(wb.consultar_postgres(DEMO, "SELECT count(*) AS n FROM ventas"))
+        self.assertEqual(r["filas"], [[2400]])
+
+    def test_una_sola_sentencia_por_vez(self):
+        with self.assertRaisesRegex(wb.ConsultaInvalida, "Una sola consulta"):
+            _correr(wb.consultar_postgres(DEMO, "SELECT 1; DELETE FROM ventas"))
+
+    def test_corta_las_consultas_que_no_terminan(self):
+        with self.assertRaisesRegex(wb.ConsultaInvalida, "se cortó"):
+            _correr(wb.consultar_postgres(DEMO, "SELECT pg_sleep(5)", timeout_s=0.5))
+
+    def test_no_entra_con_un_superusuario(self):
+        admin = {**DEMO, "usuario": "demo_admin",
+                 "url": DEMO["url"].replace("algedi_lector:lector_demo", "demo_admin:demo_admin")}
+        with self.assertRaisesRegex(wb.ConsultaInvalida, "superusuario"):
+            _correr(wb.consultar_postgres(admin, "SELECT 1"))
+
+    def test_si_no_puede_conectar_lo_dice_sin_mostrar_la_clave(self):
+        mala = {**DEMO, "url": DEMO["url"].replace("lector_demo", "otra_clave")}
+        with self.assertRaises(wb.ConexionFallida) as ctx:
+            _correr(wb.esquema_postgres(mala))
+        self.assertIn("usuario o clave incorrectos", str(ctx.exception))
+        self.assertNotIn("otra_clave", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

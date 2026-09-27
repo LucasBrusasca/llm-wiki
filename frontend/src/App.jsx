@@ -11,7 +11,7 @@ import Workbench from '@/app/Workbench';
 import CommandPalette from '@/app/CommandPalette';
 import JobsPanel, { useJobs, JobsBadge } from '@/app/JobsPanel';
 import {
-  fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota, crearScript, normalizeGraph,
+  fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota, crearScript, agregarConexion, normalizeGraph,
 } from '@/lib/api';
 import { AGRUPADORES, MODOS_COLOR, indexarRelaciones } from '@/lib/nodes';
 import { construirTemas, temaKey, temaDe } from '@/lib/temas';
@@ -483,13 +483,10 @@ export default function App() {
     }
   }, [seccion, loadSections]);
 
-  // Script nuevo: archivo + nodo SCRIPT en el backend. Entra al grafo ya, queda elegido
-  // y el inspector se abre en su código; el recargo trae sus aristas.
-  const nuevoScript = useCallback(async (nombre) => {
-    const titulo = (nombre ?? window.prompt('Nombre del script:') ?? '').trim();
-    if (!titulo) return null;
-    const r = await crearScript({ nombre: titulo, seccion });
-    const nd = normalizeGraph({ nodos: [r.node], relaciones: [] }).nodes[0];
+  // Nodo recién creado en el backend (script o base): entra al grafo ya, queda elegido
+  // y el inspector se abre en él; el recargo trae sus aristas.
+  const mostrarNodoNuevo = useCallback((raw) => {
+    const nd = normalizeGraph({ nodos: [raw], relaciones: [] }).nodes[0];
     setGraph((g) => ({ ...g, nodes: [nd, ...g.nodes.filter((n) => n.id !== nd.id)] }));
     setCamino([]);
     setEgo(null);
@@ -498,7 +495,22 @@ export default function App() {
     loadSections();
     setReloadKey((k) => k + 1);
     return nd;
-  }, [seccion, loadSections]);
+  }, [loadSections]);
+
+  // Script nuevo: archivo + nodo SCRIPT; el inspector se abre en su código.
+  const nuevoScript = useCallback(async (nombre) => {
+    const titulo = (nombre ?? window.prompt('Nombre del script:') ?? '').trim();
+    if (!titulo) return null;
+    const r = await crearScript({ nombre: titulo, seccion });
+    return mostrarNodoNuevo(r.node);
+  }, [seccion, mostrarNodoNuevo]);
+
+  // Base Postgres configurada → nodo de datos de la sección; el inspector se abre en
+  // su consulta.
+  const agregarBase = useCallback(async (nombre) => {
+    const r = await agregarConexion(nombre, seccion);
+    return mostrarNodoNuevo(r.node);
+  }, [seccion, mostrarNodoNuevo]);
 
   const preguntarSobre = useCallback((node) => {
     setAgentContext(node || null);
@@ -776,6 +788,7 @@ export default function App() {
           nodes={graph.nodes}
           onAbrirNodo={(id) => { seleccionar(id); setInspectorAbierto(true); }}
           onCrearScript={(nombre) => nuevoScript(nombre).then(() => setWorkbenchOpen(false))}
+          onAgregarConexion={(nombre) => agregarBase(nombre).then(() => setWorkbenchOpen(false))}
           corridasKey={corridasKey}
           onRegistry={() => { setWorkbenchOpen(false); setScriptsOpen(true); }}
         />

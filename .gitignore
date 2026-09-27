@@ -47,3 +47,6 @@ notes_risk_check*
 architect_preview.png
 pptx_preview/
 course_extract/
+
+# Respaldos locales de la base y de las subidas: contienen datos del usuario.
+backups/

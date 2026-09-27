@@ -873,6 +873,39 @@ def procesar_sqlite(ruta: str):
     return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 
+def nodo_de_postgres(conexion: dict, esquema: list[dict], seccion: str) -> tuple[dict, str]:
+    """Una base Postgres configurada entra como nodo DATOS de la sección, descripta por
+    su esquema. El nodo guarda sólo `postgres:<nombre>`: host, usuario y clave viven en
+    el entorno del backend (ALGEDI_PG_<NOMBRE>). Devuelve el nodo y el texto a indexar."""
+    import workbench as wb
+    nombre = conexion["nombre"]
+    lineas = []
+    for t in esquema:
+        ref = t["tabla"] if t.get("esquema") in (None, "public") else f"{t['esquema']}.{t['tabla']}"
+        extra = (" — vista" if t.get("vista")
+                 else f" — ~{t['filas_aprox']} filas" if t.get("filas_aprox") else "")
+        lineas.append(f"{ref} ({', '.join(t['columnas'][:12])}){extra}")
+    n = len(esquema)
+    plano = re.sub(r"[^a-z0-9]+", "_", nombre.lower()).strip("_")[:30] or "base"
+    huella = hashlib.sha256(f"postgres:{nombre}|{seccion}".encode("utf-8")).hexdigest()[:6]
+    nodo = {
+        "id": f"datos_pg_{plano}_{huella}",
+        "label": conexion.get("base") or nombre,
+        "type": wb.TIPO_DATOS,
+        "dominio": seccion,
+        "fuente": "postgres",
+        "fuente_path": f"postgres:{nombre}",
+        "fuente_label": f"Postgres · {nombre}",
+        "desc": (f"Base Postgres «{conexion.get('base')}» (conexión {nombre}) con {n} "
+                 f"{'tabla' if n == 1 else 'tablas'}: " + "; ".join(lineas[:12])) if esquema
+                else f"Base Postgres «{conexion.get('base')}» sin tablas visibles para {conexion.get('usuario')}.",
+        "fragmento": "\n".join(lineas[:20]),
+        "conceptos": [t["tabla"] for t in esquema][:10],
+    }
+    generar_embedding(nodo)
+    return nodo, "\n".join(lineas) or nodo["desc"]
+
+
 def _extraer_texto_office(ruta: str, partes: list) -> str:
     """Extrae texto de .docx/.pptx (son ZIPs de XML) sin dependencias externas:
     toma el contenido de los tags <w:t> (Word) y <a:t> (PowerPoint)."""

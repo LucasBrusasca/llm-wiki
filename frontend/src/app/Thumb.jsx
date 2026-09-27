@@ -7,7 +7,9 @@ import { cn } from '@/lib/utils';
 const fallidas = new Set();
 
 export function tieneThumb(node) {
-  return !!node && (!!node.fuente_path || !!node.fuente_url) && !fallidas.has(node.id);
+  // Una base Postgres no es un archivo: no hay miniatura que pedir.
+  return !!node && node.fuente !== 'postgres' && (!!node.fuente_path || !!node.fuente_url)
+    && !fallidas.has(node.id);
 }
 
 /**

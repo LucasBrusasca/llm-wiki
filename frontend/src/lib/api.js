@@ -162,7 +162,24 @@ export async function fetchEsquema(nodeId) {
   return fetch(`/api/node/${encodeURIComponent(nodeId)}/esquema`).then(jsonOError);
 }
 
-/** SQL de sólo lectura sobre un nodo de datos. Una base SQLite real pide `confirm`. */
+/** Bases Postgres configuradas en el backend (sin la clave) y, si ya están en el grafo
+ *  de la sección, su nodo. */
+export async function fetchConexiones(seccion) {
+  const q = new URLSearchParams({ seccion: seccion || 'personal' });
+  const d = await fetch(`/api/workbench/conexiones?${q}`).then(jsonOError);
+  return d.conexiones || [];
+}
+
+/** Suma una base Postgres configurada como nodo de datos de la sección. */
+export async function agregarConexion(nombre, seccion) {
+  return fetch(`/api/workbench/conexiones/${encodeURIComponent(nombre)}/nodo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seccion }),
+  }).then(jsonOError);
+}
+
+/** SQL de sólo lectura sobre un nodo de datos. Una base real (SQLite o Postgres) pide `confirm`. */
 export async function consultarDatos(nodeId, { sql, confirm = false, limite = 200 }) {
   return fetch(`/api/node/${encodeURIComponent(nodeId)}/consulta`, {
     method: 'POST',

@@ -1727,10 +1727,10 @@ async def verificar_vigencia(db: AsyncSession = Depends(get_async_session)):
 
     for fuente in fuentes:
         locator = fuente.locator or ""
-        # Sólo son verificables las fuentes con archivo local. Una URL o un video no
-        # se pueden comprobar sin red, y no verificable ≠ desactualizado.
+        # Sólo son verificables las fuentes con archivo local. Una URL, un video o una
+        # base Postgres no se comprueban contra el disco, y no verificable ≠ desactualizado.
         tiene_archivo_local = bool(locator) and not locator.startswith(
-            ("http://", "https://", "node:")
+            ("http://", "https://", "node:", "postgres:")
         )
         archivo_existe, hash_en_disco = False, None
         if tiene_archivo_local:
@@ -2420,10 +2420,98 @@ def _archivo_de_datos(node: Node) -> Path:
     return ruta
 
 
+# ── Bases Postgres externas ───────────────────────────────────────────────────
+# Se declaran en el entorno (ALGEDI_PG_<NOMBRE>=postgresql://…); el nodo guarda sólo
+# `postgres:<nombre>`. Leer el esquema no pide confirmación (no toca datos); cada
+# consulta sí, y queda en Corridas. Ver las barreras de sólo lectura en workbench.py.
+
+def _es_postgres(node: Node) -> bool:
+    return node.fuente == "postgres" and (node.fuente_path or "").startswith("postgres:")
+
+
+def _conexion_de_nodo(node: Node) -> dict:
+    nombre = (node.fuente_path or "").removeprefix("postgres:")
+    conexion = wb.conexiones_postgres().get(nombre)
+    if not conexion:
+        raise HTTPException(404, f"La conexión «{nombre}» ya no está configurada en el backend "
+                                 f"({wb.PREFIJO_PG}{nombre.upper()}).")
+    return conexion
+
+
+def _error_de_conexion(e: wb.ConexionFallida) -> HTTPException:
+    detalle = str(e)
+    if e.conexion.get("host") == "demo-db":
+        detalle += " Si es la base de prueba, levantala con: docker compose --profile demo up -d demo-db"
+    return HTTPException(502, detalle)
+
+
+def _indexar_postgres(conexion: dict, esquema: list[dict], seccion: str) -> str:
+    from processor import asociar_chunks, crear_chunks, nodo_de_postgres
+    nodo, texto = nodo_de_postgres(wb.conexion_publica(conexion), esquema, seccion)
+    nodo.update(_ubicacion_por_vecinos(nodo.get("embedding"), seccion))
+    _save_node_sync(nodo, asociar_chunks(crear_chunks(texto), nodo["id"]))
+    return nodo["id"]
+
+
+@app.get("/api/workbench/conexiones")
+async def listar_conexiones(seccion: str = "personal", db: AsyncSession = Depends(get_async_session)):
+    """Bases Postgres configuradas (sin la clave) y, si ya están en el grafo de la
+    sección, su nodo."""
+    conexiones = wb.conexiones_postgres()
+    en_seccion = {}
+    if conexiones:
+        filas = (await db.execute(
+            select(Node.id, Node.fuente_path).where(Node.fuente == "postgres", Node.dominio == seccion)
+        )).all()
+        en_seccion = {(fp or "").removeprefix("postgres:"): nid for nid, fp in filas}
+    return {"conexiones": [{**wb.conexion_publica(c), "node_id": en_seccion.get(nombre)}
+                           for nombre, c in conexiones.items()]}
+
+
+@app.post("/api/workbench/conexiones/{nombre}/nodo")
+async def agregar_conexion(nombre: str, request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Suma una base Postgres configurada como nodo DATOS de la sección: lee su esquema
+    (sólo lectura) para describirla, la ubica junto a sus vecinos y le calcula aristas
+    sólo a ella. Volver a agregarla actualiza la descripción."""
+    body = await _read_body(request)
+    conexion = wb.conexiones_postgres().get(nombre.lower())
+    if not conexion:
+        raise HTTPException(404, f"No hay una conexión «{nombre}» configurada.")
+    try:
+        seccion = _nombre_seccion(body.get("seccion") or "personal")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    try:
+        esquema = await wb.esquema_postgres(conexion)
+    except wb.ConexionFallida as e:
+        raise _error_de_conexion(e)
+    except wb.ConsultaInvalida as e:
+        raise HTTPException(400, str(e))
+    try:
+        node_id = await asyncio.to_thread(_indexar_postgres, conexion, esquema, seccion)
+    except Exception as e:
+        raise HTTPException(500, f"No se pudo agregar la base: {e}")
+    await _asegurar_seccion(db, seccion)
+    await db.commit()
+    node = await _nodo_o_404(db, node_id)
+    nd = node_to_dict(node)
+    nd.pop("embedding", None)
+    return {"ok": True, "node": nd}
+
+
 @app.get("/api/node/{node_id}/esquema")
 async def node_esquema(node_id: str, db: AsyncSession = Depends(get_async_session)):
     """Tablas y columnas de un nodo de datos (CSV/Excel: la tabla `datos`)."""
     node = await _nodo_o_404(db, node_id)
+    if _es_postgres(node):
+        conexion = _conexion_de_nodo(node)
+        try:
+            tablas = await wb.esquema_postgres(conexion)
+        except wb.ConexionFallida as e:
+            raise _error_de_conexion(e)
+        except wb.ConsultaInvalida as e:
+            raise HTTPException(400, str(e))
+        return {"motor": "postgres", "tablas": tablas, "conexion": wb.conexion_publica(conexion)}
     ruta = _archivo_de_datos(node)
     if ruta.suffix.lower() in wb.EXT_SQLITE:
         return {"motor": "sqlite", "tablas": await asyncio.to_thread(wb.esquema_sqlite, ruta)}
@@ -2438,39 +2526,57 @@ async def consultar_datos(node_id: str, request: Request, db: AsyncSession = Dep
 
     - CSV/Excel: la hoja se carga como tabla `datos` en un SQLite en memoria. No toca
       el archivo ni nada más: corre directo.
-    - Base SQLite real: se abre en sólo lectura y primero PROPONE (`confirm`); la
+    - Base real (SQLite o Postgres): sólo lectura, y primero PROPONE (`confirm`); la
       consulta confirmada queda en el log de corridas."""
     body = await _read_body(request)
     node = await _nodo_o_404(db, node_id)
-    ruta = _archivo_de_datos(node)
     sql = str(body.get("sql") or "")
     limite = max(1, min(int(body.get("limite") or 200), 1000))
-    ext = ruta.suffix.lower()
     try:
-        if ext in wb.EXT_TABLA:
-            tabla = await asyncio.to_thread(_leer_tabla, ruta, body.get("hoja"), 50_000)
-            res = await asyncio.to_thread(wb.consultar_tabla, tabla["columnas"], tabla["filas"], sql, limite=limite)
-            return {**res, "motor": "tabla", "parcial": tabla["total_filas"] > len(tabla["filas"])}
-        if not body.get("confirm"):
-            return {
-                "needs_confirmation": True, "motor": "sqlite", "archivo": ruta.name, "sql": sql,
-                "plan": [f"Abrir {ruta.name} en modo sólo lectura.",
-                         "Correr la consulta: sólo SELECT; cualquier escritura, ATTACH o PRAGMA se rechaza.",
-                         "Registrarla en Corridas."],
-            }
+        if _es_postgres(node):
+            conexion = _conexion_de_nodo(node)
+            sql = wb.validar_consulta_pg(sql)
+            motor, destino = "postgres", f"{conexion['base']} ({conexion['nombre']})"
+            plan = [f"Conectarse a «{conexion['nombre']}» ({conexion['host']}:{conexion['puerto']}, "
+                    f"base {conexion['base']}) como {conexion['usuario']}.",
+                    "Abrir una transacción de sólo lectura: Postgres rechaza cualquier INSERT, "
+                    "UPDATE, DELETE o cambio de estructura.",
+                    f"Correr una sola consulta, con un máximo de 5 s y {limite} filas.",
+                    "Registrarla en Corridas."]
+
+            async def correr():
+                return await wb.consultar_postgres(conexion, sql, limite=limite)
+        else:
+            ruta = _archivo_de_datos(node)
+            if ruta.suffix.lower() in wb.EXT_TABLA:
+                tabla = await asyncio.to_thread(_leer_tabla, ruta, body.get("hoja"), 50_000)
+                res = await asyncio.to_thread(wb.consultar_tabla, tabla["columnas"], tabla["filas"], sql, limite=limite)
+                return {**res, "motor": "tabla", "parcial": tabla["total_filas"] > len(tabla["filas"])}
+            motor, destino = "sqlite", ruta.name
+            plan = [f"Abrir {ruta.name} en modo sólo lectura.",
+                    "Correr la consulta: sólo SELECT; cualquier escritura, ATTACH o PRAGMA se rechaza.",
+                    "Registrarla en Corridas."]
+
+            async def correr():
+                return await asyncio.to_thread(wb.consultar_sqlite, ruta, sql, limite=limite)
     except wb.ConsultaInvalida as e:
         raise HTTPException(400, str(e))
+    if not body.get("confirm"):
+        return {"needs_confirmation": True, "motor": motor, "archivo": destino, "sql": sql, "plan": plan}
 
     inicio = datetime.now(timezone.utc)
+    fallo_conexion = None
     try:
-        res = await asyncio.to_thread(wb.consultar_sqlite, ruta, sql, limite=limite)
+        res = await correr()
         estado, error = "completed", None
+    except wb.ConexionFallida as e:
+        res, estado, error, fallo_conexion = None, "error", str(e), e
     except wb.ConsultaInvalida as e:
         res, estado, error = None, "error", str(e)
     fin = datetime.now(timezone.utc)
     db.add(ScriptRun(
         script_id=f"consulta:{node_id}",
-        inputs={"sql": sql, "label": node.label, "archivo": ruta.name, "origen": "ui"},
+        inputs={"sql": sql, "label": node.label, "archivo": destino, "motor": motor, "origen": "ui"},
         outputs=({"stdout": f"{len(res['filas'])} filas{' (recortado)' if res['truncado'] else ''}",
                   "columnas": res["columnas"], "returncode": 0} if res else {"stderr": error}),
         status=estado,
@@ -2482,9 +2588,11 @@ async def consultar_datos(node_id: str, request: Request, db: AsyncSession = Dep
         finished_at=fin,
     ))
     await db.commit()
+    if fallo_conexion:
+        raise _error_de_conexion(fallo_conexion)
     if error:
         raise HTTPException(400, error)
-    return {**res, "motor": "sqlite"}
+    return {**res, "motor": motor}
 
 
 async def _proponer_accion(db: AsyncSession, texto: str, seccion: str, contexto_id: str | None) -> dict | None:

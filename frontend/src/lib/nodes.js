@@ -47,7 +47,7 @@ export function fuenteLabel(node) {
     pdf: 'PDF', ppt: 'PPT', pptx: 'PPT', pptm: 'PPT', word: 'Word', docx: 'Word',
     excel: 'Excel', xlsx: 'Excel', youtube: 'YouTube', url: 'Web', web: 'Web', html: 'HTML',
     script: 'Python', issue: 'Issue', architect: 'Architect', imagen: 'Imagen',
-    csv: 'CSV', sqlite: 'SQLite',
+    csv: 'CSV', sqlite: 'SQLite', postgres: 'Postgres',
   };
   return nombres[f] || (f ? f.toUpperCase() : null);
 }
@@ -60,7 +60,7 @@ const FUENTE_A_CLAVE = {
   pdf: 'pdf',
   ppt: 'ppt', pptx: 'ppt', pptm: 'ppt',
   word: 'word', docx: 'word', doc: 'word',
-  excel: 'excel', xlsx: 'excel', xls: 'excel', csv: 'excel', sqlite: 'excel',
+  excel: 'excel', xlsx: 'excel', xls: 'excel', csv: 'excel', sqlite: 'excel', postgres: 'excel',
   youtube: 'video', video: 'video', audio: 'video', mp3: 'video', wav: 'video',
   url: 'web', web: 'web', html: 'web', htm: 'web',
   imagen: 'imagen', image: 'imagen', png: 'imagen', jpg: 'imagen', jpeg: 'imagen',
