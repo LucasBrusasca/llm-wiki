@@ -159,11 +159,13 @@ class Section(Base):
 
 
 class ScriptRun(Base):
-    """Log de ejecución de scripts del registry."""
+    """Log de corridas: scripts-nodo (`script_id = node:<id>`), consultas a bases reales
+    (`consulta:<id>`) y scripts del registry legacy (su id). Cada fila es auditable por
+    sí sola: qué versión corrió, quién la propuso, con qué datos, cuándo y qué salió."""
     __tablename__ = "script_runs"
     id             = Column(Integer, primary_key=True, autoincrement=True)
     script_id      = Column(String, nullable=False)
-    script_version = Column(String)
+    script_version = Column(String)   # hash del código que corrió (scripts-nodo)
     inputs         = Column(JSON, default=dict)
     outputs        = Column(JSON, default=dict)
     status         = Column(String, default="completed")  # completed | error
@@ -171,6 +173,8 @@ class ScriptRun(Base):
     node_id        = Column(String, ForeignKey("nodes.id", ondelete="SET NULL"))
     context_nodes  = Column(JSON, default=list)
     duration_ms    = Column(Integer)
+    started_at     = Column(DateTime(timezone=True))
+    finished_at    = Column(DateTime(timezone=True))
     created_at     = Column(DateTime, server_default=func.now())
 
 

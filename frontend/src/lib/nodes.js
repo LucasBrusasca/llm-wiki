@@ -1,6 +1,6 @@
 import {
   FileText, Presentation, FileType2, Globe, CirclePlay, Table2, Image as ImageIcon,
-  CircleAlert, FolderOpen, Terminal, StickyNote, AlignLeft, Search, Boxes,
+  CircleAlert, FolderOpen, Terminal, StickyNote, AlignLeft, Search, Boxes, Database,
 } from 'lucide-react';
 
 /**
@@ -12,6 +12,7 @@ export const TIPOS = {
   NOTA:       { label: 'Nota',       plural: 'Notas',       icon: StickyNote },
   CHUNK:      { label: 'Fragmento',  plural: 'Fragmentos',  icon: AlignLeft },
   SCRIPT:     { label: 'Script',     plural: 'Scripts',     icon: Terminal },
+  DATOS:      { label: 'Datos',      plural: 'Datos',       icon: Database },
   QUERY:      { label: 'Consulta',   plural: 'Consultas',   icon: Search },
   ISSUE:      { label: 'Issue',      plural: 'Issues',      icon: CircleAlert },
   EXPEDIENTE: { label: 'Expediente', plural: 'Expedientes', icon: FolderOpen },
@@ -45,7 +46,8 @@ export function fuenteLabel(node) {
   const nombres = {
     pdf: 'PDF', ppt: 'PPT', pptx: 'PPT', pptm: 'PPT', word: 'Word', docx: 'Word',
     excel: 'Excel', xlsx: 'Excel', youtube: 'YouTube', url: 'Web', web: 'Web', html: 'HTML',
-    script: 'Script', issue: 'Issue', architect: 'Architect', imagen: 'Imagen',
+    script: 'Python', issue: 'Issue', architect: 'Architect', imagen: 'Imagen',
+    csv: 'CSV', sqlite: 'SQLite',
   };
   return nombres[f] || (f ? f.toUpperCase() : null);
 }
@@ -58,7 +60,7 @@ const FUENTE_A_CLAVE = {
   pdf: 'pdf',
   ppt: 'ppt', pptx: 'ppt', pptm: 'ppt',
   word: 'word', docx: 'word', doc: 'word',
-  excel: 'excel', xlsx: 'excel', xls: 'excel', csv: 'excel',
+  excel: 'excel', xlsx: 'excel', xls: 'excel', csv: 'excel', sqlite: 'excel',
   youtube: 'video', video: 'video', audio: 'video', mp3: 'video', wav: 'video',
   url: 'web', web: 'web', html: 'web', htm: 'web',
   imagen: 'imagen', image: 'imagen', png: 'imagen', jpg: 'imagen', jpeg: 'imagen',
@@ -101,6 +103,9 @@ export const RELACIONES = {
   RELACIONADO_CON:          'relacionado con',
   SEMANTICAMENTE_SIMILAR_A: 'similar a',
   COMPARTE_CONCEPTOS_CON:   'comparte conceptos con',
+  // Salen de leer el código de un script (workbench), no de una similitud.
+  LEE_DATOS:                'lee los datos de',
+  IMPORTA:                  'importa',
 };
 
 export function relacionLabel(label) {
@@ -113,6 +118,7 @@ export function procedenciaLabel(edge) {
   const base = edge?.base_relacion;
   if (base === 'explicita') return 'conceptos explícitos';
   if (base === 'semantica') return 'similitud semántica';
+  if (base === 'codigo') return 'análisis del código';
   return edge?.metodo ? edge.metodo.replace(/_/g, ' ') : 'calculado';
 }
 

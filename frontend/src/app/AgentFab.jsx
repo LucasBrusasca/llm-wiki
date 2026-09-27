@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { MessageSquare, X, ArrowUp, Plus, Quote, ShieldAlert, FileText, Crosshair, HelpCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Hint } from '@/components/ui/tooltip';
-import { askAgent } from '@/lib/api';
+import { askAgent, ejecutarArchivo } from '@/lib/api';
+import { PlanCorrida, SalidaCorrida } from '@/app/EjecutarArchivo';
 import { renderMarkdown } from '@/markdown';
 import { cn, pct, truncar } from '@/lib/utils';
 
@@ -75,7 +76,55 @@ function Pasaje({ c, nodesById, onSelect }) {
   );
 }
 
-function Respuesta({ m, nodesById, onSelect, onHighlight }) {
+/**
+ * Propuesta de acción del agente ("corré limpieza.py"): el agente no ejecuta nada por su
+ * cuenta. Muestra el plan y la persona confirma o cancela; lo confirmado corre en el
+ * sandbox y queda en Corridas como propuesto por el agente.
+ */
+function PropuestaAccion({ accion, onCambio, onSelect }) {
+  const [ocupado, setOcupado] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function confirmar() {
+    setOcupado(true); setError(null);
+    try {
+      const r = await ejecutarArchivo(accion.node_id, true, { version: accion.version, origen: 'agente' });
+      onCambio({ estado: 'ejecutada', resultado: r });
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  if (accion.estado === 'cancelada') {
+    return <p className="text-[11.5px] text-ink-dim">Cancelada: no se ejecutó nada.</p>;
+  }
+  if (accion.estado === 'ejecutada') {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <SalidaCorrida r={accion.resultado} />
+        <button type="button" onClick={() => onSelect(accion.node_id)} className="self-start text-[11.5px] text-accent-soft hover:underline">
+          Abrir el script →
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <PlanCorrida
+        propuesta={{ plan: accion.plan, archivo: accion.plan?.archivo }}
+        titulo={<>¿Correr <b>{accion.label}</b>?</>}
+        onConfirmar={confirmar}
+        onCancelar={() => onCambio({ estado: 'cancelada' })}
+        ocupado={ocupado}
+      />
+      {error && <p className="text-[11.5px] text-danger">{error}</p>}
+    </div>
+  );
+}
+
+function Respuesta({ m, nodesById, onSelect, onHighlight, onAccion }) {
   const html = useMemo(() => renderMarkdown(m.text), [m.text]);
   const usados = citados(m);
   const usadosSet = new Set(usados.map((c) => c.marker));
@@ -87,6 +136,7 @@ function Respuesta({ m, nodesById, onSelect, onHighlight }) {
         className="agent-md text-[12.5px] leading-relaxed text-ink/90"
         dangerouslySetInnerHTML={{ __html: html }}
       />
+      {m.accion && <PropuestaAccion accion={m.accion} onCambio={onAccion} onSelect={onSelect} />}
       {usados.length > 0 && (
         <ol className="flex flex-col gap-1">
           {usados.map((c) => <Pasaje key={c.chunk_id || c.marker} c={c} nodesById={nodesById} onSelect={onSelect} />)}
@@ -173,10 +223,13 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
       const d = await askAgent({
         system,
         messages: historial.map((m) => ({ role: m.role, content: m.text })),
+        seccion,
+        contextoId: context?.id,
       });
       setMsgs((prev) => [...prev, {
         role: 'assistant',
         text: d.reply || 'Sin respuesta.',
+        accion: d.accion ? { ...d.accion, estado: 'pendiente' } : null,
         citations: d.citations || [],
         fundamentos: d.fundamentos || [],
         evidenceMode: d.evidence_mode || (d.general_knowledge ? 'general' : null),
@@ -239,7 +292,13 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
                 <div key={i} className="self-end rounded-md bg-surface-3 px-2.5 py-1.5 text-[12.5px] text-ink">{m.text}</div>
               ) : (
                 <div key={i} className={cn(m.error && 'text-danger')}>
-                  <Respuesta m={m} nodesById={nodesById} onSelect={onSelect} onHighlight={onHighlight} />
+                  <Respuesta
+                    m={m}
+                    nodesById={nodesById}
+                    onSelect={onSelect}
+                    onHighlight={onHighlight}
+                    onAccion={(cambios) => setMsgs((prev) => prev.map((x, j) => (j === i ? { ...x, accion: { ...x.accion, ...cambios } } : x)))}
+                  />
                 </div>
               )))}
               {busy && (

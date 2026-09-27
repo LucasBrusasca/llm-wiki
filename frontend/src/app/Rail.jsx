@@ -273,15 +273,16 @@ export default function Rail({
         )}
       </nav>
 
-      {/* El registry de scripts queda como acceso secundario: lo que se ejecuta en el
-          día a día es el archivo del nodo, desde su inspector. */}
+      {/* Workbench: scripts y datos de la sección como nodos, y el log de corridas. Lo
+          que se corre en el día a día se corre desde el inspector del script. */}
       <button
         type="button"
         onClick={onScripts}
         className="flex h-8 shrink-0 items-center gap-1.5 border-t border-hair px-3 text-[11.5px] text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink-muted"
-        title="Registry de scripts (legacy): los archivos .py de tus documentos se ejecutan desde el inspector"
+        title="Workbench: scripts y datos de la sección, y el log de corridas"
       >
-        <Terminal className="size-3" /> Scripts (registry legacy)
+        <Terminal className="size-3" /> Workbench
+        <span className="text-ink-dim/70">· scripts, datos y corridas</span>
       </button>
 
     </aside>

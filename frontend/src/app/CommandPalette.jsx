@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Upload, Terminal, MessageSquare, List, Columns2, Share2, Orbit, Layers, Sparkles, PanelRight } from 'lucide-react';
+import { Upload, Terminal, MessageSquare, List, Columns2, Share2, Orbit, Layers, Sparkles, PanelRight, FileCode2 } from 'lucide-react';
 import {
   CommandDialog, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem,
 } from '@/components/ui/command';
@@ -9,7 +9,8 @@ import { normalizar } from '@/lib/utils';
 
 const ACCIONES = [
   { id: 'ingest', label: 'Ingestar documentos', icon: Upload },
-  { id: 'scripts', label: 'Abrir scripts', icon: Terminal },
+  { id: 'scripts', label: 'Workbench: scripts, datos y corridas', icon: Terminal },
+  { id: 'nuevo-script', label: 'Nuevo script', icon: FileCode2 },
   { id: 'agent', label: 'Preguntar al agente', icon: MessageSquare },
   { id: 'lista', label: 'Vista: Lista', icon: List },
   { id: 'split', label: 'Vista: Split', icon: Columns2 },

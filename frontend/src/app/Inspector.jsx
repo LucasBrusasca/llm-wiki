@@ -17,6 +17,8 @@ import Thumb, { tieneThumb } from '@/app/Thumb';
 import MediaPreview, { tipoMedia } from '@/app/MediaPreview';
 import TablaPreview from '@/app/TablaPreview';
 import EjecutarArchivo from '@/app/EjecutarArchivo';
+import CodigoScript from '@/app/CodigoScript';
+import ConsultaDatos from '@/app/ConsultaDatos';
 import NotaEditor from '@/app/NotaEditor';
 import { cn, fechaCorta, pct, normalizar } from '@/lib/utils';
 
@@ -72,6 +74,7 @@ function Relacion({ item, other, onAbrir, onConcepto, fijada, onPin }) {
     ev.similitud_coseno != null && `coseno ${Number(ev.similitud_coseno).toFixed(2)}`,
     ev.piso_usado != null && `piso ${Number(ev.piso_usado).toFixed(2)}`,
     ev.k_vecinos != null && `k=${ev.k_vecinos}`,
+    ev.linea != null && `línea ${ev.linea} del script`,
     ev.modelo_embeddings && ev.modelo_embeddings.split('-').slice(0, 2).join('-'),
   ].filter(Boolean);
 
@@ -232,21 +235,38 @@ function tienePreview(node) {
   return true;
 }
 
-const esEjecutable = (node) => (node?.fuente_path || '').toLowerCase().endsWith('.py');
-
-/** Vista previa: reproductor según el tipo, grilla si es tabla, editor si es nota. */
-function Preview({ node, onGuardar }) {
+/**
+ * Vista previa según el tipo: reproductor, editor si es nota, código + ejecutar si es
+ * un script, grilla + consulta si son datos (workbench).
+ */
+function Preview({ node, onGuardar, onScriptGuardado, onCorrida }) {
   const tipo = tipoMedia(node);
   if (tipo === 'nota') return <NotaEditor node={node} onGuardar={onGuardar} />;
-  if (tipo === 'tabla') return <div className="p-4"><TablaPreview node={node} /></div>;
+  if (tipo === 'script') {
+    return (
+      <div className="flex flex-col gap-1 pb-6">
+        <Seccion titulo="Código">
+          <CodigoScript node={node} onGuardado={onScriptGuardado} />
+        </Seccion>
+        <Seccion titulo="Ejecutar">
+          <EjecutarArchivo node={node} onCorrida={onCorrida} />
+        </Seccion>
+      </div>
+    );
+  }
+  if (tipo === 'tabla' || tipo === 'sqlite') {
+    return (
+      <div className="flex flex-col gap-1 pb-6">
+        {tipo === 'tabla' && <div className="px-4 pt-4"><TablaPreview node={node} /></div>}
+        <Seccion titulo="Consulta">
+          <ConsultaDatos node={node} />
+        </Seccion>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col gap-3 p-4">
       <MediaPreview node={node} />
-      {esEjecutable(node) && (
-        <Seccion titulo="Ejecutar">
-          <EjecutarArchivo node={node} />
-        </Seccion>
-      )}
       {tipo !== 'pdf' && tipo !== 'html' && node.desc && node.type !== 'NOTA' && (
         <p className="text-[12.5px] leading-relaxed text-ink/85">{node.desc}</p>
       )}
@@ -382,7 +402,7 @@ export default function Inspector({
   node, nodesById, relIndex, seccion, seccionCount, edgesCount,
   onSelect, onClose, onAsk, onConcepto, onVerEnGrafo, vista, pinnedEdge, onPin, onClearPin,
   onAbrir, camino = [], onVolver, temas, onTema, ego, onFijar, ancho = 420, onGuardar, onMover,
-  onCollapse,
+  onCollapse, onScriptGuardado, onCorrida,
 }) {
   // Vista previa primero; si el documento no tiene nada que previsualizar, Resumen.
   const [tab, setTab] = useState('preview');
@@ -686,7 +706,7 @@ export default function Inspector({
         </TabsContent>
 
         <TabsContent value="preview" className="min-h-0 flex-1 overflow-y-auto">
-          <Preview node={node} onGuardar={onGuardar} />
+          <Preview node={node} onGuardar={onGuardar} onScriptGuardado={onScriptGuardado} onCorrida={onCorrida} />
         </TabsContent>
       </Tabs>
     </aside>

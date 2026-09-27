@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.connection import get_async_session, get_sync_session
 from database.models import AuditLog, Chunk, Document, Edge, GraphStat, Node, ScriptRun, Section, Source
+import workbench as wb
 
 load_dotenv()
 
@@ -39,11 +40,15 @@ THUMBS.mkdir(exist_ok=True)
 # Carpeta "mágica" de Ingesta Continua: lo que se suelte acá se ingiere solo.
 VAULT = BASE / "vault"
 VAULT.mkdir(exist_ok=True)
+# Scripts creados desde el workbench: viven con los uploads (carpeta servible y propia
+# de la app), no en el vault del usuario.
+SCRIPTS_DIR = UPLOADS / "scripts"
+SCRIPTS_DIR.mkdir(exist_ok=True)
 
 MAX_UPLOAD_MB = max(1, int(os.getenv("ALGEDI_MAX_UPLOAD_MB", "50")))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 INGEST_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".csv", ".html", ".htm", ".txt", ".md",
-                     ".docx", ".pptx", ".pptm", ".py", ".ipynb"}
+                     ".docx", ".pptx", ".pptm", ".py", ".ipynb", *wb.EXT_SQLITE}
 ISSUE_EXTENSIONS = {".pdf", ".html", ".htm", ".txt", ".md"}
 
 
@@ -395,6 +400,61 @@ def _rescatar_decisiones_humanas(session, EdgeModel, filtro=None):
     return revisiones, manuales
 
 
+def _rescatar_aristas_codigo(session, EdgeModel, node_id: str | None = None) -> list[dict]:
+    """Aristas trazadas por el análisis de código. Con `node_id`, sólo las que llegan a
+    ese nodo desde OTRO script (las que salen de él se recalculan con su código nuevo)."""
+    consulta = session.query(EdgeModel).filter(EdgeModel.metodo == wb.METODO_CODIGO)
+    if node_id is not None:
+        consulta = consulta.filter((EdgeModel.source == node_id) | (EdgeModel.target == node_id))
+    aristas = [{
+        "source": a.source, "target": a.target, "score": a.score,
+        "shared_concepts": a.shared_concepts or [], "label": a.label,
+        "description": a.description, "metodo": a.metodo,
+        "base_relacion": a.base_relacion, "evidencia": a.evidencia,
+        "revision": a.revision, "is_manual": bool(a.is_manual),
+    } for a in consulta.all()]
+    return wb.aristas_codigo_ajenas(aristas, node_id) if node_id is not None else aristas
+
+
+def _vinculos_codigo_de(session, NodeModel, nodo_data: dict) -> list[dict]:
+    """Aristas de código de un script contra los nodos con archivo de su sección."""
+    try:
+        codigo = _resolve_file(nodo_data.get("fuente_path") or "").read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    dominio = nodo_data.get("dominio") or "personal"
+    filas = session.query(NodeModel.id, NodeModel.type, NodeModel.fuente_path).filter(
+        NodeModel.fuente_path.isnot(None),
+        func.coalesce(NodeModel.dominio, "personal") == dominio,
+    ).all()
+    candidatos = [{"id": f.id, "type": f.type, "archivo": Path(f.fuente_path.replace("\\", "/")).name}
+                  for f in filas]
+    return wb.vinculos_de_codigo(nodo_data["id"], wb.analizar_script(codigo), candidatos)
+
+
+def _vinculos_codigo_hacia(session, NodeModel, nodo_data: dict) -> list[dict]:
+    """Aristas desde los scripts de la sección que leen este archivo o lo importan."""
+    archivo = Path((nodo_data.get("fuente_path") or "").replace("\\", "/")).name
+    if not archivo:
+        return []
+    dominio = nodo_data.get("dominio") or "personal"
+    scripts = session.query(NodeModel.id, NodeModel.fuente_path).filter(
+        NodeModel.type == wb.TIPO_SCRIPT,
+        NodeModel.fuente_path.isnot(None),
+        NodeModel.id != nodo_data["id"],
+        func.coalesce(NodeModel.dominio, "personal") == dominio,
+    ).all()
+    destino = [{"id": nodo_data["id"], "type": nodo_data.get("type"), "archivo": archivo}]
+    aristas = []
+    for script in scripts:
+        try:
+            codigo = _resolve_file(script.fuente_path).read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        aristas += wb.vinculos_de_codigo(script.id, wb.analizar_script(codigo), destino)
+    return aristas
+
+
 def _restaurar_aristas_manuales(session, EdgeModel, manuales):
     """Reinserta las aristas trazadas por una persona después de un borrado de recálculo."""
     for arista in manuales:
@@ -695,11 +755,33 @@ def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
             session, EdgeModel,
             (EdgeModel.source == nodo_data["id"]) | (EdgeModel.target == nodo_data["id"]),
         )
+        # Lo que trazó el análisis de OTRO script hacia este nodo ("limpieza.py lee
+        # ventas.csv") depende del código de ese script, no de este documento: se repone.
+        codigo_ajenas = _rescatar_aristas_codigo(session, EdgeModel, nodo_data["id"])
         session.execute(sync_delete(EdgeModel).where(
             (EdgeModel.source == nodo_data["id"]) | (EdgeModel.target == nodo_data["id"])
         ))
         _restaurar_aristas_manuales(session, EdgeModel, manuales_previas)
+        _restaurar_aristas_manuales(session, EdgeModel, codigo_ajenas)
+        # Si el nodo es un script, sus vínculos de código se recalculan desde el código
+        # nuevo. Van antes que las de similitud: si el código dice que un par está unido,
+        # esa es la arista (no una de coseno en paralelo).
+        propias_codigo = (_vinculos_codigo_de(session, NodeModel, nodo_data)
+                          if (datos.get("type") or "") == wb.TIPO_SCRIPT else [])
+        # Y al revés: si un script de la sección ya usaba este archivo (el CSV llegó
+        # después que el script que lo lee), el vínculo aparece ahora.
+        entrantes_codigo = _vinculos_codigo_hacia(session, NodeModel, nodo_data)
+        for r in propias_codigo + entrantes_codigo:
+            session.execute(
+                pg_insert(EdgeModel).values(
+                    **r, revision=revisiones_previas.get((r["source"], r["target"])),
+                ).on_conflict_do_nothing(index_elements=["source", "target"])
+            )
+        unidos_por_codigo = {frozenset((a["source"], a["target"]))
+                             for a in codigo_ajenas + propias_codigo + entrantes_codigo}
         for r in nuevas:
+            if frozenset((r["source"], r["target"])) in unidos_por_codigo:
+                continue
             session.execute(
                 pg_insert(EdgeModel).values(
                     source=r["source"],
@@ -742,8 +824,15 @@ def _recompute_edges_background():
         # El recálculo global borra TODO el grafo de aristas y lo rehace. Las decisiones
         # humanas no se pueden rehacer, así que se rescatan antes y se reponen después.
         revisiones, manuales = _rescatar_decisiones_humanas(session, EdgeModel)
+        # Las aristas del análisis de código no salen de este cálculo (son del código de
+        # cada script): se conservan tal cual y ganan sobre una de similitud del mismo par.
+        codigo = _rescatar_aristas_codigo(session, EdgeModel)
         session.execute(sync_delete(EdgeModel))
+        _restaurar_aristas_manuales(session, EdgeModel, codigo)
+        unidos_por_codigo = {frozenset((a["source"], a["target"])) for a in codigo}
         for r in new_rels:
+            if frozenset((r["source"], r["target"])) in unidos_por_codigo:
+                continue
             session.add(EdgeModel(
                 **r, revision=revisiones.get((r["source"], r["target"]))
             ))
@@ -1943,96 +2032,496 @@ async def node_table(node_id: str, hoja: str = None, limite: int = 200, stats: b
     return datos
 
 
-def _ejecutar_archivo(ruta: Path) -> dict:
-    """Corre un .py en un proceso aparte: sin variables de entorno del servidor
-    (ni claves ni DATABASE_URL), en un directorio temporal y con límite de tiempo."""
-    import subprocess, sys, tempfile
-    entorno = {
-        "PATH": os.getenv("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "HOME": "/tmp",
-        "PYTHONIOENCODING": "utf-8",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "ALGEDI_RUN": "1",
-    }
-    with tempfile.TemporaryDirectory() as tmp:
-        inicio = time.time()
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-I", str(ruta)],
-                capture_output=True, text=True, timeout=RUN_TIMEOUT,
-                cwd=tmp, env=entorno, input="",
-            )
-            return {
-                "stdout": proc.stdout[:RUN_SALIDA_MAX],
-                "stderr": proc.stderr[:RUN_SALIDA_MAX],
-                "returncode": proc.returncode,
-                "timeout": False,
-                "duration_ms": int((time.time() - inicio) * 1000),
-            }
-        except subprocess.TimeoutExpired as e:
-            return {
-                "stdout": (e.stdout or "")[:RUN_SALIDA_MAX] if isinstance(e.stdout, str) else "",
-                "stderr": f"Cortado por tiempo ({RUN_TIMEOUT}s).",
-                "returncode": None,
-                "timeout": True,
-                "duration_ms": RUN_TIMEOUT * 1000,
-            }
+def _ejecutar_archivo(ruta: Path, datos: list[Path] = ()) -> dict:
+    """Corre un .py en el sandbox (workbench.ejecutar_en_sandbox): proceso aparte, sin
+    variables de entorno del servidor (ni claves ni DATABASE_URL), en un directorio
+    temporal, con límite de tiempo y con copias de los datos que el script lee."""
+    return wb.ejecutar_en_sandbox(ruta, datos=datos, timeout_s=RUN_TIMEOUT, salida_max=RUN_SALIDA_MAX)
 
 
-@app.post("/api/node/{node_id}/run")
-async def run_node_file(node_id: str, request: Request, db: AsyncSession = Depends(get_async_session)):
-    """Ejecuta el archivo .py de un nodo. Sin `confirm` sólo describe qué se correría."""
-    body = await _read_body(request)
+# ── Workbench: scripts y datos como nodos, corridas y proponer → confirmar ──────
+
+async def _nodo_o_404(db: AsyncSession, node_id: str) -> Node:
     node = (await db.execute(select(Node).where(Node.id == node_id))).scalar_one_or_none()
     if not node:
         raise HTTPException(404, f"Nodo {node_id} no encontrado")
+    return node
+
+
+def _archivo_ejecutable(node: Node) -> Path:
     if not node.fuente_path:
         raise HTTPException(400, "El nodo no tiene un archivo para ejecutar.")
     ruta = _resolve_file(node.fuente_path)
     if ruta.suffix.lower() not in EJECUTABLES:
         raise HTTPException(400, f"Sólo se ejecutan archivos {', '.join(EJECUTABLES)} (este es «{ruta.suffix}»).")
+    return ruta
 
+
+def _en_vault(ruta: Path) -> bool:
+    """El vault es la carpeta del usuario: escribir ahí es tocar SUS archivos."""
+    try:
+        ruta.resolve().relative_to(VAULT.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _leer_codigo(ruta: Path) -> str:
+    return ruta.read_text(encoding="utf-8", errors="replace")
+
+
+async def _datos_vinculados(db: AsyncSession, node_id: str) -> list[dict]:
+    """Nodos de datos que el script lee según su código (aristas LEE_DATOS), con archivo."""
+    filas = (await db.execute(
+        select(Node).join(Edge, Edge.target == Node.id)
+        .where(Edge.source == node_id, Edge.label == wb.REL_LEE_DATOS)
+    )).scalars().all()
+    datos = []
+    for n in filas:
+        try:
+            ruta = _resolve_file(n.fuente_path or "")
+        except HTTPException:
+            continue
+        datos.append({"node_id": n.id, "label": n.label, "archivo": ruta.name, "ruta": ruta})
+    return datos
+
+
+async def _plan_de_corrida(db: AsyncSession, node: Node) -> dict:
+    """El plan que se muestra antes de confirmar, con la versión exacta del código."""
+    ruta = _archivo_ejecutable(node)
+    datos = await _datos_vinculados(db, node.id)
+    plan = wb.plan_ejecucion(
+        ruta.name, wb.hash_codigo(_leer_codigo(ruta)),
+        [{k: d[k] for k in ("node_id", "label", "archivo")} for d in datos], RUN_TIMEOUT,
+    )
+    return {"plan": plan, "ruta": ruta, "datos": datos}
+
+
+@app.post("/api/node/{node_id}/run")
+async def run_node_file(node_id: str, request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Ejecuta el script de un nodo. Sin `confirm` sólo PROPONE: devuelve el plan (qué
+    corre, qué versión, con qué datos y con qué límites) y no ejecuta nada. Con `confirm`
+    corre la versión propuesta: si el código cambió entre la propuesta y la
+    confirmación, no corre (409) y hay que volver a mirar el plan."""
+    body = await _read_body(request)
+    node = await _nodo_o_404(db, node_id)
+    p = await _plan_de_corrida(db, node)
+    plan = p["plan"]
     if not body.get("confirm"):
         return {
             "needs_confirmation": True,
             "node_id": node_id,
-            "archivo": ruta.name,
+            "label": node.label,
+            "archivo": plan["archivo"],
+            "version": plan["version"],
             "timeout_s": RUN_TIMEOUT,
-            "message": ("Se ejecuta en un proceso aparte, sin las variables de entorno del "
-                        f"servidor y con corte a los {RUN_TIMEOUT}s. Enviá confirm=true para correrlo."),
+            "plan": plan,
+            "message": " ".join(plan["pasos"][1:]),
         }
+    confirmada = body.get("version")
+    if confirmada and confirmada != plan["version"]:
+        raise HTTPException(409, "El script cambió desde la propuesta. Revisá el plan de nuevo antes de correrlo.")
+    origen = body.get("origen") if body.get("origen") in ("ui", "agente") else "ui"
 
-    salida = await asyncio.to_thread(_ejecutar_archivo, ruta)
+    salida = await asyncio.to_thread(_ejecutar_archivo, p["ruta"], [d["ruta"] for d in p["datos"]])
     estado = "completed" if salida["returncode"] == 0 else "error"
     run = ScriptRun(
         script_id=f"node:{node_id}",
-        script_version=ruta.name,
-        inputs={"archivo": str(node.fuente_path)},
+        script_version=plan["version"],
+        inputs={"archivo": plan["archivo"], "label": node.label, "origen": origen,
+                "datos": plan["datos"], "plan": plan["pasos"]},
         outputs=salida,
         status=estado,
         error_message=(salida["stderr"] or None) if estado == "error" else None,
         node_id=node_id,
-        context_nodes=[node_id],
+        context_nodes=[node_id] + [d["node_id"] for d in plan["datos"]],
         duration_ms=salida["duration_ms"],
+        started_at=datetime.fromisoformat(salida["inicio"]),
+        finished_at=datetime.fromisoformat(salida["fin"]),
     )
     db.add(run)
     await db.commit()
     await db.refresh(run)
-    return {"ok": True, "run_id": run.id, "status": estado, "archivo": ruta.name, **salida}
+    return {"ok": True, "run_id": run.id, "status": estado, "archivo": plan["archivo"],
+            "version": plan["version"], "origen": origen, **salida}
+
+
+def _iso(dt) -> str | None:
+    return dt.isoformat() if dt else None
+
+
+def _corrida_a_dict(r: ScriptRun, node: Node | None = None, version_actual: str | None = None,
+                    completa: bool = False) -> dict:
+    """Una corrida lista para el log: qué, cuándo, cómo terminó y un resumen de la salida
+    (la salida entera va en /api/runs/{id}). `vigente`: si corrió la versión actual."""
+    out, inp = r.outputs or {}, r.inputs or {}
+    tipo = ("consulta" if r.script_id.startswith("consulta:")
+            else "script" if r.script_id.startswith("node:") else "registry")
+    recortar = (lambda t: t or "") if completa else wb.resumen_salida
+    return {
+        "id": r.id,
+        "tipo": tipo,
+        "status": r.status,
+        "node_id": r.node_id,
+        "label": (node.label if node else None) or inp.get("label") or r.script_id,
+        "node_type": node.type if node else None,
+        "seccion": node.dominio if node else None,
+        "archivo": inp.get("archivo") or (r.script_version if tipo == "registry" else None),
+        "version": r.script_version if tipo != "registry" else None,
+        "vigente": (version_actual == r.script_version) if (version_actual and tipo == "script") else None,
+        "origen": inp.get("origen"),
+        "datos": inp.get("datos") or [],
+        "sql": inp.get("sql"),
+        "plan": inp.get("plan") if completa else None,
+        "duration_ms": r.duration_ms,
+        "started_at": _iso(r.started_at),
+        "finished_at": _iso(r.finished_at),
+        "created_at": _iso(r.created_at),
+        "returncode": out.get("returncode"),
+        "timeout": bool(out.get("timeout")),
+        "generados": out.get("generados") or [],
+        "stdout": recortar(out.get("stdout") if tipo != "registry" else json.dumps(out, ensure_ascii=False)[:4000]),
+        "stderr": recortar(out.get("stderr") or r.error_message),
+    }
+
+
+def _version_de(node: Node | None) -> str | None:
+    """Hash del código actual de un script-nodo (None si no es un .py legible)."""
+    if not node or not node.fuente_path or not node.fuente_path.lower().endswith(EJECUTABLES):
+        return None
+    try:
+        return wb.hash_codigo(_leer_codigo(_resolve_file(node.fuente_path)))
+    except Exception:
+        return None
 
 
 @app.get("/api/node/{node_id}/runs")
 async def node_runs(node_id: str, limit: int = 5, db: AsyncSession = Depends(get_async_session)):
-    """Últimas ejecuciones del archivo de un nodo."""
+    """Últimas corridas de un script-nodo (o consultas de un nodo de datos), completas."""
+    node = (await db.execute(select(Node).where(Node.id == node_id))).scalar_one_or_none()
     rows = (await db.execute(
-        select(ScriptRun).where(ScriptRun.script_id == f"node:{node_id}")
+        select(ScriptRun).where(ScriptRun.script_id.in_([f"node:{node_id}", f"consulta:{node_id}"]))
         .order_by(ScriptRun.created_at.desc()).limit(max(1, min(int(limit or 5), 50)))
     )).scalars().all()
-    return {"runs": [{
-        "id": r.id, "status": r.status, "archivo": r.script_version,
-        "outputs": r.outputs, "duration_ms": r.duration_ms,
-        "created_at": r.created_at.isoformat() if r.created_at else None,
-    } for r in rows]}
+    actual = _version_de(node)
+    return {"version_actual": actual,
+            "runs": [_corrida_a_dict(r, node, actual, completa=True) for r in rows]}
+
+
+@app.get("/api/runs")
+async def list_runs(seccion: str = None, limit: int = 50, db: AsyncSession = Depends(get_async_session)):
+    """Log de corridas: scripts-nodo y consultas, las más nuevas primero. Con `seccion`,
+    sólo las de nodos de esa sección."""
+    stmt = (select(ScriptRun, Node).outerjoin(Node, ScriptRun.node_id == Node.id)
+            .where(ScriptRun.script_id.like("node:%") | ScriptRun.script_id.like("consulta:%"))
+            .order_by(ScriptRun.created_at.desc()).limit(max(1, min(int(limit or 50), 200))))
+    if seccion:
+        stmt = stmt.where(func.coalesce(Node.dominio, "personal") == seccion)
+    filas = (await db.execute(stmt)).all()
+    versiones = {}
+    corridas = []
+    for run, node in filas:
+        if node is not None and node.id not in versiones:
+            versiones[node.id] = _version_de(node)
+        corridas.append(_corrida_a_dict(run, node, versiones.get(node.id) if node else None))
+    return {"runs": corridas, "count": len(corridas)}
+
+
+@app.get("/api/runs/{run_id}")
+async def get_run(run_id: int, db: AsyncSession = Depends(get_async_session)):
+    """Una corrida con su salida completa y el plan que se confirmó."""
+    fila = (await db.execute(
+        select(ScriptRun, Node).outerjoin(Node, ScriptRun.node_id == Node.id).where(ScriptRun.id == run_id)
+    )).first()
+    if not fila:
+        raise HTTPException(404, f"Corrida {run_id} no encontrada")
+    run, node = fila
+    return _corrida_a_dict(run, node, _version_de(node), completa=True)
+
+
+@app.get("/api/node/{node_id}/codigo")
+async def node_codigo(node_id: str, db: AsyncSession = Depends(get_async_session)):
+    """Código de un script-nodo, con su versión (para guardar sin pisar cambios ajenos)."""
+    node = await _nodo_o_404(db, node_id)
+    ruta = _archivo_ejecutable(node)
+    codigo = _leer_codigo(ruta)
+    return {
+        "codigo": codigo,
+        "version": wb.hash_codigo(codigo),
+        "archivo": ruta.name,
+        "runtime": wb.RUNTIMES.get(ruta.suffix.lower()),
+        "en_vault": _en_vault(ruta),
+        "analisis": wb.analizar_script(codigo),
+    }
+
+
+async def _aristas_de(db: AsyncSession, node_id: str) -> set:
+    filas = (await db.execute(
+        select(Edge.source, Edge.target, Edge.label).where((Edge.source == node_id) | (Edge.target == node_id))
+    )).all()
+    return {(f.source, f.target, f.label) for f in filas}
+
+
+def _reindexar_script(node_id: str, ruta: Path, codigo: str):
+    """Recalcula lo que depende del código de UN script: descripción, conceptos,
+    embedding, pasajes y sus aristas (similitud y código). El resto del grafo no se toca
+    (_save_node_sync sólo reescribe las aristas de este nodo)."""
+    from processor import asociar_chunks, crear_chunks, nodo_de_script
+    with get_sync_session() as session:
+        actual = session.get(Node, node_id)
+        label, dominio, fuente_path = actual.label, actual.dominio, actual.fuente_path
+    nodo = nodo_de_script(str(ruta), codigo, label=label)
+    nodo.update({"id": node_id, "fuente_path": fuente_path, "dominio": dominio or "personal"})
+    _save_node_sync(nodo, asociar_chunks(crear_chunks(codigo), node_id))
+
+
+@app.put("/api/node/{node_id}/codigo")
+async def guardar_codigo(node_id: str, request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Guarda el código de un script-nodo y actualiza SÓLO lo que depende de él.
+
+    - `version_base`: la versión que se editó. Si el archivo cambió mientras tanto
+      (otra pestaña, el vault), no se pisa: 409.
+    - Si el archivo vive en el vault (es del usuario, fuera de la carpeta de la app),
+      primero propone y pide `confirm`: nada escribe fuera del sandbox sin confirmación.
+    - Responde qué aristas del script cambiaron (las del resto del grafo no se tocan)."""
+    body = await _read_body(request)
+    node = await _nodo_o_404(db, node_id)
+    ruta = _archivo_ejecutable(node)
+    try:
+        codigo = wb.normalizar_codigo(body.get("codigo"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    version_actual = wb.hash_codigo(_leer_codigo(ruta))
+    base = body.get("version_base")
+    if base and base != version_actual:
+        raise HTTPException(409, "El archivo cambió desde que lo abriste. Recargalo antes de guardar.")
+    if wb.hash_codigo(codigo) == version_actual:
+        return {"ok": True, "sin_cambios": True, "version": version_actual}
+    if _en_vault(ruta) and not body.get("confirm"):
+        return {
+            "needs_confirmation": True,
+            "archivo": ruta.name,
+            "message": ("Este script vive en tu carpeta vault: guardar reescribe el archivo en tu "
+                        "disco (fuera de la carpeta de Algedi). ¿Confirmás?"),
+        }
+
+    antes = await _aristas_de(db, node_id)
+    # Escritura atómica: si algo falla a mitad, el archivo anterior queda intacto.
+    temporal = ruta.with_name(f".{ruta.name}.{uuid4().hex[:6]}.tmp")
+    temporal.write_text(codigo, encoding="utf-8")
+    os.replace(temporal, ruta)
+    await asyncio.to_thread(_reindexar_script, node_id, ruta, codigo)
+    despues = await _aristas_de(db, node_id)
+
+    db.expire_all()
+    node = await _nodo_o_404(db, node_id)
+    nd = node_to_dict(node)
+    nd.pop("embedding", None)
+    return {
+        "ok": True,
+        "version": wb.hash_codigo(codigo),
+        "node": nd,
+        "cambios": {
+            "aristas_antes": len(antes),
+            "aristas_despues": len(despues),
+            "nuevas": len(despues - antes),
+            "quitadas": len(antes - despues),
+            "vinculos_codigo": sorted(
+                {f"{l} → {t if s == node_id else s}" for s, t, l in despues
+                 if l in (wb.REL_LEE_DATOS, wb.REL_IMPORTA)}
+            ),
+        },
+    }
+
+
+def _ubicacion_por_vecinos(embedding, dominio: str) -> dict:
+    """Posición 3D (y tema) de un nodo nuevo sin re-proyectar el grafo: el promedio de
+    sus vecinos más parecidos, ponderado por similitud, y el tema del más cercano si se
+    le parece de verdad. Re-correr UMAP/HDBSCAN movería a todos: sería un rebuild."""
+    if not embedding:
+        return {}
+    with get_sync_session() as session:
+        filas = session.execute(text("""
+            SELECT x3d, y3d, z3d, cluster, tema,
+                   1 - (embedding <=> CAST(:vec AS vector)) AS sim
+            FROM nodes
+            WHERE embedding IS NOT NULL AND x3d IS NOT NULL
+              AND NOT COALESCE(is_issue, false) AND NOT COALESCE(is_centroid, false)
+              AND COALESCE(dominio, 'personal') = :dominio
+            ORDER BY embedding <=> CAST(:vec AS vector)
+            LIMIT 5
+        """), {"vec": str(list(embedding)), "dominio": dominio}).all()
+    if not filas:
+        return {}
+    pesos = [max(float(f.sim or 0), 0.01) for f in filas]
+    total = sum(pesos)
+    azar = random.Random(len(filas) * 7919 + int(pesos[0] * 1000))
+    ubicacion = {
+        eje: round(sum(float(getattr(f, eje)) * w for f, w in zip(filas, pesos)) / total
+                   + azar.uniform(-0.03, 0.03), 4)
+        for eje in ("x3d", "y3d", "z3d")
+    }
+    if float(filas[0].sim or 0) >= 0.5:
+        ubicacion["cluster"] = filas[0].cluster
+        if filas[0].tema:
+            ubicacion["tema"] = filas[0].tema
+    return ubicacion
+
+
+def _indexar_script_nuevo(ruta: Path, codigo: str, nombre: str, seccion: str) -> str:
+    from processor import asociar_chunks, crear_chunks, nodo_de_script
+    nodo = nodo_de_script(str(ruta), codigo, label=nombre)
+    nodo["dominio"] = seccion
+    nodo["fuente_path"] = f"uploads/scripts/{ruta.name}"   # relativa: resuelve en Docker y fuera
+    nodo.update(_ubicacion_por_vecinos(nodo.get("embedding"), seccion))
+    _save_node_sync(nodo, asociar_chunks(crear_chunks(codigo), nodo["id"]))
+    return nodo["id"]
+
+
+@app.post("/api/workbench/scripts")
+async def crear_script(request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Crea un script-nodo: el archivo (en uploads/scripts, carpeta de la app) y su nodo
+    SCRIPT, ubicado junto a sus vecinos más parecidos y con aristas calculadas sólo para
+    él. Sin LLM: la descripción sale del código."""
+    body = await _read_body(request)
+    nombre = " ".join(str(body.get("nombre") or "").split())[:120]
+    if not nombre:
+        raise HTTPException(400, "El script necesita un nombre.")
+    try:
+        seccion = _nombre_seccion(body.get("seccion") or "personal")
+        codigo = wb.normalizar_codigo(body.get("codigo") or wb.plantilla_script(nombre))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    archivo = wb.slug_archivo(nombre)
+    ruta, n = SCRIPTS_DIR / archivo, 2
+    while ruta.exists():
+        ruta = SCRIPTS_DIR / f"{Path(archivo).stem}_{n}.py"
+        n += 1
+    ruta.write_text(codigo, encoding="utf-8")
+    try:
+        node_id = await asyncio.to_thread(_indexar_script_nuevo, ruta, codigo, nombre, seccion)
+    except Exception as e:
+        ruta.unlink(missing_ok=True)
+        raise HTTPException(500, f"No se pudo crear el script: {e}")
+    await _asegurar_seccion(db, seccion)
+    await db.commit()
+    node = await _nodo_o_404(db, node_id)
+    nd = node_to_dict(node)
+    nd.pop("embedding", None)
+    return {"ok": True, "node": nd, "archivo": ruta.name}
+
+
+def _archivo_de_datos(node: Node) -> Path:
+    if not node.fuente_path:
+        raise HTTPException(400, "El nodo no tiene archivo de datos.")
+    ruta = _resolve_file(node.fuente_path)
+    if ruta.suffix.lower() not in wb.EXT_DATOS:
+        raise HTTPException(400, f"«{ruta.suffix}» no es una fuente de datos consultable.")
+    return ruta
+
+
+@app.get("/api/node/{node_id}/esquema")
+async def node_esquema(node_id: str, db: AsyncSession = Depends(get_async_session)):
+    """Tablas y columnas de un nodo de datos (CSV/Excel: la tabla `datos`)."""
+    node = await _nodo_o_404(db, node_id)
+    ruta = _archivo_de_datos(node)
+    if ruta.suffix.lower() in wb.EXT_SQLITE:
+        return {"motor": "sqlite", "tablas": await asyncio.to_thread(wb.esquema_sqlite, ruta)}
+    tabla = await asyncio.to_thread(_leer_tabla, ruta, None, 1)
+    return {"motor": "tabla", "tablas": [{"tabla": "datos", "columnas": tabla["columnas"]}],
+            "total_filas": tabla["total_filas"]}
+
+
+@app.post("/api/node/{node_id}/consulta")
+async def consultar_datos(node_id: str, request: Request, db: AsyncSession = Depends(get_async_session)):
+    """SQL de sólo lectura sobre un nodo de datos.
+
+    - CSV/Excel: la hoja se carga como tabla `datos` en un SQLite en memoria. No toca
+      el archivo ni nada más: corre directo.
+    - Base SQLite real: se abre en sólo lectura y primero PROPONE (`confirm`); la
+      consulta confirmada queda en el log de corridas."""
+    body = await _read_body(request)
+    node = await _nodo_o_404(db, node_id)
+    ruta = _archivo_de_datos(node)
+    sql = str(body.get("sql") or "")
+    limite = max(1, min(int(body.get("limite") or 200), 1000))
+    ext = ruta.suffix.lower()
+    try:
+        if ext in wb.EXT_TABLA:
+            tabla = await asyncio.to_thread(_leer_tabla, ruta, body.get("hoja"), 50_000)
+            res = await asyncio.to_thread(wb.consultar_tabla, tabla["columnas"], tabla["filas"], sql, limite=limite)
+            return {**res, "motor": "tabla", "parcial": tabla["total_filas"] > len(tabla["filas"])}
+        if not body.get("confirm"):
+            return {
+                "needs_confirmation": True, "motor": "sqlite", "archivo": ruta.name, "sql": sql,
+                "plan": [f"Abrir {ruta.name} en modo sólo lectura.",
+                         "Correr la consulta: sólo SELECT; cualquier escritura, ATTACH o PRAGMA se rechaza.",
+                         "Registrarla en Corridas."],
+            }
+    except wb.ConsultaInvalida as e:
+        raise HTTPException(400, str(e))
+
+    inicio = datetime.now(timezone.utc)
+    try:
+        res = await asyncio.to_thread(wb.consultar_sqlite, ruta, sql, limite=limite)
+        estado, error = "completed", None
+    except wb.ConsultaInvalida as e:
+        res, estado, error = None, "error", str(e)
+    fin = datetime.now(timezone.utc)
+    db.add(ScriptRun(
+        script_id=f"consulta:{node_id}",
+        inputs={"sql": sql, "label": node.label, "archivo": ruta.name, "origen": "ui"},
+        outputs=({"stdout": f"{len(res['filas'])} filas{' (recortado)' if res['truncado'] else ''}",
+                  "columnas": res["columnas"], "returncode": 0} if res else {"stderr": error}),
+        status=estado,
+        error_message=error,
+        node_id=node_id,
+        context_nodes=[node_id],
+        duration_ms=int((fin - inicio).total_seconds() * 1000),
+        started_at=inicio,
+        finished_at=fin,
+    ))
+    await db.commit()
+    if error:
+        raise HTTPException(400, error)
+    return {**res, "motor": "sqlite"}
+
+
+async def _proponer_accion(db: AsyncSession, texto: str, seccion: str, contexto_id: str | None) -> dict | None:
+    """Si el mensaje al agente pide correr un script de la sección, el agente NO lo
+    corre: devuelve una propuesta con el plan, y la UI pide confirmar. Sin LLM."""
+    filas = (await db.execute(select(Node).where(
+        Node.type == wb.TIPO_SCRIPT,
+        Node.fuente_path.isnot(None),
+        func.coalesce(Node.dominio, "personal") == seccion,
+    ))).scalars().all()
+    if not filas:
+        return None
+    scripts = [{"id": n.id, "label": n.label, "archivo": Path(n.fuente_path.replace("\\", "/")).name}
+               for n in filas]
+    pedido = wb.detectar_pedido_ejecucion(texto, scripts, contexto_id)
+    if not pedido:
+        return None
+    por_id = {n.id: n for n in filas}
+    if pedido.get("ambiguo"):
+        nombres = ", ".join(f"«{por_id[i].label}»" for i in pedido["ambiguo"] if i in por_id)
+        return {"reply": f"Encontré varios scripts que coinciden: {nombres}. ¿Cuál querés correr?",
+                "conducta": "pedir_aclaracion", "motivo": "varios scripts coinciden", "accion": None,
+                "node_ids": pedido["ambiguo"]}
+    node = por_id[pedido["node_id"]]
+    try:
+        p = await _plan_de_corrida(db, node)
+    except HTTPException:
+        return None
+    return {
+        "reply": (f"Puedo correr «{node.label}» en el sandbox. Revisá el plan: no corre nada "
+                  "hasta que lo confirmes."),
+        "conducta": "proponer_accion",
+        "motivo": None,
+        "accion": {"tipo": "ejecutar", "node_id": node.id, "label": node.label,
+                   "version": p["plan"]["version"], "plan": p["plan"]},
+        "node_ids": [node.id],
+    }
 
 
 @app.post("/api/taxonomy")
@@ -2334,6 +2823,23 @@ async def agent_endpoint(
     system = body.get("system", "Sos el agente de Algedi.")
     messages = body.get("messages", [])
     ultima = messages[-1]["content"] if messages else ""
+
+    # Pedidos de acción ("corré limpieza.py"): el agente propone con el plan y la UI pide
+    # confirmar. Nunca ejecuta por su cuenta, y no gasta una llamada al LLM en esto.
+    seccion_agente = body.get("seccion")
+    if ultima and seccion_agente:
+        propuesta = await _proponer_accion(db, ultima, seccion_agente, body.get("contexto_id"))
+        if propuesta:
+            db.add(AuditLog(query=ultima, agent_mode="PROPUESTA_ACCION",
+                            node_ids_consulted=propuesta["node_ids"], response=propuesta["reply"][:2000]))
+            await db.commit()
+            return {
+                "conducta": propuesta["conducta"], "motivo": propuesta["motivo"],
+                "reply": propuesta["reply"], "accion": propuesta["accion"],
+                "nodos_relevantes": propuesta["node_ids"], "fundamentos": [], "citations": [],
+                "veto": False, "general_knowledge": False, "evidence_mode": None,
+                "max_sim": None, "umbral": AGENT_CITA_UMBRAL,
+            }
 
     chunks = await _chunks_relevantes_scored(ultima, max_n=8, db=db) if ultima else []
     scored = await _nodos_relevantes_scored(ultima, max_n=6, db=db) if ultima else []
@@ -3374,15 +3880,24 @@ def _extraer_documento(entrada: str) -> dict:
             return procesar_youtube(entrada)
         from processor import procesar_url_web
         return procesar_url_web(entrada)
+    if ext == ".py":
+        # Un script es un nodo SCRIPT: se describe leyendo su código (sin LLM) y se
+        # vincula con los datos que lee y los módulos que importa.
+        from processor import procesar_script
+        return procesar_script(entrada)
+    if ext in wb.EXT_SQLITE:
+        from processor import procesar_sqlite
+        return procesar_sqlite(entrada)
     if ext in (".xlsx", ".xls"):
-        return procesar_excel(entrada)
+        return _como_datos(procesar_excel(entrada))
     if ext in (".html", ".htm"):
         return procesar_html(entrada)
-    if ext in (".txt", ".md", ".py", ".ipynb", ".csv"):
-        # Código, notebooks y CSV se ingieren como texto: el contenido se indexa igual
-        # y la ejecución / la grilla los tratan aparte según la extensión.
+    if ext in (".txt", ".md", ".ipynb", ".csv"):
+        # Notebooks y CSV se ingieren como texto: el contenido se indexa igual y la
+        # grilla / la consulta los tratan aparte según la extensión.
         from processor import procesar_txt
-        return procesar_txt(entrada)
+        resultado = procesar_txt(entrada)
+        return _como_datos(resultado, fuente="csv") if ext == ".csv" else resultado
     if ext == ".docx":
         from processor import procesar_word
         return procesar_word(entrada)
@@ -3390,6 +3905,15 @@ def _extraer_documento(entrada: str) -> dict:
         from processor import procesar_pptx
         return procesar_pptx(entrada)
     return procesar_pdf(entrada)
+
+
+def _como_datos(resultado: dict, fuente: str | None = None) -> dict:
+    """Planillas y CSV son nodos DATOS: se previsualizan y se consultan en el lugar."""
+    for nodo in resultado.get("nodos", []):
+        nodo["type"] = wb.TIPO_DATOS
+        if fuente:
+            nodo["fuente"] = fuente
+    return resultado
 
 
 def _persistir_resultado(resultado: dict, seccion: str):

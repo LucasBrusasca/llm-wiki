@@ -1,4 +1,5 @@
 import anthropic
+import hashlib
 import json
 import re
 import sys
@@ -802,6 +803,73 @@ def procesar_txt(ruta: str):
     generar_embedding(nodo)
     print(f"✓ Nodo '{nodo['label']}' con {len(nodo.get('conceptos',[]))} conceptos")
     chunks = asociar_chunks(crear_chunks(texto), nodo["id"])
+    return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
+
+
+def id_por_ruta(prefijo: str, ruta: str) -> str:
+    """ID estable para un archivo: reingerir el mismo archivo actualiza el mismo nodo
+    (y sus aristas, incrementalmente) en vez de sumar un duplicado. Se toma la ruta
+    desde uploads/ o vault/, así no depende de si el backend corre en Docker o no."""
+    rel = str(ruta).replace("\\", "/")
+    for marca in ("uploads/", "vault/"):
+        i = rel.find(marca)
+        if i >= 0:
+            rel = rel[i:]
+            break
+    plano = re.sub(r"[^a-z0-9]+", "_", Path(rel).stem.lower()).strip("_")[:40] or prefijo
+    return f"{prefijo}_{plano}_{hashlib.sha256(rel.lower().encode('utf-8')).hexdigest()[:6]}"
+
+
+def nodo_de_script(ruta: str, codigo: str, *, label: str | None = None) -> dict:
+    """Nodo SCRIPT a partir del código, sin LLM: lo que el script dice de sí mismo
+    (docstring, funciones, datos que lee, librerías) es su descripción y sus conceptos."""
+    import workbench as wb
+    p = Path(ruta)
+    analisis = wb.analizar_script(codigo)
+    resumen = wb.resumir_script(p.stem, analisis, codigo)
+    nodo = {
+        "id": id_por_ruta("script", ruta),
+        "label": label or p.name,
+        "type": wb.TIPO_SCRIPT,
+        "fuente": "script",
+        "fuente_path": str(p).replace("\\", "/"),
+        "fuente_label": p.name,
+        **resumen,
+    }
+    generar_embedding(nodo)
+    return nodo
+
+
+def procesar_script(ruta: str):
+    """Un .py entra como nodo SCRIPT (no como documento resumido por el LLM)."""
+    codigo = Path(ruta).read_text(encoding="utf-8", errors="replace")
+    nodo = nodo_de_script(ruta, codigo)
+    print(f"✓ Script '{nodo['label']}' ({len(nodo.get('conceptos', []))} librerías)")
+    chunks = asociar_chunks(crear_chunks(codigo), nodo["id"])
+    return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
+
+
+def procesar_sqlite(ruta: str):
+    """Una base SQLite entra como nodo DATOS con su esquema (tablas y columnas), leído
+    en sólo lectura. Se consulta desde el inspector, con confirmación."""
+    import workbench as wb
+    p = Path(ruta)
+    esquema = wb.esquema_sqlite(p)
+    lineas = [f"{t['tabla']} ({', '.join(t['columnas'][:12])})" for t in esquema]
+    nodo = {
+        "id": id_por_ruta("datos", ruta),
+        "label": p.name,
+        "type": wb.TIPO_DATOS,
+        "fuente": "sqlite",
+        "fuente_path": str(p).replace("\\", "/"),
+        "fuente_label": p.name,
+        "desc": (f"Base SQLite con {len(esquema)} {'tabla' if len(esquema) == 1 else 'tablas'}: "
+                 + "; ".join(lineas[:12])) if esquema else "Base SQLite sin tablas.",
+        "fragmento": "\n".join(lineas[:20]),
+        "conceptos": [t["tabla"] for t in esquema][:10],
+    }
+    generar_embedding(nodo)
+    chunks = asociar_chunks(crear_chunks("\n".join(lineas)), nodo["id"])
     return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 

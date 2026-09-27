@@ -10,9 +10,13 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-sys.modules['database'] = MagicMock()
-sys.modules['database.connection'] = MagicMock()
-sys.modules['database.models'] = MagicMock()
+# job_manager se importa contra una base falsa. Los mocks se sacan de sys.modules apenas
+# termina el import: si quedaban, los tests que `unittest discover` corre después veían
+# un `database.models` falso (test_core_logic fallaba sólo al correr la suite entera).
+_MODULOS_BASE = ('database', 'database.connection', 'database.models')
+_REALES = {nombre: sys.modules.get(nombre) for nombre in _MODULOS_BASE}
+for _nombre in _MODULOS_BASE:
+    sys.modules[_nombre] = MagicMock()
 
 from job_manager import (
     JobManager,
@@ -25,6 +29,12 @@ from job_manager import (
     JOB_STATUS_RUNNING,
     _ERROR_MESSAGES,
 )
+
+for _nombre, _real in _REALES.items():
+    if _real is None:
+        sys.modules.pop(_nombre, None)
+    else:
+        sys.modules[_nombre] = _real
 
 
 class FakeIngestJob:

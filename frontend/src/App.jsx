@@ -7,9 +7,12 @@ import Inspector from '@/app/Inspector';
 import AgentFab from '@/app/AgentFab';
 import IngestDialog from '@/app/IngestDialog';
 import ScriptsSheet from '@/app/ScriptsSheet';
+import Workbench from '@/app/Workbench';
 import CommandPalette from '@/app/CommandPalette';
 import JobsPanel, { useJobs, JobsBadge } from '@/app/JobsPanel';
-import { fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota } from '@/lib/api';
+import {
+  fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota, crearScript, normalizeGraph,
+} from '@/lib/api';
 import { AGRUPADORES, MODOS_COLOR, indexarRelaciones } from '@/lib/nodes';
 import { construirTemas, temaKey, temaDe } from '@/lib/temas';
 import TaxonomiaDialog from '@/app/TaxonomiaDialog';
@@ -107,7 +110,9 @@ export default function App() {
 
   // ── Diálogos ───────────────────────────────────────────────────────
   const [ingestOpen, setIngestOpen] = useState(false);
-  const [scriptsOpen, setScriptsOpen] = useState(false);
+  const [scriptsOpen, setScriptsOpen] = useState(false);       // registry legacy
+  const [workbenchOpen, setWorkbenchOpen] = useState(false);
+  const [corridasKey, setCorridasKey] = useState(0);           // sube con cada corrida: refresca el log
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [jobsOpen, setJobsOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
@@ -478,6 +483,23 @@ export default function App() {
     }
   }, [seccion, loadSections]);
 
+  // Script nuevo: archivo + nodo SCRIPT en el backend. Entra al grafo ya, queda elegido
+  // y el inspector se abre en su código; el recargo trae sus aristas.
+  const nuevoScript = useCallback(async (nombre) => {
+    const titulo = (nombre ?? window.prompt('Nombre del script:') ?? '').trim();
+    if (!titulo) return null;
+    const r = await crearScript({ nombre: titulo, seccion });
+    const nd = normalizeGraph({ nodos: [r.node], relaciones: [] }).nodes[0];
+    setGraph((g) => ({ ...g, nodes: [nd, ...g.nodes.filter((n) => n.id !== nd.id)] }));
+    setCamino([]);
+    setEgo(null);
+    setSelectedId(nd.id);
+    setInspectorAbierto(true);
+    loadSections();
+    setReloadKey((k) => k + 1);
+    return nd;
+  }, [seccion, loadSections]);
+
   const preguntarSobre = useCallback((node) => {
     setAgentContext(node || null);
     setAgentOpen(true);
@@ -592,7 +614,7 @@ export default function App() {
             onToggleTema={toggleIn(setTemasSel)}
             onNombrarTemas={() => setTaxonomiaOpen(true)}
             onIngest={() => setIngestOpen(true)}
-            onScripts={() => setScriptsOpen(true)}
+            onScripts={() => setWorkbenchOpen(true)}
             onNuevaNota={nuevaNota}
             onSeccionesCambiadas={(activa) => { cambiarSeccion(activa); recargar(); }}
             onSeccionEliminada={olvidarSeccion}
@@ -702,6 +724,8 @@ export default function App() {
               temas={temas}
               onTema={(k) => toggleIn(setTemasSel)(k)}
               onCollapse={() => setInspectorAbierto(false)}
+              onScriptGuardado={recargar}
+              onCorrida={() => setCorridasKey((k) => k + 1)}
             />
             </>
           ) : (
@@ -745,6 +769,16 @@ export default function App() {
           onRefresh={refreshJobs}
           onSelectNode={(id) => { seleccionar(id); setJobsOpen(false); }}
         />
+        <Workbench
+          open={workbenchOpen}
+          onOpenChange={setWorkbenchOpen}
+          seccion={seccion}
+          nodes={graph.nodes}
+          onAbrirNodo={(id) => { seleccionar(id); setInspectorAbierto(true); }}
+          onCrearScript={(nombre) => nuevoScript(nombre).then(() => setWorkbenchOpen(false))}
+          corridasKey={corridasKey}
+          onRegistry={() => { setWorkbenchOpen(false); setScriptsOpen(true); }}
+        />
         <ScriptsSheet
           open={scriptsOpen}
           onOpenChange={setScriptsOpen}
@@ -769,7 +803,8 @@ export default function App() {
           onAction={(a) => {
             setPaletteOpen(false);
             if (a === 'ingest') setIngestOpen(true);
-            if (a === 'scripts') setScriptsOpen(true);
+            if (a === 'scripts') setWorkbenchOpen(true);
+            if (a === 'nuevo-script') nuevoScript().catch((e) => window.alert(`No se pudo crear el script: ${e.message}`));
             if (a === 'agent') preguntarSobre(null);
             if (a === 'inspector') setInspectorAbierto((v) => !v);
             if (a === 'auto-inspector') setAutoAbrir((v) => !v);

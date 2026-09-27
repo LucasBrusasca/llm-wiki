@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { ingestFile, ingestUrls, ingestStatus, createJob, createUrlJob } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
-const ACEPTA = '.pdf,.docx,.pptx,.pptm,.xlsx,.xls,.txt,.md,.html,.htm,.csv,.py,.ipynb';
+const ACEPTA = '.pdf,.docx,.pptx,.pptm,.xlsx,.xls,.txt,.md,.html,.htm,.csv,.py,.ipynb,.sqlite,.sqlite3,.db';
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Espera a que la ingesta en curso termine. Devuelve el último estado. */

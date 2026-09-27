@@ -100,18 +100,75 @@ export async function fetchTabla(nodeId, { hoja, limite = 200, stats = false } =
   return fetch(`/api/node/${encodeURIComponent(nodeId)}/table?${q}`).then(jsonOError);
 }
 
-/** Ejecuta el archivo del nodo. Sin confirmar, sólo describe qué se correría. */
-export async function ejecutarArchivo(nodeId, confirm = false) {
+/**
+ * Ejecuta el script del nodo. Sin `confirm` sólo PROPONE: devuelve el plan (qué corre,
+ * qué versión, con qué datos y límites). Con `confirm` corre la `version` propuesta; si
+ * el código cambió desde la propuesta, el backend responde 409 y no corre nada.
+ */
+export async function ejecutarArchivo(nodeId, confirm = false, { version, origen = 'ui' } = {}) {
   return fetch(`/api/node/${encodeURIComponent(nodeId)}/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirm }),
+    body: JSON.stringify({ confirm, version, origen }),
   }).then(jsonOError);
 }
 
+/** Corridas de un nodo (completas) y la versión actual de su código. */
 export async function fetchEjecuciones(nodeId, limit = 5) {
   const d = await fetch(`/api/node/${encodeURIComponent(nodeId)}/runs?limit=${limit}`).then(jsonOError);
+  return { versionActual: d.version_actual || null, runs: d.runs || [] };
+}
+
+// ── Workbench: scripts y datos como nodos ─────────────────────────────
+/** Log de corridas (scripts y consultas) de una sección, las más nuevas primero. */
+export async function fetchCorridas(seccion, limit = 50) {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (seccion) q.set('seccion', seccion);
+  const d = await fetch(`/api/runs?${q}`).then(jsonOError);
   return d.runs || [];
+}
+
+/** Una corrida con su salida completa y el plan que se confirmó. */
+export async function fetchCorrida(id) {
+  return fetch(`/api/runs/${encodeURIComponent(id)}`).then(jsonOError);
+}
+
+/** Crea un script-nodo (archivo + nodo SCRIPT) en la sección. */
+export async function crearScript({ nombre, seccion, codigo }) {
+  return fetch('/api/workbench/scripts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nombre, seccion, codigo }),
+  }).then(jsonOError);
+}
+
+export async function fetchCodigo(nodeId) {
+  return fetch(`/api/node/${encodeURIComponent(nodeId)}/codigo`).then(jsonOError);
+}
+
+/**
+ * Guarda el código. `versionBase` evita pisar un cambio ajeno (409). Si el archivo vive
+ * en el vault del usuario, la primera llamada devuelve `needs_confirmation`.
+ */
+export async function guardarCodigo(nodeId, { codigo, versionBase, confirm = false }) {
+  return fetch(`/api/node/${encodeURIComponent(nodeId)}/codigo`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ codigo, version_base: versionBase, confirm }),
+  }).then(jsonOError);
+}
+
+export async function fetchEsquema(nodeId) {
+  return fetch(`/api/node/${encodeURIComponent(nodeId)}/esquema`).then(jsonOError);
+}
+
+/** SQL de sólo lectura sobre un nodo de datos. Una base SQLite real pide `confirm`. */
+export async function consultarDatos(nodeId, { sql, confirm = false, limite = 200 }) {
+  return fetch(`/api/node/${encodeURIComponent(nodeId)}/consulta`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql, confirm, limite }),
+  }).then(jsonOError);
 }
 
 // ── Edición manual ────────────────────────────────────────────────────
@@ -170,11 +227,16 @@ export async function searchSemantic(q, max = 24) {
   return Array.isArray(d.ids) ? d.ids : [];
 }
 
-export async function askAgent({ system, messages }) {
+/**
+ * Pregunta al agente. Con `seccion` (y el documento que se está mirando) el agente
+ * puede reconocer un pedido de acción ("corré limpieza.py") y devolver una propuesta
+ * con plan en `accion`, que la UI muestra para confirmar: el agente nunca ejecuta solo.
+ */
+export async function askAgent({ system, messages, seccion, contextoId }) {
   return fetch('/api/agent', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ system, messages }),
+    body: JSON.stringify({ system, messages, seccion, contexto_id: contextoId }),
   }).then(jsonOrThrow);
 }
 

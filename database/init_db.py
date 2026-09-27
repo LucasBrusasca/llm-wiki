@@ -107,6 +107,16 @@ async def init_db():
             await conn.execute(text(
                 f"ALTER TABLE sources ADD COLUMN IF NOT EXISTS {_columna}"
             ))
+        # Corridas del workbench: horas de inicio y fin explícitas (antes sólo había
+        # `created_at`, que es cuándo se guardó la fila, no cuándo corrió).
+        for _columna in ("started_at TIMESTAMPTZ", "finished_at TIMESTAMPTZ"):
+            await conn.execute(text(
+                f"ALTER TABLE script_runs ADD COLUMN IF NOT EXISTS {_columna}"
+            ))
+        await conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_script_runs_node
+            ON script_runs (node_id, created_at DESC)
+        """))
         await conn.execute(text("""
             CREATE INDEX IF NOT EXISTS nodes_embedding_hnsw
             ON nodes USING hnsw (embedding vector_cosine_ops)

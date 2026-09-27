@@ -10,6 +10,10 @@ export function tipoMedia(node) {
   const ext = (node.fuente_path || '').split('.').pop()?.toLowerCase() || '';
   const f = (node.fuente || '').toLowerCase();
   if (node.type === 'NOTA') return 'nota';
+  // Workbench: el script se ve y se edita como código; una base SQLite se consulta.
+  // (Los SCRIPT del registry legacy no tienen archivo: caen al Resumen.)
+  if (ext === 'py') return 'script';
+  if (['sqlite', 'sqlite3', 'db'].includes(ext)) return 'sqlite';
   if (ytId(node.fuente_url)) return 'youtube';
   if (['mp4', 'webm', 'mov', 'm4v'].includes(ext)) return 'video';
   if (['mp3', 'wav', 'ogg', 'm4a', 'flac'].includes(ext) || f === 'audio') return 'audio';
