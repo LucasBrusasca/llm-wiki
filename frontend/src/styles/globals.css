@@ -81,16 +81,10 @@
   --cl-5: #60a5fa; --cl-6: #fb923c; --cl-7: #2dd4bf; --cl-8: #e879f9; --cl-9: #a3e635;
   --cl-noise: #475069;
 
-  /* Grafos y secciones */
-  --edge: #3a4466;
-  /* El 3D pide una arista más clara: sobre fondo negro y con niebla, el tono del 2D
-     (que va sobre superficie clara) se apagaba tanto que las líneas sólo aparecían al
-     acercarse. Mismo rol, otra luz. */
-  --edge-3d: #6b79b8;
-  /* El grafo 2D dibuja sobre el lienzo oscuro: con el tono base las líneas quedaban
-     por debajo del umbral de "se ve algo ahí". */
-  --edge-grafo: #5f6da8;
-  --grid-dot: #141a2d;
+  /* Grafos y secciones. Una sola arista para el 2D y el 3D (mismo tono, la opacidad
+     la decide lib/aristas): sobre el fondo oscuro de los grafos, un tono más bajo se
+     perdía y las líneas sólo aparecían al acercarse. */
+  --arista: #6b79b8;
   --sec-0: #22d3ee; --sec-1: #a78bfa; --sec-2: #fbbf24; --sec-3: #4ade80; --sec-4: #f472b6; --sec-5: #60a5fa;
 }
 
@@ -164,6 +158,13 @@ body {
 @utility text-cat { color: var(--c); }
 @utility glow-sel { box-shadow: var(--glow); }
 
+/* Fondo de los grafos (2D y 3D): el mismo espacio oscuro con un resplandor de acento
+   al centro. Sin grilla: los puntos y las aristas son lo único que se lee. */
+@utility fondo-grafo {
+  background: radial-gradient(ellipse 70% 60% at 50% 45%,
+    color-mix(in oklab, var(--color-accent) 9%, #0a0f1f) 0%, var(--color-canvas) 72%);
+}
+
 /* Markdown de respuestas del agente (sanitizado con DOMPurify en markdown.js) */
 .agent-md > * + * { margin-top: 0.6em; }
 .agent-md h1, .agent-md h2, .agent-md h3, .agent-md h4 {
@@ -187,5 +188,49 @@ body {
 .algedi-flow .react-flow__node { cursor: pointer; }
 .algedi-flow .react-flow__pane { cursor: default; }
 .algedi-flow .react-flow__pane.dragging { cursor: grabbing; }
-/* Aristas de 1px en pantalla a cualquier zoom: nunca gruesas, nunca invisibles. */
-.algedi-flow .react-flow__edge-path { vector-effect: non-scaling-stroke; }
+/* Aristas finas en pantalla a cualquier zoom; el hover las enciende sin saltos. */
+.algedi-flow .react-flow__edge-path {
+  vector-effect: non-scaling-stroke;
+  transition: stroke-opacity 120ms, stroke 120ms;
+}
+
+/* Grafo 2D con el lenguaje del 3D. React Flow escala todo con el zoom; GraphCanvas
+   fija en el contenedor --inv (1/zoom) y --escala (px por unidad, como el 3D) en
+   cada movimiento, y punto, chip y tarjeta se contra-escalan por CSS: tamaño fijo en
+   pantalla sin re-renderizar los nodos. */
+.algedi-flow .nodo-2d { position: relative; width: 22px; height: 22px; }
+.algedi-flow .centro-2d {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%) scale(var(--inv, 1));
+}
+.algedi-flow .derecha-2d {
+  position: absolute; left: 50%; top: 50%;
+  transform-origin: 0 50%;
+  transform: translate(0, -50%) scale(var(--inv, 1));
+}
+/* El punto: mismo radio que la esfera del 3D (r × escala, con tope; lib/detalle). */
+.algedi-flow .punto-2d {
+  --rpx: clamp(2.2px, calc(var(--r, 4) * var(--escala, 1) * 1px), var(--rmax, 9px));
+  display: block;
+  width: calc(var(--rpx) * 2);
+  height: calc(var(--rpx) * 2);
+  border-radius: 9999px;
+  background: var(--c);
+  box-shadow: 0 0 calc(var(--rpx) * 2.4) calc(var(--rpx) * 0.15) color-mix(in oklab, var(--c) 42%, transparent);
+  transition: opacity 120ms;
+}
+.algedi-flow .punto-2d[data-estado='tenue'] { opacity: 0.28; box-shadow: none; }
+.algedi-flow .punto-2d[data-estado='sel'],
+.algedi-flow .punto-2d[data-estado='pin'] {
+  box-shadow: 0 0 0 2px var(--color-canvas), 0 0 0 3.5px var(--color-accent),
+    0 0 calc(var(--rpx) * 3.5) color-mix(in oklab, var(--color-accent) 60%, transparent);
+}
+.algedi-flow .punto-2d[data-estado='origen'] {
+  box-shadow: 0 0 0 2px var(--color-canvas), 0 0 0 3.5px var(--color-accent-soft),
+    0 0 calc(var(--rpx) * 3) color-mix(in oklab, var(--color-accent) 45%, transparent);
+}
+.algedi-flow .punto-2d[data-marcado] { outline: 1.5px solid var(--color-accent-soft); outline-offset: 2px; }
+.algedi-flow .punto-2d[data-hover] {
+  opacity: 1;
+  box-shadow: 0 0 0 1.5px var(--color-ink), 0 0 calc(var(--rpx) * 3) color-mix(in oklab, var(--c) 65%, transparent);
+}

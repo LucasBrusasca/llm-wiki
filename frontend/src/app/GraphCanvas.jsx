@@ -1,27 +1,49 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactFlow, {
-  Background, Handle, Position, ReactFlowProvider, useReactFlow, useStore,
+  Handle, Position, ReactFlowProvider, useReactFlow, useStoreApi,
 } from 'reactflow';
 import 'reactflow/dist/base.css';
 import { Plus, Minus, Maximize, Waypoints, Pin, PinOff, Link2, X } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
 import ColorPanel, { calcularLeyenda } from '@/app/ColorPanel';
 import NodoTooltip from '@/app/NodoTooltip';
-import Thumb from '@/app/Thumb';
-import { cn, truncar } from '@/lib/utils';
+import { Tarjeta, Chip } from '@/app/PiezasNodo';
+import {
+  TARJETA, estadoNodo, vecinosDe, claseDetalle, calcularHitos, colocarPiezas, radioPantalla, medirHud,
+} from '@/lib/detalle';
+import { podar, aristasVisibles, estiloArista } from '@/lib/aristas';
+import { cn } from '@/lib/utils';
 
-const W = 172;          // ancho de la tarjeta de nodo
-const H = 30;           // alto (entra una miniatura de 20×24)
-const W_SEL = 250;      // el elegido muestra su título completo (hasta 3 líneas)
-const ZOOM_LEJOS = 0.55; // por debajo, las tarjetas pasan a punto (vista de conjunto)
-const K_FUERTES = 2;    // aristas por nodo en el modo "fuertes"
+/**
+ * Grafo 2D: el mismo universo que el 3D, en el plano.
+ *
+ * - Cada nodo es un punto con brillo del color del modo (Tema/Tipo/Origen), de tamaño
+ *   fijo en pantalla. De cerca, el nodo ES su tarjeta (miniatura + título); a media
+ *   distancia lleva un chip con el título. Qué nodo gana qué, los topes y el
+ *   anti-choque son los del 3D (lib/detalle); las piezas son las mismas (PiezasNodo).
+ * - Aristas con el mismo criterio y peso que el 3D (lib/aristas): sin selección sólo
+ *   las fuertes; el elegido enciende las suyas y apaga el resto; el hover hace lo
+ *   mismo mientras dura.
+ * - Las piezas viven dentro del nodo de React Flow: hover, clic, arrastre y rueda
+ *   funcionan igual encima de una tarjeta.
+ */
+
+const CAJA = 22;   // caja del nodo en unidades del flujo: el punto va centrado; chip y tarjeta sobresalen
+// El layout 2D es ~7 veces más grande que la escena 3D (la vista de conjunto queda en
+// zoom ~0.1 contra ~0.65 px por unidad en el 3D): con esta equivalencia, la misma
+// tabla de detalle decide igual en las dos vistas.
+const ZOOM_POR_UNIDAD = 0.14;
+const escalaDe = (zoom) => zoom / ZOOM_POR_UNIDAD;
+const SEP_MIN = 110;  // distancia mínima entre centros después del layout (unidades del flujo)
+// Orden de apilado: aristas (0–2) < puntos < chips < tarjetas < lo que tiene el mouse.
+const Z_PUNTO = { tenue: 3, normal: 4, vecino: 5, origen: 6, pin: 7, sel: 8 };
 
 /**
  * Layout de fuerzas determinístico (Fruchterman–Reingold simple).
- * Se siembra con las coordenadas del backend (proyección de embeddings) para que
- * los temas arranquen cerca, y las aristas fuertes actúan como resortes. Así el
- * grafo queda compacto y agrupado a la escala de las tarjetas, sin outliers que
- * obliguen a alejar la cámara. Después se separan solapamientos rectangulares.
+ * Se siembra con la proyección del backend (la misma que ubica el 3D, con la y hacia
+ * arriba como en su vista de frente) para que los temas arranquen cerca, y las
+ * aristas fuertes actúan como resortes. Después se separan los puntos encimados.
+ * Devuelve el CENTRO de cada nodo.
  */
 function layout(nodes, edges) {
   const n = nodes.length;
@@ -31,7 +53,7 @@ function layout(nodes, edges) {
   const R = Math.sqrt(n) * k * 0.6;
   // Semilla: coordenadas del backend normalizadas a un disco de radio R.
   const sx = nodes.map((nd) => nd.x3d ?? 0);
-  const sy = nodes.map((nd) => nd.y3d ?? 0);
+  const sy = nodes.map((nd) => -(nd.y3d ?? 0));
   const ext = Math.max(...sx.map(Math.abs), ...sy.map(Math.abs), 1e-6);
   const x = sx.map((v) => (v / ext) * R);
   const y = sy.map((v) => (v / ext) * R);
@@ -52,7 +74,7 @@ function layout(nodes, edges) {
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         let ddx = x[i] - x[j];
-        let ddy = (y[i] - y[j]) * 2.2;              // tarjetas anchas: repelen más en vertical
+        let ddy = y[i] - y[j];
         let d2 = ddx * ddx + ddy * ddy;
         if (d2 < 1) { ddx = (i - j) * 0.1; ddy = 0.1; d2 = 1; }
         const f = (k * k) / d2;
@@ -92,126 +114,76 @@ function layout(nodes, edges) {
     }
   }
 
-  // Separar solapamientos de las tarjetas (rectángulos W×H con margen).
-  const mx = W + 16;
-  const my = H + 14;
+  // Separar puntos encimados (los nodos son puntos: tarjetas y chips los reparte el
+  // anti-choque en pantalla, no el layout).
   for (let it = 0; it < 40; it++) {
     let movio = false;
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
-        const ddx = x[j] - x[i];
-        const ddy = y[j] - y[i];
-        const ox = mx - Math.abs(ddx);
-        const oy = my - Math.abs(ddy);
-        if (ox > 0 && oy > 0) {
-          movio = true;
-          if (ox / mx < oy / my) {
-            const s = ((ddx >= 0 ? 1 : -1) * ox) / 2;
-            x[i] -= s; x[j] += s;
-          } else {
-            const s = ((ddy >= 0 ? 1 : -1) * oy) / 2;
-            y[i] -= s; y[j] += s;
-          }
-        }
+        let ddx = x[j] - x[i];
+        let ddy = y[j] - y[i];
+        let d = Math.hypot(ddx, ddy);
+        if (d >= SEP_MIN) continue;
+        movio = true;
+        if (d < 1e-6) { ddx = ((i * 7 + j) % 3) - 1 || 0.5; ddy = 0.3; d = Math.hypot(ddx, ddy); }
+        const s = (SEP_MIN - d) / 2 / d;
+        x[i] -= ddx * s; y[i] -= ddy * s;
+        x[j] += ddx * s; y[j] += ddy * s;
       }
     }
     if (!movio) break;
   }
-  return new Map(nodes.map((nd, i) => [nd.id, { x: x[i] - W / 2, y: y[i] - H / 2 }]));
+  return new Map(nodes.map((nd, i) => [nd.id, { x: x[i], y: y[i] }]));
 }
 
-/** Top-K por nodo (unión): el grafo queda conectado sin telaraña. */
-function podar(edges, k) {
-  const por = new Map();
-  for (const e of edges) {
-    for (const id of [e.source, e.target]) {
-      if (!por.has(id)) por.set(id, []);
-      por.get(id).push(e);
-    }
-  }
-  const keep = new Set();
-  for (const arr of por.values()) {
-    arr.sort((a, b) => (b.score || 0) - (a.score || 0));
-    arr.slice(0, k).forEach((e) => keep.add(e));
-  }
-  return edges.filter((e) => keep.has(e));
-}
-
-// Zoom redondeado: los nodos sólo se re-renderizan cuando cambia de a 5%.
-const zoomSel = (s) => Math.round(s.transform[2] * 20) / 20;
 const centro = { left: '50%', top: '50%', opacity: 0, pointerEvents: 'none', width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
 
+/** Radio base del punto (antes de la escala), igual que la esfera del 3D. */
+const radioBase = (grado, fuerte) => 3 + Math.sqrt(grado) * 1.1 + (fuerte ? 2 : 0);
+
 const DocNode = memo(({ data }) => {
-  const zoom = useStore(zoomSel) || 1;
-  const lejos = zoom < ZOOM_LEJOS;
-  const { estado, marcado, color } = data; // 'sel' | 'pin' | 'origen' | 'vecino' | 'tenue' | 'normal'
+  const { node, estado, color, r, marcado, pieza, hover } = data;
   const fuerte = estado === 'sel' || estado === 'pin';
-  const origen = estado === 'origen';
-
-  if (lejos) {
-    // Vista de conjunto: punto de tamaño constante en pantalla, del color de su
-    // tema/tipo/origen. Sin miniaturas acá (serían cientos de imágenes diminutas).
-    const inv = 1 / zoom;
-    const { etiqueta } = data;
-    const d = (fuerte ? 10 : 7) * inv;
-    return (
-      <div className="relative" style={{ width: W, height: H, '--c': color }}>
-        <Handle type="target" position={Position.Top} style={centro} isConnectable={false} />
-        <Handle type="source" position={Position.Bottom} style={centro} isConnectable={false} />
-        <span
-          className={cn('absolute left-1/2 top-1/2 block rounded-full dot-cat transition-opacity', estado === 'tenue' && 'opacity-30')}
-          style={{
-            width: d,
-            height: d,
-            transform: 'translate(-50%,-50%)',
-            boxShadow: fuerte || origen
-              ? `0 0 0 ${2 * inv}px var(--color-canvas), 0 0 0 ${3.5 * inv}px ${origen ? 'var(--color-accent-soft)' : 'var(--color-accent)'}`
-              : marcado ? `0 0 0 ${2 * inv}px var(--color-accent-soft)` : undefined,
-          }}
-        />
-        {etiqueta && (
-          <span
-            className={cn(
-              'absolute left-1/2 top-1/2 whitespace-nowrap rounded-xs border px-1 text-[11px]',
-              fuerte ? 'border-accent/60 bg-surface-3 text-ink' : 'border-hair-strong bg-surface/95 text-ink-muted',
-            )}
-            style={{ transform: `translate(${8 * inv}px,-50%) scale(${inv})`, transformOrigin: 'left center' }}
-          >
-            {truncar(data.node.label, estado === 'sel' ? 90 : 36)}
-          </span>
-        )}
-      </div>
-    );
-  }
-
-  // Cerca: tarjeta con miniatura real del documento (o ícono teñido si no hay).
   return (
-    <div style={{ width: estado === 'sel' ? W_SEL : W, '--c': color }}>
+    <div className="nodo-2d" style={{ '--c': color }}>
       <Handle type="target" position={Position.Top} style={centro} isConnectable={false} />
       <Handle type="source" position={Position.Bottom} style={centro} isConnectable={false} />
-      <div
-        className={cn(
-          'flex items-center gap-2 overflow-hidden rounded-sm border bg-surface pl-1 pr-2 text-[11.5px] bar-cat transition-[opacity,border-color,background-color,box-shadow]',
-          fuerte && 'border-accent bg-surface-3 text-ink glow-sel',
-          origen && 'border-accent-soft/60 border-dashed text-ink',
-          estado === 'vecino' && 'border-hair-strong text-ink',
-          estado === 'normal' && 'border-hair text-ink-muted hover:border-hair-strong hover:text-ink',
-          estado === 'tenue' && 'border-hair text-ink-dim opacity-30',
-        )}
-        style={estado === 'sel' ? { minHeight: H, paddingTop: 3, paddingBottom: 3 } : { height: H }}
-      >
-        <Thumb node={data.node} color={color} className="ml-[3px] h-[24px] w-[20px]" iconClass="size-3" />
-        {estado === 'sel'
-          ? <span className="line-clamp-3 leading-snug">{data.node.label}</span>
-          : <span className="truncate">{truncar(data.node.label, 30)}</span>}
-        {marcado && <span className="ml-auto size-1.5 shrink-0 rounded-full bg-accent" />}
-      </div>
+      {pieza?.modo !== 'tarjeta' && (
+        <span className="centro-2d">
+          <span
+            className="punto-2d"
+            data-estado={estado}
+            data-marcado={marcado || undefined}
+            data-hover={hover || undefined}
+            style={{ '--r': r, '--rmax': fuerte ? '13px' : undefined }}
+          />
+        </span>
+      )}
+      {pieza?.modo === 'chip' && (
+        <div className="derecha-2d" style={{ '--sep': `${pieza.sep}px` }}>
+          <Chip node={node} estado={estado} medida={pieza.dim} hover={hover} marcado={marcado} />
+        </div>
+      )}
+      {pieza?.modo === 'tarjeta' && (
+        <div className="centro-2d">
+          <Tarjeta node={node} estado={estado} color={color} grande={pieza.dim === TARJETA.grande} hover={hover} marcado={marcado} />
+        </div>
+      )}
     </div>
   );
 });
 DocNode.displayName = 'DocNode';
 
 const nodeTypes = { doc: DocNode };
+
+/** Mismo contenido que el anterior (para no re-renderizar nodos que no cambiaron). */
+function mismoDato(a, b) {
+  return !!a && a.node === b.node && a.estado === b.estado && a.color === b.color && a.r === b.r
+    && a.marcado === b.marcado && a.hover === b.hover
+    && (a.pieza?.modo ?? null) === (b.pieza?.modo ?? null)
+    && (a.pieza?.sep ?? null) === (b.pieza?.sep ?? null)
+    && (a.pieza?.dim ?? null) === (b.pieza?.dim ?? null);
+}
 
 function BotonCanvas({ texto, onClick, children, activo }) {
   return (
@@ -231,18 +203,25 @@ function BotonCanvas({ texto, onClick, children, activo }) {
   );
 }
 
-const esPin = (e, pin) => !!pin && e.source === pin.source && e.target === pin.target && e.label === pin.label;
-
 function Lienzo({
   nodes, edges, visibleIds, selectedId, highlightIds, onSelect, relIndex,
   pinnedEdge, onClearPin, colorMode, onColorMode, colorDe, temas, compacto, ego, onFijar,
 }) {
   const rf = useReactFlow();
+  const store = useStoreApi();
   const [todas, setTodas] = useState(false);
   const cajaRef = useRef(null);
-  const [hover, setHover] = useState(null);   // { node, x, y }
-  const posiciones = useMemo(() => layout(nodes, podar(edges, 3)), [nodes, edges]);
+  const [hover, setHover] = useState(null);       // { node, x, y } para el tooltip
+  const [hoverId, setHoverId] = useState(null);   // nodo bajo el mouse: enciende sus aristas
+  const [piezas, setPiezas] = useState(() => new Map());   // id → { modo, dim, sep }
+  const firmaRef = useRef('');
+  const rafRef = useRef(0);
+  const hudRef = useRef({ t: -Infinity, rects: [] });
+  const datosRef = useRef(new Map());
+
+  const centros = useMemo(() => layout(nodes, podar(edges, 3)), [nodes, edges]);
   const nodesById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+  const grado = useCallback((id) => relIndex.get(id)?.length || 0, [relIndex]);
 
   // El pin sólo cuenta si toca al documento elegido y sus dos puntas están a la vista.
   const pin = pinnedEdge && selectedId
@@ -251,120 +230,153 @@ function Lienzo({
     ? pinnedEdge : null;
   const pinOtro = pin ? (pin.source === selectedId ? pin.target : pin.source) : null;
 
-  const vecinos = useMemo(() => {
-    if (ego) return ego.ids;
-    if (!selectedId) return null;
-    return new Set((relIndex.get(selectedId) || []).map((r) => r.otherId));
-  }, [selectedId, relIndex, ego]);
-
-  const visiblesEdges = useMemo(
-    () => edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target)),
-    [edges, visibleIds],
+  const vecinos = useMemo(() => vecinosDe({ selectedId, ego, relIndex }), [selectedId, relIndex, ego]);
+  const hitos = useMemo(
+    () => calcularHitos({ selectedId, ego, relIndex, visibleIds }),
+    [selectedId, ego, relIndex, visibleIds],
   );
-  const base = useMemo(() => (todas ? visiblesEdges : podar(visiblesEdges, K_FUERTES)), [visiblesEdges, todas]);
-
-  // Vista de conjunto: qué puntos llevan etiqueta. Prioridad: el elegido, el
-  // extremo fijado, lo que marcó el agente, sus vecinos y, sin selección, los
-  // más conectados. Greedy: una etiqueta que pisaría a otra no se dibuja.
-  const zoom = useStore(zoomSel) || 1;
-  const etiquetados = useMemo(() => {
-    const out = new Set();
-    if (zoom >= ZOOM_LEJOS) return out;
-    const orden = [];
-    if (selectedId) orden.push(selectedId);
-    if (pinOtro) orden.push(pinOtro);
-    if (ego) { orden.push(ego.origen); ego.ids.forEach((id) => orden.push(id)); }
-    highlightIds.forEach((id) => orden.push(id));
-    if (ego) { /* ya están */ } else if (selectedId && !pinOtro) {
-      (relIndex.get(selectedId) || []).forEach((r) => orden.push(r.otherId));   // ya vienen por score
-    } else if (!selectedId) {
-      [...relIndex.entries()]
-        .sort((x, y) => y[1].length - x[1].length)
-        .slice(0, 16)
-        .forEach(([id]) => orden.push(id));
+  const estados = useMemo(() => {
+    const m = new Map();
+    for (const n of nodes) {
+      if (visibleIds.has(n.id)) m.set(n.id, estadoNodo(n.id, { selectedId, pinOtro, vecinos, ego }));
     }
-    const rects = [];
-    const limite = ego ? 18 : selectedId ? 14 : 7;
-    for (const id of orden) {
-      if (out.has(id) || !visibleIds.has(id)) continue;
-      const p = posiciones.get(id);
-      if (!p) continue;
-      const label = truncar(nodesById.get(id)?.label || '', 36);
-      const x0 = p.x + W / 2 + 8 / zoom;
-      const y0 = p.y + H / 2 - 10 / zoom;
-      const r = [x0, y0, x0 + (label.length * 6.4 + 14) / zoom, y0 + 20 / zoom];
-      const obligatoria = id === selectedId || id === pinOtro || (ego && id === ego.origen);
-      if (!obligatoria && rects.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1])) continue;
-      rects.push(r);
-      out.add(id);
-      if (out.size >= limite) break;
-    }
-    return out;
-  }, [zoom, selectedId, pinOtro, ego, highlightIds, relIndex, visibleIds, posiciones, nodesById]);
+    return m;
+  }, [nodes, visibleIds, selectedId, pinOtro, vecinos, ego]);
 
-  const rfNodes = useMemo(() => nodes
-    .filter((n) => visibleIds.has(n.id))
-    .map((n) => {
-      let estado = 'normal';
-      if (ego) {
-        // Vecindario fijo: el conjunto no cambia al mirar otro de sus nodos.
-        if (n.id === selectedId) estado = 'sel';
-        else if (n.id === pinOtro) estado = 'pin';
-        else if (n.id === ego.origen) estado = 'origen';
-        else estado = ego.ids.has(n.id) ? 'vecino' : 'tenue';
-      } else if (selectedId) {
-        if (n.id === selectedId) estado = 'sel';
-        else if (pinOtro) estado = n.id === pinOtro ? 'pin' : 'tenue';
-        else if (vecinos?.has(n.id)) estado = 'vecino';
-        else estado = 'tenue';
-      }
-      return {
+  // Paneles del lienzo: ninguna pieza se ubica debajo. Se miden cada tanto.
+  const rectsHud = useCallback(() => {
+    const h = hudRef.current;
+    const ahora = performance.now();
+    if (ahora - h.t >= 400) { h.rects = medirHud(cajaRef.current); h.t = ahora; }
+    return h.rects;
+  }, []);
+
+  // ── Detalle por nodo: punto → chip → tarjeta, con las reglas del 3D ──
+  const actualizarDetalle = useCallback(() => {
+    const { transform: [tx, ty, zoom], width: W, height: H } = store.getState();
+    if (!W || !H) return;
+    const escala = escalaDe(zoom);
+    const cands = [];
+    for (const [id, estado] of estados) {
+      const clase = claseDetalle(estado, { destacado: highlightIds.has(id), hito: hitos.has(id) });
+      if (!clase) continue;
+      const c = centros.get(id);
+      if (!c) continue;
+      const x = c.x * zoom + tx;
+      const y = c.y * zoom + ty;
+      if (x < -60 || x > W + 60 || y < -60 || y > H + 60) continue;
+      const fuerte = estado === 'sel' || estado === 'pin';
+      // Entre pares, primero lo que está al centro de la vista y, a igualdad, lo más conectado.
+      const alCentro = Math.hypot((x - W / 2) / (W / 2), (y - H / 2) / (H / 2));
+      cands.push({
+        id, x, y, clase, escala,
+        rpx: radioPantalla(radioBase(grado(id), fuerte), escala, fuerte),
+        label: nodesById.get(id)?.label,
+        orden: alCentro - Math.min(grado(id), 40) * 0.004,
+      });
+    }
+    const res = colocarPiezas(cands, { W, H, ocupadas: rectsHud() });
+    const firma =[...res].map(([id, p]) => `${id}:${p.modo}:${p.sep ?? ''}`).sort().join(',');
+    if (firma !== firmaRef.current) {
+      firmaRef.current = firma;
+      setPiezas(res);
+    }
+  }, [store, estados, highlightIds, hitos, centros, nodesById, grado, rectsHud]);
+
+  // Recalcular como mucho una vez por frame.
+  const programar = useCallback(() => {
+    if (rafRef.current) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0;
+      actualizarDetalle();
+    });
+  }, [actualizarDetalle]);
+  // Al desmontar (o en el doble montaje de StrictMode) hay que soltar también la marca:
+  // si queda puesta, programar() cree que hay un frame pendiente y no agenda nunca más.
+  useEffect(() => () => { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }, []);
+  useEffect(() => { programar(); }, [programar]);
+
+  // Cada movimiento del viewport (arrastre, rueda, fitView animado): el tamaño fijo en
+  // pantalla va por CSS al instante y el detalle se recalcula en el próximo frame.
+  // Se escucha el store y no `onMove`, que no avisa de los movimientos programáticos.
+  useEffect(() => {
+    const aplicar = (zoom) => {
+      const el = cajaRef.current;
+      if (!el) return;
+      el.style.setProperty('--inv', String(1 / zoom));
+      el.style.setProperty('--escala', String(escalaDe(zoom)));
+    };
+    aplicar(store.getState().transform[2]);
+    return store.subscribe((s, prev) => {
+      if (s.transform === prev.transform && s.width === prev.width && s.height === prev.height) return;
+      if (s.transform[2] !== prev.transform[2]) aplicar(s.transform[2]);
+      programar();
+    });
+  }, [store, programar]);
+
+  const rfNodes = useMemo(() => {
+    const cache = datosRef.current;
+    const out = [];
+    for (const n of nodes) {
+      const estado = estados.get(n.id);
+      if (!estado) continue;
+      const c = centros.get(n.id) || { x: 0, y: 0 };
+      const pieza = piezas.get(n.id) || null;
+      const fuerte = estado === 'sel' || estado === 'pin';
+      const nuevo = {
+        node: n,
+        estado,
+        color: colorDe(n),
+        r: radioBase(grado(n.id), fuerte),
+        marcado: highlightIds.has(n.id),
+        pieza,
+        hover: hoverId === n.id,
+      };
+      const previo = cache.get(n.id);
+      const data = mismoDato(previo, nuevo) ? previo : nuevo;
+      cache.set(n.id, data);
+      out.push({
         id: n.id,
         type: 'doc',
-        position: posiciones.get(n.id) || { x: 0, y: 0 },
-        data: {
-          node: n,
-          estado,
-          color: colorDe(n),
-          marcado: highlightIds.has(n.id),
-          etiqueta: etiquetados.has(n.id),
-        },
-        zIndex: estado === 'sel' || estado === 'pin' ? 4 : estado === 'origen' ? 3 : estado === 'vecino' ? 2 : 1,
-      };
-    }), [nodes, visibleIds, posiciones, selectedId, pinOtro, vecinos, ego, highlightIds, etiquetados, colorDe]);
+        position: { x: c.x - CAJA / 2, y: c.y - CAJA / 2 },
+        data,
+        zIndex: hoverId === n.id ? 50
+          : pieza?.modo === 'tarjeta' ? (estado === 'sel' ? 40 : 30)
+          : pieza?.modo === 'chip' ? 20
+          : Z_PUNTO[estado] || 4,
+      });
+    }
+    return out;
+  }, [nodes, estados, centros, piezas, colorDe, grado, highlightIds, hoverId]);
 
+  // Mismas relaciones, mismo corte de fuertes y mismo estilo que el 3D (lib/aristas).
+  const aristas = useMemo(() => aristasVisibles(edges, visibleIds), [edges, visibleIds]);
   const rfEdges = useMemo(() => {
-    // Con selección: siempre todas las aristas del nodo elegido, aunque la poda las haya sacado.
-    const set = new Set(base);
-    const enEgo = (e) => ego && ego.ids.has(e.source) && ego.ids.has(e.target);
-    visiblesEdges.forEach((e) => {
-      if (selectedId && (e.source === selectedId || e.target === selectedId)) set.add(e);
-      if (enEgo(e)) set.add(e);                    // con vecindario fijo: todas las aristas entre sus nodos
-    });
-    return [...set].map((e) => {
-      const propia = selectedId && (e.source === selectedId || e.target === selectedId);
-      const fijada = esPin(e, pin);
-      let opacity = 0.8;
-      if (ego) opacity = fijada ? 1 : enEgo(e) ? (propia ? 0.8 : 0.5) : 0.06;
-      else if (pin) opacity = fijada ? 1 : propia ? 0.14 : 0.06;
-      else if (selectedId) opacity = propia ? 0.6 : 0.12;
-      return {
-        id: `${e.source}→${e.target}→${e.label}`,
-        source: e.source,
-        target: e.target,
+    const out = [];
+    for (const a of aristas) {
+      const e = estiloArista(a, { selectedId, pin, ego, hoverId, todas });
+      if (!e.visible) continue;
+      out.push({
+        id: `${a.source}→${a.target}→${a.label}`,
+        source: a.source,
+        target: a.target,
         type: 'straight',
         focusable: false,
         style: {
-          stroke: fijada || (propia && !pin && (!ego || enEgo(e))) ? 'var(--color-accent)' : 'var(--edge-grafo)',
-          // El grosor sigue al score: una relación fuerte se lee como tal sin abrir el
-          // panel. Entre 1 y 1.8 px — más que eso tapa los nodos.
-          strokeWidth: fijada ? 2.4 : 1 + Math.max(0, Math.min(1, ((e.score || 0) - 0.6) / 0.3)) * 0.8,
-          opacity,
+          stroke: e.acento ? 'var(--color-accent)' : 'var(--arista)',
+          strokeWidth: e.fijada ? 2.2 : e.grosor * 1.4,
+          strokeOpacity: e.alfa,
         },
-        zIndex: fijada ? 2 : propia ? 1 : 0,
-      };
-    });
-  }, [base, visiblesEdges, selectedId, pin, ego]);
+        zIndex: e.fijada ? 2 : e.acento ? 1 : 0,
+      });
+    }
+    return out;
+  }, [aristas, selectedId, pin, ego, hoverId, todas]);
+  // Lo que se dibuja sin el hover: el conteo no parpadea al pasar el mouse.
+  const nAristas = useMemo(
+    () => aristas.filter((a) => estiloArista(a, { selectedId, pin, ego, todas }).visible).length,
+    [aristas, selectedId, pin, ego, todas],
+  );
 
   const leyenda = useMemo(() => calcularLeyenda(nodes, visibleIds, colorMode, temas), [nodes, visibleIds, colorMode, temas]);
 
@@ -400,10 +412,15 @@ function Lienzo({
     const r = cajaRef.current?.getBoundingClientRect();
     if (!r) return;
     setHover({ node: n.data.node, x: ev.clientX - r.left, y: ev.clientY - r.top, ancho: r.width, alto: r.height });
+    setHoverId(n.id);
   }, []);
+  const soltarHover = useCallback(() => { setHover(null); setHoverId(null); }, []);
+
+  const pinLabel = pin ? nodesById.get(pinOtro)?.label : null;
+  const egoLabel = ego ? nodesById.get(ego.origen)?.label : null;
 
   return (
-    <div ref={cajaRef} className="algedi-flow relative size-full">
+    <div ref={cajaRef} className="algedi-flow fondo-grafo relative size-full">
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
@@ -411,37 +428,36 @@ function Lienzo({
         onNodeClick={onNodeClick}
         onNodeMouseEnter={moverHover}
         onNodeMouseMove={moverHover}
-        onNodeMouseLeave={() => setHover(null)}
+        onNodeMouseLeave={soltarHover}
         onMoveStart={() => setHover(null)}
         onPaneClick={() => pinnedEdge && onClearPin?.()}
+        nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable={false}
         edgesFocusable={false}
         onlyRenderVisibleElements
-        minZoom={0.1}
+        minZoom={0.03}
         maxZoom={2.5}
         fitView
         fitViewOptions={{ padding: 0.12 }}
         proOptions={{ hideAttribution: true }}
-      >
-        <Background gap={24} size={1} color="#141a2d" />
-      </ReactFlow>
+      />
 
       <div className="pointer-events-none absolute left-3 right-3 top-3 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">
-        <span className="whitespace-nowrap rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
-          {rfNodes.length} nodos · {rfEdges.length} aristas{todas ? '' : ' fuertes'}
+        <span data-hud className="whitespace-nowrap rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
+          {rfNodes.length} nodos · {nAristas} aristas{todas ? '' : ' fuertes'}
         </span>
         {pin && (
-          <span className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
+          <span data-hud className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
             <Link2 className="size-3 text-accent" />
-            <span className="max-w-[220px] truncate">{nodesById.get(pinOtro)?.label}</span>
+            <span className="max-w-[220px] truncate" title={pinLabel || undefined}>{pinLabel}</span>
             <button type="button" onClick={onClearPin} className="text-ink-dim hover:text-ink" aria-label="Soltar vínculo"><X className="size-3" /></button>
           </span>
         )}
         {ego && (
-          <span className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
+          <span data-hud className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
             <Pin className="size-3 text-accent" />
-            <span className="max-w-[220px] truncate">Vecindario de {nodesById.get(ego.origen)?.label}</span>
+            <span className="max-w-[220px] truncate" title={egoLabel ? `Vecindario de ${egoLabel}` : undefined}>Vecindario de {egoLabel}</span>
             <span className="text-ink-dim">{ego.ids.size}</span>
             <button type="button" onClick={onFijar} className="text-ink-dim hover:text-ink" aria-label="Desfijar vecindario"><X className="size-3" /></button>
           </span>
@@ -451,7 +467,7 @@ function Lienzo({
 
       {hover && <NodoTooltip node={hover.node} x={hover.x} y={hover.y} ancho={hover.ancho} alto={hover.alto} temas={temas} />}
 
-      <div className="absolute bottom-3 left-3 flex flex-col overflow-hidden rounded-sm border border-hair bg-surface">
+      <div data-hud className="absolute bottom-3 left-3 flex flex-col overflow-hidden rounded-sm border border-hair bg-surface">
         {(selectedId || ego) && (
           <>
             <BotonCanvas texto={ego ? 'Desfijar vecindario · Esc' : 'Fijar relaciones del elegido'} onClick={onFijar} activo={!!ego}>
@@ -465,7 +481,7 @@ function Lienzo({
         <BotonCanvas texto="Encuadrar todo" onClick={() => rf.fitView({ padding: 0.12, duration: 250 })}><Maximize /></BotonCanvas>
         <div className="h-px bg-hair" />
         <BotonCanvas
-          texto={todas ? 'Mostrar sólo aristas fuertes' : 'Mostrar todas las aristas'}
+          texto={todas ? 'Sólo aristas fuertes' : 'Mostrar también las débiles (más tenues)'}
           onClick={() => setTodas((t) => !t)}
           activo={todas}
         >
@@ -478,7 +494,7 @@ function Lienzo({
 
 export default function GraphCanvas(props) {
   if (!props.nodes.length) {
-    return <div className="grid size-full place-items-center text-[12px] text-ink-dim">Sin nodos para graficar.</div>;
+    return <div className="fondo-grafo grid size-full place-items-center text-[12px] text-ink-dim">Sin nodos para graficar.</div>;
   }
   return (
     <ReactFlowProvider>

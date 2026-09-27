@@ -6,7 +6,11 @@ import { Maximize, Pin, PinOff, Link2, X, Expand } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
 import ColorPanel, { calcularLeyenda } from '@/app/ColorPanel';
 import NodoTooltip from '@/app/NodoTooltip';
-import Etiquetas3D, { TARJETA, medirChip } from '@/app/Etiquetas3D';
+import Etiquetas3D from '@/app/Etiquetas3D';
+import {
+  TARJETA, estadoNodo, vecinosDe, claseDetalle, calcularHitos, colocarPiezas, radioPantalla, medirHud,
+} from '@/lib/detalle';
+import { aristasVisibles, estiloArista } from '@/lib/aristas';
 import { resolverColor } from '@/lib/nodes';
 
 /**
@@ -14,60 +18,18 @@ import { resolverColor } from '@/lib/nodes';
  *
  * - Posiciones FIJAS desde la proyección 3D del backend (embeddings → UMAP):
  *   no hay simulación corriendo, nada se mueve ni titila.
- * - Aristas: quietas. Sólo la relación fijada se engrosa.
+ * - Aristas quietas, con el mismo criterio y peso que el 2D (lib/aristas).
  * - El detalle depende de cuán cerca de la cámara está CADA nodo (no el centro de
  *   la nube): lejos es un punto; más cerca lleva un chip con su título; cerca, el
- *   nodo ES su tarjeta (miniatura + título) y la esfera desaparece. Hay tope de
- *   tarjetas y chips, y ninguno se encima con otro ni con los paneles del lienzo.
+ *   nodo ES su tarjeta (miniatura + título) y la esfera desaparece. Las reglas, los
+ *   topes y el anti-choque son los mismos que en el 2D (lib/detalle).
  * - Tarjetas y chips son HTML (Etiquetas3D sobre CSS2DRenderer). Hover sobre
- *   cualquier nodo, chip o tarjeta → tooltip con el título completo.
+ *   cualquier nodo, chip o tarjeta → tooltip con el título completo y sus aristas
+ *   encendidas.
  * - Clic en un nodo → mismo Inspector. Clic en el vacío → suelta el pin.
  */
 
 const ESCALA = 320;
-const K_FUERTES = 2;
-
-const MAX_TARJETAS = 6;
-const MAX_CHIPS = 10;
-const AIRE_PX = 5;            // separación mínima entre piezas, en px de pantalla
-const R_MIN_PX = 2.2;         // radio de la esfera en pantalla: ni polvo de lejos…
-const R_MAX_PX = 9;           // …ni un globo que tape todo de cerca
-const R_MAX_PX_FUERTE = 13;
-
-/**
- * Cuándo gana detalle cada nodo, en px de pantalla por unidad de escena medidos en
- * SU posición (focal / distancia a la cámara). `prio` decide quién se queda con el
- * lugar cuando no entra todo: el elegido primero, después el vínculo fijado, el
- * origen del vecindario, los vecinos (y lo que marcó el agente), los más conectados
- * y el resto. Con algo elegido, lo que no tiene relación con él queda en punto.
- *
- * Referencia: el encuadre inicial deja la nube entre ~0.5 y ~1.1, así que la vista
- * de conjunto queda en puntos; el vuelo al elegido lo deja cerca de 2.4.
- */
-const DETALLE = {
-  sel: { prio: 0, tarjeta: 0.8, chip: 0 },
-  pin: { prio: 1, tarjeta: 1.1, chip: 0 },
-  origen: { prio: 2, tarjeta: 1.2, chip: 0.45 },
-  vecino: { prio: 3, tarjeta: 1.8, chip: 0.75 },
-  hito: { prio: 4, tarjeta: 2, chip: 1.15 },
-  normal: { prio: 5, tarjeta: 2.2, chip: 1.35 },
-};
-
-function podar(edges, k) {
-  const por = new Map();
-  for (const e of edges) {
-    for (const id of [e.source, e.target]) {
-      if (!por.has(id)) por.set(id, []);
-      por.get(id).push(e);
-    }
-  }
-  const keep = new Set();
-  for (const arr of por.values()) {
-    arr.sort((a, b) => (b.score || 0) - (a.score || 0));
-    arr.slice(0, k).forEach((e) => keep.add(e));
-  }
-  return edges.filter((e) => keep.has(e));
-}
 
 function rgba(hex, a) {
   const h = (hex || '#888').replace('#', '');
@@ -197,7 +159,7 @@ export default function Graph3DView({
   const paleta = useMemo(() => ({
     fondo: resolverColor('var(--color-canvas)', '#05060c'),
     acento: resolverColor('var(--color-accent)', '#22d3ee'),
-    arista: resolverColor('var(--edge-3d)', '#6b79b8'),
+    arista: resolverColor('var(--arista)', '#6b79b8'),
   }), []);
 
   const colorDe = useCallback((n) => resolverColor(colorVar(n)), [colorVar]);
@@ -208,11 +170,11 @@ export default function Graph3DView({
     ? pinnedEdge : null;
   const pinOtro = pin ? (pin.source === selectedId ? pin.target : pin.source) : null;
 
-  const vecinos = useMemo(
-    () => (ego ? ego.ids : selectedId ? new Set((relIndex.get(selectedId) || []).map((r) => r.otherId)) : null),
-    [selectedId, relIndex, ego],
-  );
+  const vecinos = useMemo(() => vecinosDe({ selectedId, ego, relIndex }), [selectedId, relIndex, ego]);
   const grado = useCallback((id) => relIndex.get(id)?.length || 0, [relIndex]);
+  // Nodo bajo el puntero: enciende sus aristas (como en el 2D). Aparte del estado del
+  // tooltip, que cambia con cada movimiento del mouse.
+  const [hoverId, setHoverId] = useState(null);
 
   // Datos del grafo: posiciones fijas. Se recrean sólo cuando cambia el conjunto visible.
   const data = useMemo(() => {
@@ -232,45 +194,27 @@ export default function Graph3DView({
       const [x, y, z] = pos[i];
       return { id: n.id, node: n, x, y, z, fx: x, fy: y, fz: z };
     });
-    const ve = edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target));
-    const fuertes = new Set(podar(ve, K_FUERTES));
-    const links = ve.map((e) => ({
-      source: e.source, target: e.target, label: e.label, score: e.score, fuerte: fuertes.has(e),
+    // Las mismas relaciones y el mismo corte de "fuertes" que el 2D.
+    const links = aristasVisibles(edges, visibleIds).map((e) => ({
+      source: e.source, target: e.target, label: e.label, score: e.score, fuerte: e.fuerte,
     }));
     return { nodes: ns, links };
   }, [nodes, edges, visibleIds, aire, ego]);
 
-  // Sin selección, los más conectados funcionan como hitos: son los primeros en
-  // mostrar su nombre al acercarse.
-  const hitos = useMemo(() => {
-    if (selectedId || ego) return new Set();
-    return new Set([...relIndex.entries()]
-      .filter(([id]) => visibleIds.has(id))
-      .sort((a, b) => b[1].length - a[1].length)
-      .slice(0, 6)
-      .map(([id]) => id));
-  }, [selectedId, ego, relIndex, visibleIds]);
+  const hitos = useMemo(
+    () => calcularHitos({ selectedId, ego, relIndex, visibleIds }),
+    [selectedId, ego, relIndex, visibleIds],
+  );
 
-  const estadoDe = useCallback((id) => {
-    if (ego) {
-      if (id === selectedId) return 'sel';
-      if (id === pinOtro) return 'pin';
-      if (id === ego.origen) return 'origen';
-      return ego.ids.has(id) ? 'vecino' : 'tenue';
-    }
-    if (!selectedId) return 'normal';
-    if (id === selectedId) return 'sel';
-    if (pinOtro) return id === pinOtro ? 'pin' : 'tenue';
-    return vecinos?.has(id) ? 'vecino' : 'tenue';
-  }, [selectedId, pinOtro, vecinos, ego]);
+  const estadoDe = useCallback(
+    (id) => estadoNodo(id, { selectedId, pinOtro, vecinos, ego }),
+    [selectedId, pinOtro, vecinos, ego],
+  );
 
-  /** Qué fila de DETALLE le toca a un nodo (null = queda en punto). */
-  const claseDe = useCallback((id, estado) => {
-    if (estado === 'sel' || estado === 'pin' || estado === 'origen') return estado;
-    if (estado === 'vecino' || highlightIds.has(id)) return 'vecino';
-    if (estado === 'tenue') return null;
-    return hitos.has(id) ? 'hito' : 'normal';
-  }, [highlightIds, hitos]);
+  const claseDe = useCallback(
+    (id, estado) => claseDetalle(estado, { destacado: highlightIds.has(id), hito: hitos.has(id) }),
+    [highlightIds, hitos],
+  );
 
   const nodeObject = useCallback((d) => {
     const estado = estadoDe(d.id);
@@ -317,19 +261,11 @@ export default function Graph3DView({
   const rectsHud = useCallback(() => {
     const h = hudRef.current;
     const ahora = performance.now();
-    if (ahora - h.t < 400) return h.rects;
-    const caja = cajaRef.current;
-    if (!caja) return [];
-    const base = caja.getBoundingClientRect();
-    h.rects = [...caja.querySelectorAll('[data-hud]')].map((el) => {
-      const r = el.getBoundingClientRect();
-      return [r.left - base.left, r.top - base.top, r.right - base.left, r.bottom - base.top];
-    });
-    h.t = ahora;
+    if (ahora - h.t >= 400) { h.rects = medirHud(cajaRef.current); h.t = ahora; }
     return h.rects;
   }, []);
 
-  // ── Detalle por nodo: punto → chip → tarjeta ──
+  // ── Detalle por nodo: punto → chip → tarjeta (reglas en lib/detalle) ──
   const actualizarDetalle = useCallback(() => {
     const fg = fgRef.current;
     const capa = capaRef.current;
@@ -339,8 +275,6 @@ export default function Graph3DView({
     const cam = fg.camera();
     cam.updateMatrixWorld();   // el evento 'change' llega antes del render que la actualiza
     const focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
-    const entra = (r) => r[0] >= 0 && r[1] >= 0 && r[2] <= W && r[3] <= H;
-    const choca = (r, lista) => lista.some((q) => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1]);
 
     // 1) Cada nodo: esfera acotada en pantalla y, si le corresponde, candidato a detalle.
     const cands = [];
@@ -349,13 +283,11 @@ export default function Graph3DView({
       o.modo = null;
       o.g.getWorldPosition(_p);
       const dist = Math.max(1, cam.position.distanceTo(_p));
-      const pxu = focal / dist;
-      const rpx = o.r * pxu;
-      const tope = o.fuerte ? R_MAX_PX_FUERTE : R_MAX_PX;
-      const k = rpx > tope ? tope / rpx : rpx < R_MIN_PX ? R_MIN_PX / rpx : 1;
+      const pxu = focal / dist;   // px de pantalla por unidad de escena en ESTE nodo
+      o.rpx = radioPantalla(o.r, pxu, o.fuerte);
+      const k = o.rpx / (o.r * pxu);
       o.esfera.scale.setScalar(o.r * k);
       o.halo.scale.set(o.hs * k, o.hs * k, 1);
-      o.rpx = rpx * k;
 
       const clase = claseDe(id, o.estado);
       if (!clase) continue;
@@ -366,41 +298,12 @@ export default function Graph3DView({
       if (x < -60 || x > W + 60 || y < -60 || y > H + 60) continue;
       // Entre pares, primero lo más cercano y más al centro de la vista.
       const alCentro = Math.hypot((x - W / 2) / (W / 2), (y - H / 2) / (H / 2));
-      const u = DETALLE[clase];
-      cands.push({ o, u, pxu, x, y, orden: u.prio * 1e7 + dist * (1 + 0.6 * alCentro) });
+      cands.push({ id, x, y, clase, escala: pxu, rpx: o.rpx, label: o.node.label, orden: dist * (1 + 0.6 * alCentro) });
     }
-    cands.sort((a, b) => a.orden - b.orden);
 
     // 2) Por prioridad: tarjeta si está cerca y entra; si no, chip; si no, punto.
-    const puestas = rectsHud().slice();
-    let nT = 0;
-    let nC = 0;
-    for (const { o, u, pxu, x, y } of cands) {
-      const obligado = u.prio <= 1;   // el elegido y el otro extremo del vínculo pueden quedar a medias en el borde
-      if (nT < MAX_TARJETAS && pxu >= u.tarjeta) {
-        const t = u.prio === 0 ? TARJETA.grande : TARJETA.chica;
-        const r = [x - t.w / 2 - AIRE_PX, y - t.h / 2 - AIRE_PX, x + t.w / 2 + AIRE_PX, y + t.h / 2 + AIRE_PX];
-        if ((obligado || entra(r)) && !choca(r, puestas)) {
-          puestas.push(r);
-          nT += 1;
-          o.modo = 'tarjeta';
-          o.dim = t;
-          continue;
-        }
-      }
-      if (nC < MAX_CHIPS && pxu >= u.chip) {
-        const m = medirChip(o.node.label);
-        const sep = Math.round(o.rpx + 6);
-        const r = [x + sep - AIRE_PX, y - m.h / 2 - AIRE_PX, x + sep + m.w + AIRE_PX, y + m.h / 2 + AIRE_PX];
-        if ((obligado || entra(r)) && !choca(r, puestas)) {
-          puestas.push(r);
-          nC += 1;
-          o.modo = 'chip';
-          o.dim = m;
-          o.sep = sep;
-        }
-      }
-    }
+    const puestas = colocarPiezas(cands, { W, H, ocupadas: rectsHud() });
+    for (const [id, p] of puestas) Object.assign(objs.current.get(id), p);
 
     // 3) Aplicar. La tarjeta reemplaza a la esfera; el hit-box copia lo que se ve.
     const items = [];
@@ -432,18 +335,19 @@ export default function Graph3DView({
       items.push({
         clave, id, tipo: o.modo, el: pieza.element, node: o.node, estado: o.estado,
         color: colorVar(o.node), grande: o.dim === TARJETA.grande, medida: tarjeta ? null : o.dim,
+        marcado: highlightIds.has(id),
       });
     }
     // Lo que dejó de verse sale de la capa (el CSS2DObject saca su elemento del DOM).
     for (const [clave, pieza] of piezas.current) {
       if (!usadas.has(clave) && pieza.parent) pieza.parent.remove(pieza);
     }
-    const firma = items.map((it) => `${it.clave}|${it.estado}|${it.color}`).join(',');
+    const firma = items.map((it) => `${it.clave}|${it.estado}|${it.color}|${it.marcado}`).join(',');
     if (firma !== firmaRef.current) {
       firmaRef.current = firma;
       etiquetasRef.current?.mostrar(items);
     }
-  }, [tam.w, tam.h, claseDe, colorVar, rectsHud]);
+  }, [tam.w, tam.h, claseDe, colorVar, rectsHud, highlightIds]);
 
   // Recalcular como mucho una vez por frame.
   const programar = useCallback(() => {
@@ -453,48 +357,27 @@ export default function Graph3DView({
       actualizarDetalle();
     });
   }, [actualizarDetalle]);
-  useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
+  // Al desmontar (o en el doble montaje de StrictMode) hay que soltar también la marca:
+  // si queda puesta, programar() cree que hay un frame pendiente y no agenda nunca más.
+  useEffect(() => () => { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }, []);
 
-  const esPin = useCallback((l) => {
-    if (!pin) return false;
-    const s = l.source?.id ?? l.source;
-    const t = l.target?.id ?? l.target;
-    return s === pin.source && t === pin.target && l.label === pin.label;
-  }, [pin]);
-
-  const linkVisible = useCallback((l) => {
-    const s = l.source?.id ?? l.source;
-    const t = l.target?.id ?? l.target;
-    if (selectedId && (s === selectedId || t === selectedId)) return true;
-    if (ego && ego.ids.has(s) && ego.ids.has(t)) return true;
-    return l.fuerte;
-  }, [selectedId, ego]);
-
+  // Qué arista se ve y cómo: el mismo criterio que el 2D (lib/aristas).
+  const estiloDe = useCallback(
+    (l) => estiloArista(l, { selectedId, pin, ego, hoverId }),
+    [selectedId, pin, ego, hoverId],
+  );
+  const linkVisible = useCallback((l) => estiloDe(l).visible, [estiloDe]);
   const linkColor = useCallback((l) => {
-    const s = l.source?.id ?? l.source;
-    const t = l.target?.id ?? l.target;
-    const propia = selectedId && (s === selectedId || t === selectedId);
-    if (esPin(l)) return rgba(paleta.acento, 1);
-    if (ego) {
-      const dentro = ego.ids.has(s) && ego.ids.has(t);
-      if (!dentro) return rgba(paleta.arista, 0.07);
-      return propia && !pin ? rgba(paleta.acento, 0.8) : rgba(paleta.arista, pin ? 0.3 : 0.6);
-    }
-    if (pin) return rgba(paleta.arista, propia ? 0.3 : 0.08);
-    if (propia) return rgba(paleta.acento, 0.8);
-    return rgba(paleta.arista, selectedId ? 0.18 : 0.5);
-  }, [selectedId, pin, ego, esPin, paleta]);
-
+    const e = estiloDe(l);
+    return rgba(e.acento ? paleta.acento : paleta.arista, e.alfa);
+  }, [estiloDe, paleta]);
   // Con `width = 0` three.js dibuja una línea de UN píxel: a distancia, con niebla y
   // sobre fondo oscuro, desaparece. Dándole grosor real la arista es un cilindro que
-  // se ve desde el encuadre inicial. El grosor sigue al score, así que una relación
-  // fuerte se lee como más gruesa sin tener que abrir el panel.
+  // se ve desde el encuadre inicial. El grosor sigue al score (lib/aristas).
   const linkWidth = useCallback((l) => {
-    if (esPin(l)) return 1.4;
-    const s = l.score || 0;
-    const base = 0.3 + Math.max(0, Math.min(1, (s - 0.6) / 0.3)) * 0.25;
-    return l.fuerte ? base : base * 0.7;
-  }, [esPin]);
+    const e = estiloArista(l, { pin });   // el grosor no depende del hover
+    return e.fijada ? 1.4 : e.grosor * 0.55;
+  }, [pin]);
 
 
   // Sólo en desarrollo: acceso a la instancia para depurar desde la consola.
@@ -618,14 +501,12 @@ export default function Graph3DView({
         adentroRef.current = false;
         hoverRef.current = null;
         setHover(null);
+        setHoverId(null);
         etiquetasRef.current?.resaltar(null);
         if (cajaRef.current) cajaRef.current.style.cursor = '';
       }}
       onPointerDown={() => setHover(null)}
-      className="relative size-full overflow-hidden"
-      style={{
-        background: `radial-gradient(ellipse 70% 60% at 50% 45%, color-mix(in oklab, ${paleta.acento} 9%, #0a0f1f) 0%, ${paleta.fondo} 72%)`,
-      }}
+      className="fondo-grafo relative size-full overflow-hidden"
     >
       {!nodes.length && (
         <div className="absolute inset-0 grid place-items-center text-[12px] text-ink-dim">Sin nodos para graficar.</div>
@@ -652,6 +533,7 @@ export default function Graph3DView({
               hoverRef.current = d?.id || null;
               if (cajaRef.current) cajaRef.current.style.cursor = d ? 'pointer' : '';
               setHover(d ? { node: d.node, ...mouseRef.current } : null);
+              setHoverId(d?.id || null);
               etiquetasRef.current?.resaltar(d?.id || null);
             }}
             linkVisibility={linkVisible}
