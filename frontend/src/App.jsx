@@ -458,7 +458,7 @@ export default function App() {
     const nd = await updateNode(id, campos);
     setGraph((g) => ({
       ...g,
-      nodes: g.nodes.map((n) => (n.id === id ? { ...n, label: nd.label, autor: nd.autor, tema: nd.tema } : n)),
+      nodes: g.nodes.map((n) => (n.id === id ? { ...n, label: nd.label, autor: nd.autor, tema: nd.tema, desc: nd.desc } : n)),
     }));
   }, []);
 
