@@ -238,6 +238,16 @@ class PostgresConfigTest(unittest.TestCase):
                 wb.validar_consulta_pg(sql)
         self.assertEqual(wb.validar_consulta_pg("SELECT 1 ;; "), "SELECT 1")
 
+    def test_servidor_que_no_resuelve_se_explica_sin_errno(self):
+        import socket
+        for e in (socket.gaierror(-5, "No address associated with hostname"),
+                  socket.gaierror(-2, "Name or service not known")):
+            motivo = wb._motivo_conexion(e)
+            self.assertEqual(motivo, "el servidor no está encendido o no existe")
+        falla = wb.ConexionFallida({"nombre": "demo", "host": "demo-db", "puerto": 5432,
+                                    "base": "algedi_demo"}, motivo)
+        self.assertNotIn("Errno", str(falla))
+
     def test_valores_que_la_ui_puede_mostrar(self):
         import datetime as dt
         from decimal import Decimal
@@ -258,7 +268,7 @@ def _correr(corrutina):
 
 @unittest.skipUnless(DEMO, "sin ALGEDI_PG_DEMO en el entorno")
 class PostgresDemoTest(unittest.TestCase):
-    """Contra la base de prueba (docker compose --profile demo up -d demo-db). Si no
+    """Contra la base de prueba (servicio demo-db de docker-compose). Si no
     está levantada, se saltea."""
 
     @classmethod

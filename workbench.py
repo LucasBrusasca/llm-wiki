@@ -585,6 +585,7 @@ def valor_json(v):
 
 
 def _motivo_conexion(e: BaseException) -> str:
+    import socket
     nombre = type(e).__name__
     texto = str(e)
     if nombre == "InvalidPasswordError" or "password authentication failed" in texto:
@@ -593,9 +594,10 @@ def _motivo_conexion(e: BaseException) -> str:
         return "esa base no existe en el servidor"
     if isinstance(e, TimeoutError) or nombre == "TimeoutError":
         return "el servidor no respondió a tiempo"
-    if "Name or service not known" in texto or "Temporary failure in name resolution" in texto \
-            or "nodename nor servname" in texto or "getaddrinfo failed" in texto:
-        return "no se encuentra el servidor"
+    # El nombre del servidor no resuelve: no existe, o (en Docker) su contenedor está
+    # apagado. Los textos cambian según el sistema ([Errno -2], [Errno -5]…).
+    if isinstance(e, socket.gaierror) or "getaddrinfo failed" in texto:
+        return "el servidor no está encendido o no existe"
     if isinstance(e, ConnectionRefusedError) or "Connect call failed" in texto:
         return "el servidor no acepta conexiones"
     return texto or nombre

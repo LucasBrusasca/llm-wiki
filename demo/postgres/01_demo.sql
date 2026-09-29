@@ -1,7 +1,7 @@
 -- Base de prueba para el Workbench de Algedi: ventas de un almacén inventado.
 --
 -- La corre sola la imagen de Postgres la primera vez que se levanta el servicio
--- demo-db (docker compose --profile demo up -d demo-db), ya conectada a algedi_demo.
+-- demo-db (arranca con `docker compose up -d`), ya conectada a algedi_demo.
 -- Los datos son ficticios y reproducibles (setseed): siempre salen los mismos.
 --
 -- Algedi entra con algedi_lector, que sólo puede leer (ALGEDI_PG_DEMO en

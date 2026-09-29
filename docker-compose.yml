@@ -78,12 +78,11 @@ services:
       VITE_BLOOM_ENABLED: ${VITE_BLOOM_ENABLED:-false}
 
   # Base Postgres de prueba para el Workbench: ventas inventadas de un almacén y un
-  # usuario de sólo lectura. No arranca con `docker compose up`; se levanta aparte:
-  #   docker compose --profile demo up -d demo-db
-  # La primera vez corre demo/postgres/01_demo.sql, que crea las tablas y los datos.
+  # usuario de sólo lectura. Arranca con el resto (`docker compose up -d`); la primera
+  # vez corre demo/postgres/01_demo.sql, que crea las tablas y los datos. Nada depende
+  # de ella: si se apaga, sólo falla la consulta a esa base.
   demo-db:
     image: pgvector/pgvector:pg16
-    profiles: ["demo"]
     environment:
       POSTGRES_DB: algedi_demo
       POSTGRES_USER: demo_admin

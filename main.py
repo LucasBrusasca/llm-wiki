@@ -2441,7 +2441,7 @@ def _conexion_de_nodo(node: Node) -> dict:
 def _error_de_conexion(e: wb.ConexionFallida) -> HTTPException:
     detalle = str(e)
     if e.conexion.get("host") == "demo-db":
-        detalle += " Si es la base de prueba, levantala con: docker compose --profile demo up -d demo-db"
+        detalle += " Es la base de prueba: encendela con «docker compose up -d demo-db»."
     return HTTPException(502, detalle)
 
 
