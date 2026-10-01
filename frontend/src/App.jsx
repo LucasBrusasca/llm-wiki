@@ -12,12 +12,16 @@ import CommandPalette from '@/app/CommandPalette';
 import JobsPanel, { useJobs, JobsBadge } from '@/app/JobsPanel';
 import {
   fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota, crearScript, agregarConexion, normalizeGraph,
+  fetchPapelera,
 } from '@/lib/api';
 import { AGRUPADORES, MODOS_COLOR, indexarRelaciones } from '@/lib/nodes';
 import { construirTemas, temaKey, temaDe } from '@/lib/temas';
 import TaxonomiaDialog from '@/app/TaxonomiaDialog';
 import Splitter from '@/app/Splitter';
 import MoverDialog from '@/app/MoverDialog';
+import PapeleraDialog from '@/app/PapeleraDialog';
+import TemaDialog from '@/app/TemaDialog';
+import Papelera from '@/app/Papelera';
 import { PanelPlegado } from '@/app/PanelLateral';
 import { normalizar } from '@/lib/utils';
 
@@ -119,6 +123,11 @@ export default function App() {
   const [agentContext, setAgentContext] = useState(null);
   const [taxonomiaOpen, setTaxonomiaOpen] = useState(false);
   const [moverIds, setMoverIds] = useState(null);          // ids a mover de sección (diálogo)
+  const [papeleraIds, setPapeleraIds] = useState(null);    // ids a mandar a la papelera (confirmación)
+  const [temaIds, setTemaIds] = useState(null);            // ids a los que cambiarles el tema
+  const [papeleraOpen, setPapeleraOpen] = useState(false);
+  const [papeleraCount, setPapeleraCount] = useState(0);
+  const [pedidoEditar, setPedidoEditar] = useState(null);  // id que el inspector abre ya en edición
   const [marcados, setMarcados] = useState(() => new Set()); // selección múltiple en la lista
 
   // Panel derecho: se puede ocultar para que el centro use todo el ancho. Por
@@ -469,6 +478,39 @@ export default function App() {
     recargar();
   }, [selectedId, moverIds, seccion, recargar]);
 
+  const cargarPapeleraCount = useCallback(() => {
+    fetchPapelera().then((items) => setPapeleraCount(items.length)).catch(() => {});
+  }, []);
+  useEffect(() => { cargarPapeleraCount(); }, [cargarPapeleraCount]);
+
+  // Lo mandado a la papelera deja de existir para la UI: fuera de la selección, del
+  // camino, del vecindario y de la relación fijada.
+  const tras_papelera = useCallback(() => {
+    const fuera = new Set(papeleraIds || []);
+    setMarcados(new Set());
+    if (selectedId && fuera.has(selectedId)) setSelectedId(null);
+    setCamino((c) => (c.some((id) => fuera.has(id)) ? [] : c));
+    setEgo((e) => (e && [...fuera].some((id) => e.ids.has(id) || e.origen === id) ? null : e));
+    setPinnedEdge((p) => (p && (fuera.has(p.source) || fuera.has(p.target)) ? null : p));
+    setPapeleraIds(null);
+    recargar();
+    cargarPapeleraCount();
+  }, [papeleraIds, selectedId, recargar, cargarPapeleraCount]);
+
+  const tras_tema = useCallback((r) => {
+    const ids = new Set(temaIds || []);
+    setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => (ids.has(n.id) ? { ...n, tema: r.tema } : n)) }));
+    setMarcados(new Set());
+    setTemaIds(null);
+  }, [temaIds]);
+
+  // «Editar» en una fila: elige el documento y el inspector lo abre ya en edición.
+  const editarDesdeLista = useCallback((id) => {
+    seleccionar(id);
+    setInspectorAbierto(true);
+    setPedidoEditar(id);
+  }, [seleccionar]);
+
   // Nota nueva: entra al grafo como nodo NOTA y queda abierta para escribir.
   const nuevaNota = useCallback(async () => {
     const titulo = (window.prompt('Título de la nota:') || '').trim();
@@ -537,6 +579,14 @@ export default function App() {
         else if (pinnedEdge) setPinnedEdge(null);
         else if (ego) setEgo(null);
         else setSelectedId(null);
+        return;
+      }
+      // Supr: a la papelera lo marcado (o el documento abierto). Sólo abre la
+      // confirmación; nada sale de la biblioteca sin ese segundo paso.
+      if (e.key === 'Delete') {
+        if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+        const ids = marcados.size ? [...marcados] : selectedId ? [selectedId] : [];
+        if (ids.length) { e.preventDefault(); setPapeleraIds(ids); }
         return;
       }
       if (e.key === '1') setVista('lista');
@@ -627,6 +677,8 @@ export default function App() {
             onNombrarTemas={() => setTaxonomiaOpen(true)}
             onIngest={() => setIngestOpen(true)}
             onScripts={() => setWorkbenchOpen(true)}
+            onPapelera={() => setPapeleraOpen(true)}
+            papeleraCount={papeleraCount}
             onNuevaNota={nuevaNota}
             onSeccionesCambiadas={(activa) => { cambiarSeccion(activa); recargar(); }}
             onSeccionEliminada={olvidarSeccion}
@@ -677,6 +729,11 @@ export default function App() {
                   onMarcarVarios={(ids) => setMarcados(new Set(ids))}
                   onLimpiarMarcas={() => setMarcados(new Set())}
                   onMoverMarcados={() => setMoverIds([...marcados])}
+                  onTemaMarcados={() => setTemaIds([...marcados])}
+                  onPapeleraMarcados={() => setPapeleraIds([...marcados])}
+                  onEditar={editarDesdeLista}
+                  onMover={(ids) => setMoverIds(ids)}
+                  onPapelera={(ids) => setPapeleraIds(ids)}
                   onToggleTipo={toggleIn(setTipos)}
                   onToggleFuente={toggleIn(setFuentes)}
                   onToggleConcepto={toggleIn(setConceptos)}
@@ -733,6 +790,9 @@ export default function App() {
               onFijar={fijarVecindario}
               onGuardar={guardarNodo}
               onMover={(ids) => setMoverIds(ids)}
+              onPapelera={(ids) => setPapeleraIds(ids)}
+              pedidoEditar={pedidoEditar}
+              onPedidoAtendido={() => setPedidoEditar(null)}
               temas={temas}
               onTema={(k) => toggleIn(setTemasSel)(k)}
               onCollapse={() => setInspectorAbierto(false)}
@@ -771,6 +831,26 @@ export default function App() {
           sections={sectionsVista}
           seccion={seccion}
           onDone={tras_mover}
+        />
+        <PapeleraDialog
+          open={!!papeleraIds}
+          onOpenChange={(o) => !o && setPapeleraIds(null)}
+          ids={papeleraIds || []}
+          nodesById={nodesById}
+          onDone={tras_papelera}
+        />
+        <TemaDialog
+          open={!!temaIds}
+          onOpenChange={(o) => !o && setTemaIds(null)}
+          ids={temaIds || []}
+          temas={temas}
+          onDone={tras_tema}
+        />
+        <Papelera
+          open={papeleraOpen}
+          onOpenChange={setPapeleraOpen}
+          seccion={seccion}
+          onCambio={() => { recargar(); cargarPapeleraCount(); }}
         />
         <TaxonomiaDialog open={taxonomiaOpen} onOpenChange={setTaxonomiaOpen} temas={temas} onDone={recargar} />
         <JobsPanel
@@ -819,6 +899,7 @@ export default function App() {
             if (a === 'scripts') setWorkbenchOpen(true);
             if (a === 'nuevo-script') nuevoScript().catch((e) => window.alert(`No se pudo crear el script: ${e.message}`));
             if (a === 'agent') preguntarSobre(null);
+            if (a === 'papelera') setPapeleraOpen(true);
             if (a === 'inspector') setInspectorAbierto((v) => !v);
             if (a === 'auto-inspector') setAutoAbrir((v) => !v);
             if (a === 'rail') setRailAbierto((v) => !v);

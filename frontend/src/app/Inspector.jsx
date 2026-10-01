@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   X, ExternalLink, MessageSquare, Share2, ArrowUpRight, ArrowDownLeft, ArrowRight, Copy, Check,
-  Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight, Pencil, FolderInput, Loader2,
+  Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight, Pencil, FolderInput, Loader2, Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -403,7 +403,7 @@ export default function Inspector({
   node, nodesById, relIndex, seccion, seccionCount, edgesCount,
   onSelect, onClose, onAsk, onConcepto, onVerEnGrafo, vista, pinnedEdge, onPin, onClearPin,
   onAbrir, camino = [], onVolver, temas, onTema, ego, onFijar, ancho = 420, onGuardar, onMover,
-  onCollapse, onScriptGuardado, onCorrida,
+  onPapelera, pedidoEditar, onPedidoAtendido, onCollapse, onScriptGuardado, onCorrida,
 }) {
   // Vista previa primero; si el documento no tiene nada que previsualizar, Resumen.
   const [tab, setTab] = useState('preview');
@@ -416,6 +416,16 @@ export default function Inspector({
     setEditando(false);
     setTab(tienePreview(node) ? 'preview' : 'resumen');
   }, [node?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // «Editar» desde la fila de la biblioteca: abre ese documento ya en edición y avisa
+  // que el pedido se atendió (si quedara pendiente, volvería a abrirse al re-montar).
+  // Va después del efecto de arriba, que al cambiar de documento cierra la edición.
+  useEffect(() => {
+    if (pedidoEditar && pedidoEditar === node?.id) {
+      setEditando(true);
+      onPedidoAtendido?.();
+    }
+  }, [pedidoEditar, node?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const shell = 'flex shrink-0 flex-col hairline-l bg-surface';
 
@@ -532,6 +542,13 @@ export default function Inspector({
                 <FolderInput />
               </Button>
             </Hint>
+            {onPapelera && (
+              <Hint texto="Mover a la papelera (se puede restaurar)">
+                <Button variant="ghost" size="icon-sm" onClick={() => onPapelera([node.id])} aria-label="Mover a la papelera" className="hover:text-danger">
+                  <Trash2 />
+                </Button>
+              </Hint>
+            )}
             <Hint texto={copiado ? 'Copiado' : 'Copiar ID'}>
               <Button variant="ghost" size="icon-sm" onClick={copiarId} aria-label="Copiar ID">
                 {copiado ? <Check className="text-accent" /> : <Copy />}

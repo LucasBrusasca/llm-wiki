@@ -79,7 +79,7 @@ export default function Rail({
   facetas, tipos, onToggleTipo, fuentes, onToggleFuente,
   topConceptos, conceptos, onToggleConcepto,
   temas, temasSel, onToggleTema, onNombrarTemas,
-  onIngest, onScripts, onNuevaNota, onSeccionesCambiadas, onSeccionEliminada, ancho = 272,
+  onIngest, onScripts, onPapelera, papeleraCount = 0, onNuevaNota, onSeccionesCambiadas, onSeccionEliminada, ancho = 272,
   onCollapse,
 }) {
   async function renombrar(nombre) {
@@ -283,6 +283,16 @@ export default function Rail({
       >
         <Terminal className="size-3" /> Workbench
         <span className="text-ink-dim/70">· scripts, datos y corridas</span>
+      </button>
+      {/* Papelera: lo que se sacó de la biblioteca, para restaurarlo o borrarlo del todo. */}
+      <button
+        type="button"
+        onClick={onPapelera}
+        className="flex h-8 shrink-0 items-center gap-1.5 border-t border-hair px-3 text-[11.5px] text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink-muted"
+        title="Papelera: restaurar o eliminar definitivamente"
+      >
+        <Trash2 className="size-3" /> Papelera
+        {papeleraCount > 0 && <span className="ml-auto text-[11px] tabular-nums text-ink-dim">{papeleraCount}</span>}
       </button>
 
     </aside>

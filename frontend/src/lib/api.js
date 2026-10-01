@@ -265,10 +265,34 @@ export async function setNodeTags(nodeId, tags) {
   }).then(jsonOrThrow);
 }
 
+/** Borrado directo, sin papelera (la UI usa la papelera). La clave va en el cuerpo:
+ *  en la URL quedaría en los logs, y el backend la lee del cuerpo. */
 export async function deleteNode(nodeId, password) {
-  const qs = password ? `?password=${encodeURIComponent(password)}` : '';
-  return fetch(`/api/node/${encodeURIComponent(nodeId)}${qs}`, { method: 'DELETE' }).then(jsonOrThrow);
+  return fetch(`/api/node/${encodeURIComponent(nodeId)}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  }).then(jsonOrThrow);
 }
+
+// ── Papelera ──────────────────────────────────────────────────────────
+const postJson = (url, body) => fetch(url, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body ?? {}),
+}).then(jsonOError);
+
+/** Qué se iría con estos documentos (aristas, notas, pasajes…), sin tocar nada. */
+export const previaPapelera = (ids) => postJson('/api/papelera/previa', { ids });
+export const moverAPapelera = (ids) => postJson('/api/papelera', { ids });
+export const fetchPapelera = () => fetch('/api/papelera').then(jsonOError).then((d) => d.items || []);
+export const restaurarDePapelera = (id) => postJson(`/api/papelera/${id}/restaurar`);
+/** Para siempre. Pide la clave de administrador si está configurada. */
+export const eliminarDePapelera = (id, password) => postJson(`/api/papelera/${id}/eliminar`, { password });
+export const vaciarPapelera = (password) => postJson('/api/papelera/vaciar', { password });
+
+/** El mismo tema para varios documentos (vacío = sin tema). */
+export const temaNodos = (ids, tema) => postJson('/api/nodes/tema', { ids, tema });
 
 // ── Ingesta ───────────────────────────────────────────────────────────
 export async function ingestFile(file, seccion, { skipUmap = false } = {}) {

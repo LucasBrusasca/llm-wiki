@@ -178,6 +178,24 @@ class ScriptRun(Base):
     created_at     = Column(DateTime, server_default=func.now())
 
 
+class Papelera(Base):
+    """Documentos mandados a la papelera: la copia exacta de lo que colgaba del nodo
+    (aristas, notas, documento, pasajes, fuentes; ver papelera.py). Restaurar la vuelve
+    a poner tal cual; sólo «eliminar definitivamente» la borra, y pide la clave."""
+    __tablename__ = "papelera"
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    node_id      = Column(String, nullable=False, index=True)
+    label        = Column(String)
+    tipo         = Column(String)
+    dominio      = Column(String)
+    fuente       = Column(String)
+    fuente_label = Column(String)
+    fuente_path  = Column(String)   # para saber, al borrar del todo, si el archivo queda sin dueño
+    resumen      = Column(JSON, default=dict)   # {aristas, notas, pasajes, corridas}
+    contenido    = Column(JSON, nullable=False)
+    eliminado_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class IngestJob(Base):
     """Trabajo de ingesta en background. Permite que el usuario siga usando la UI
     mientras se procesa el documento/URL."""

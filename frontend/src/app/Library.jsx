@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Search, X, ChevronRight, ArrowDownUp, Rows3, Link2, Sparkles, Upload, AlertTriangle, Hash, FolderInput,
+  Pencil, Trash2, Tag,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -60,7 +61,31 @@ function Casilla({ on, parcial = false, className }) {
   );
 }
 
-function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, semantic, marcado, marcando, onMarca }) {
+/** Acción de la fila: va dentro del botón de la fila (como la casilla), así que es un
+ *  span que corta la propagación. Con teclado, las mismas acciones están en el
+ *  inspector y en la barra de selección. */
+function Accion({ icon: Icon, label, onClick, peligro = false }) {
+  return (
+    <span
+      role="button"
+      tabIndex={-1}
+      aria-label={label}
+      title={label}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      className={cn(
+        'grid size-6 place-items-center rounded-xs text-ink-dim transition-colors hover:bg-surface-2',
+        peligro ? 'hover:text-danger' : 'hover:text-ink',
+      )}
+    >
+      <Icon className="size-3.5" />
+    </span>
+  );
+}
+
+function Fila({
+  node, selected, highlighted, grado, terms, onSelect, compact, semantic, marcado, marcando, onMarca,
+  onEditar, onMover, onPapelera,
+}) {
   const ref = useRef(null);
   useEffect(() => {
     if (selected) ref.current?.scrollIntoView({ block: 'nearest' });
@@ -142,6 +167,14 @@ function Fila({ node, selected, highlighted, grado, terms, onSelect, compact, se
             {grado || ''}
           </span>
         </>
+      )}
+      {/* Al pasar el mouse: editar, mover y papelera, sobre la fecha y las relaciones. */}
+      {onPapelera && (
+        <span className="absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 rounded-sm border border-hair bg-surface-3 p-0.5 shadow-sm group-hover:flex">
+          <Accion icon={Pencil} label="Editar título, autor y tema" onClick={() => onEditar(node.id)} />
+          <Accion icon={FolderInput} label="Mover a sección…" onClick={() => onMover([node.id])} />
+          <Accion icon={Trash2} label="Mover a la papelera" onClick={() => onPapelera([node.id])} peligro />
+        </span>
       )}
     </button>
   );
@@ -278,6 +311,7 @@ export default function Library({
   filtros, onToggleTipo, onToggleFuente, onToggleConcepto, onToggleTema, onNombrarTemas, onLimpiar,
   onRetry, onIngest, compact,
   marcados = new Set(), onMarca, onMarcarVarios, onLimpiarMarcas, onMoverMarcados,
+  onTemaMarcados, onPapeleraMarcados, onEditar, onMover, onPapelera,
 }) {
   const [cerrados, setCerrados] = useState(() => new Set());
   const terms = useMemo(() => normalizar(query.trim()).split(/\s+/).filter(Boolean), [query]);
@@ -366,6 +400,9 @@ export default function Library({
                   marcado={marcados.has(n.id)}
                   marcando={marcados.size > 0}
                   onMarca={onMarca}
+                  onEditar={onEditar}
+                  onMover={onMover}
+                  onPapelera={onPapelera}
                 />
               ))}
             </div>
@@ -453,9 +490,13 @@ export default function Library({
       </div>
 
       {marcados.size > 0 && (
-        <div className="flex shrink-0 items-center gap-2 hairline-b bg-accent/[0.06] px-4 py-1.5 text-[12px]">
+        // Con el panel derecho abierto no entra todo en una línea: los controles bajan
+        // enteros (flex-wrap) en vez de partir sus textos en dos renglones.
+        <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 whitespace-nowrap hairline-b bg-accent/[0.06] px-4 py-1.5 text-[12px]">
           <span className="text-ink">{marcados.size} {marcados.size === 1 ? 'seleccionado' : 'seleccionados'}</span>
           <Button variant="outline" size="sm" onClick={onMoverMarcados}><FolderInput /> Mover a sección…</Button>
+          {onTemaMarcados && <Button variant="outline" size="sm" onClick={onTemaMarcados}><Tag /> Cambiar tema…</Button>}
+          {onPapeleraMarcados && <Button variant="danger" size="sm" onClick={onPapeleraMarcados}><Trash2 /> Mover a la papelera</Button>}
           {!todosMarcados && (
             <button
               type="button"

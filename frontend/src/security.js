@@ -6,7 +6,7 @@
 
 let habilitada = null;   // null = todavía no se consultó
 
-async function estaHabilitada() {
+export async function estaHabilitada() {
   if (habilitada !== null) return habilitada;
   try {
     const r = await fetch('/api/security');

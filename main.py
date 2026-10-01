@@ -27,7 +27,9 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.connection import get_async_session, get_sync_session
-from database.models import AuditLog, Chunk, Document, Edge, GraphStat, Node, ScriptRun, Section, Source
+from database.models import (AuditLog, Chunk, Document, Edge, GraphStat, Node, Papelera, ScriptRun,
+                             Section, Source)
+import papelera
 import workbench as wb
 
 load_dotenv()
@@ -1499,6 +1501,135 @@ async def move_nodes(payload: NodesMove, db: AsyncSession = Depends(get_async_se
     await _asegurar_seccion(db, destino)
     await db.commit()
     return {"ok": True, "seccion": destino, "movidos": res.rowcount or 0, "pedidos": len(ids)}
+
+
+class NodesIds(BaseModel):
+    ids: list[str]
+
+
+def _ids_pedidos(ids) -> list[str]:
+    ids = [i for i in dict.fromkeys(ids or []) if isinstance(i, str) and i.strip()]
+    if not ids:
+        raise HTTPException(400, "No hay documentos en el pedido.")
+    if len(ids) > 5000:
+        raise HTTPException(400, "Demasiados documentos en un solo pedido.")
+    return ids
+
+
+class NodesTema(BaseModel):
+    ids: list[str]
+    tema: str | None = None
+
+
+@app.post("/api/nodes/tema")
+async def tema_nodes(payload: NodesTema, db: AsyncSession = Depends(get_async_session)):
+    """El mismo tema para varios documentos (vacío = sin tema)."""
+    ids = _ids_pedidos(payload.ids)
+    try:
+        tema = _campos_editables({"tema": payload.tema or ""})["tema"]
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    res = await db.execute(sql_update(Node).where(Node.id.in_(ids)).values(tema=tema))
+    await db.commit()
+    return {"ok": True, "tema": tema, "actualizados": res.rowcount or 0}
+
+
+# ── Papelera ──────────────────────────────────────────────────────────────────
+# Mandar a la papelera no pide clave: es reversible. Eliminar definitivamente sí (la
+# misma de borrar una sección). La lógica y lo que se guarda están en papelera.py.
+
+def _en_sesion(fn, *args, commit: bool = False):
+    with get_sync_session() as session:
+        resultado = fn(session, *args)
+        if commit:
+            session.commit()
+        return resultado
+
+
+def _borrar_restos(restos: list[dict]) -> int:
+    """Lo que quedó sin dueño al eliminar definitivamente: el archivo subido (sólo si
+    está en uploads; el vault es del usuario y no se toca) y la miniatura cacheada."""
+    import hashlib
+    borrados = 0
+    uploads, thumbs = UPLOADS.resolve(), THUMBS.resolve()
+    for r in restos:
+        if r.get("archivo"):
+            crudo = Path(str(r["archivo"]).replace("\\", "/"))
+            try:
+                ruta = (crudo if crudo.is_absolute() else BASE / crudo).resolve()
+            except OSError:
+                ruta = None
+            if (ruta and ruta.is_file() and ruta.is_relative_to(uploads)
+                    and not ruta.is_relative_to(thumbs)):
+                ruta.unlink(missing_ok=True)
+                borrados += 1
+        if r.get("miniatura"):
+            (THUMBS / f"{hashlib.md5(r['node_id'].encode('utf-8')).hexdigest()}.png").unlink(missing_ok=True)
+    return borrados
+
+
+@app.post("/api/papelera/previa")
+async def papelera_previa(payload: NodesIds):
+    """Qué se iría con estos documentos (aristas, notas, pasajes…), sin tocar nada."""
+    return await asyncio.to_thread(_en_sesion, papelera.contar, _ids_pedidos(payload.ids))
+
+
+@app.post("/api/papelera")
+async def mandar_a_papelera(payload: NodesIds):
+    creados = await asyncio.to_thread(_en_sesion, papelera.mover, _ids_pedidos(payload.ids), commit=True)
+    return {"ok": True, "movidos": len(creados), "papelera_ids": creados}
+
+
+@app.get("/api/papelera")
+async def listar_papelera(db: AsyncSession = Depends(get_async_session)):
+    filas = (await db.execute(
+        select(Papelera.id, Papelera.node_id, Papelera.label, Papelera.tipo, Papelera.dominio,
+               Papelera.fuente, Papelera.fuente_label, Papelera.resumen, Papelera.eliminado_at)
+        .order_by(Papelera.eliminado_at.desc(), Papelera.id.desc())
+    )).all()
+    vivos = set((await db.execute(
+        select(Node.id).where(Node.id.in_([f.node_id for f in filas]))
+    )).scalars().all()) if filas else set()
+    return {"items": [{
+        "id": f.id, "node_id": f.node_id, "label": f.label, "type": f.tipo, "dominio": f.dominio,
+        "fuente": f.fuente, "fuente_label": f.fuente_label, "resumen": f.resumen or {},
+        "eliminado_at": f.eliminado_at.isoformat() if f.eliminado_at else None,
+        # Se volvió a ingerir mientras estaba acá: restaurarlo lo pisaría.
+        "en_grafo": f.node_id in vivos,
+    } for f in filas]}
+
+
+@app.post("/api/papelera/{papelera_id}/restaurar")
+async def restaurar_de_papelera(papelera_id: int):
+    try:
+        r = await asyncio.to_thread(_en_sesion, papelera.restaurar, papelera_id, commit=True)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except papelera.Conflicto as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True, **r}
+
+
+@app.post("/api/papelera/{papelera_id}/eliminar")
+async def eliminar_de_papelera(papelera_id: int, request: Request):
+    """Borra la copia para siempre (y el archivo subido, si nadie más lo usa)."""
+    body = await _read_body(request)
+    if not _check_password(body.get("password")):
+        raise HTTPException(403, "Clave de seguridad incorrecta. No se borró nada.")
+    try:
+        resto = await asyncio.to_thread(_en_sesion, papelera.eliminar, papelera_id, commit=True)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    return {"ok": True, "archivos_borrados": _borrar_restos([resto])}
+
+
+@app.post("/api/papelera/vaciar")
+async def vaciar_papelera(request: Request):
+    body = await _read_body(request)
+    if not _check_password(body.get("password")):
+        raise HTTPException(403, "Clave de seguridad incorrecta. No se borró nada.")
+    restos = await asyncio.to_thread(_en_sesion, papelera.vaciar, commit=True)
+    return {"ok": True, "eliminados": len(restos), "archivos_borrados": _borrar_restos(restos)}
 
 
 @app.post("/api/sections/rename")
