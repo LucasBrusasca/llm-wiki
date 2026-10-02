@@ -867,6 +867,60 @@ async def get_sections(db: AsyncSession = Depends(get_async_session)):
     return {"secciones": secciones}
 
 
+def _clave_tema(tema, cluster) -> str:
+    """La misma clave de tema que el frontend (lib/temas.js → temaKey)."""
+    t = (tema or "").strip()
+    plano = "".join(ch for ch in unicodedata.normalize("NFD", t.lower()) if unicodedata.category(ch) != "Mn")
+    if t and plano != "sin clasificar":
+        return f"t:{t}"
+    if cluster is not None and cluster >= 0:
+        return f"c:{cluster}"
+    return "sin-tema"
+
+
+@app.get("/api/salas")
+async def salas(db: AsyncSession = Depends(get_async_session)):
+    """El edificio del grafo de grafos: cada sección es una habitación, con cuántos
+    documentos tiene y cómo se reparten en sus temas (las habitaciones de adentro), y
+    las relaciones entre documentos de secciones distintas (las puertas). Mismo orden
+    que /api/sections, así cada habitación lleva el color de su sección."""
+    from sqlalchemy.orm import aliased
+    filas = (await db.execute(
+        select(Node.dominio, Node.tema, Node.cluster, func.count())
+        .where(Node.is_centroid == False, Node.is_issue == False)
+        .group_by(Node.dominio, Node.tema, Node.cluster)
+    )).all()
+    por_seccion: dict[str, dict] = {}
+    for dominio, tema, cluster, n in filas:
+        temas = por_seccion.setdefault(dominio or "personal", {})
+        clave = _clave_tema(tema, cluster)
+        t = temas.setdefault(clave, {"key": clave, "nombre": clave[2:] if clave.startswith("t:") else None, "docs": 0})
+        t["docs"] += n
+    nombres = set(por_seccion) | {"personal"}
+    nombres |= {nombre for (nombre,) in (await db.execute(select(Section.nombre))).all()}
+    secciones = []
+    for nombre in sorted(nombres, key=lambda s: (s != "personal", s.lower())):
+        temas = sorted(por_seccion.get(nombre, {}).values(), key=lambda t: (-t["docs"], t["key"]))
+        secciones.append({"nombre": nombre, "docs": sum(t["docs"] for t in temas), "temas": temas})
+
+    a, b = aliased(Node), aliased(Node)
+    pares = (await db.execute(
+        select(a.dominio, b.dominio, func.count())
+        .select_from(Edge).join(a, a.id == Edge.source).join(b, b.id == Edge.target)
+        .where(a.dominio != b.dominio, a.is_issue == False, b.is_issue == False,
+               a.is_centroid == False, b.is_centroid == False)
+        .group_by(a.dominio, b.dominio)
+    )).all()
+    puertas: dict[tuple, int] = {}
+    for x, y, n in pares:
+        par = tuple(sorted((x or "personal", y or "personal")))
+        puertas[par] = puertas.get(par, 0) + n
+    return {
+        "secciones": secciones,
+        "puertas": [{"a": x, "b": y, "n": n} for (x, y), n in sorted(puertas.items(), key=lambda kv: -kv[1])],
+    }
+
+
 @app.get("/api/traceability/status")
 async def traceability_status(db: AsyncSession = Depends(get_async_session)):
     """Cobertura de la migración Source → Document → Chunk."""

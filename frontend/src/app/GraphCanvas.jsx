@@ -3,7 +3,7 @@ import ReactFlow, {
   Handle, Position, ReactFlowProvider, useReactFlow, useStoreApi,
 } from 'reactflow';
 import 'reactflow/dist/base.css';
-import { Plus, Minus, Maximize, Waypoints, Pin, PinOff, Link2, X } from 'lucide-react';
+import { Plus, Minus, Maximize, Waypoints, Pin, PinOff, Link2, X, ChevronRight } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
 import ColorPanel, { calcularLeyenda } from '@/app/ColorPanel';
 import NodoTooltip from '@/app/NodoTooltip';
@@ -12,6 +12,11 @@ import {
   TARJETA, estadoNodo, vecinosDe, claseDetalle, calcularHitos, colocarPiezas, radioPantalla, medirHud,
 } from '@/lib/detalle';
 import { podar, aristasVisibles, estiloArista } from '@/lib/aristas';
+import { agruparPorTema, aristasEntreTemas, centrosDeTemas, portalesDe } from '@/lib/grafoTemas';
+import { planta, encajar } from '@/lib/salas';
+import { colorSeccion } from '@/lib/nodes';
+import { fetchSalas } from '@/lib/api';
+import { Planta, FondoTeseracto } from '@/app/Salas';
 import { cn } from '@/lib/utils';
 
 /**
@@ -174,7 +179,44 @@ const DocNode = memo(({ data }) => {
 });
 DocNode.displayName = 'DocNode';
 
-const nodeTypes = { doc: DocNode };
+/** Otro tema visto desde adentro de uno: en la columna del lado hacia donde queda.
+ *  Clic → entrar. El rótulo crece hacia afuera (según `lado`). */
+const PortalNode = memo(({ data }) => (
+  <div className="nodo-2d" style={{ '--c': data.color }}>
+    <Handle type="target" position={Position.Top} style={centro} isConnectable={false} />
+    <Handle type="source" position={Position.Bottom} style={centro} isConnectable={false} />
+    <div className="portal-2d-ancla" data-lado={data.lado}>
+      <span
+        className="portal-2d"
+        data-hover={data.hover || undefined}
+        title={`Ir a «${data.nombre}»: ${data.n} ${data.n === 1 ? 'relación' : 'relaciones'} con este tema`}
+      >
+        <i /><b>{data.nombre}</b><span>{data.n}</span>
+      </span>
+    </div>
+  </div>
+));
+PortalNode.displayName = 'PortalNode';
+
+const nodeTypes = { doc: DocNode, portal: PortalNode };
+
+/** Mantiene --inv y --escala del contenedor al día con el zoom (piezas contra-escaladas). */
+function useEscalaCss(store, cajaRef, alMover) {
+  useEffect(() => {
+    const aplicar = (zoom) => {
+      const el = cajaRef.current;
+      if (!el) return;
+      el.style.setProperty('--inv', String(1 / zoom));
+      el.style.setProperty('--escala', String(escalaDe(zoom)));
+    };
+    aplicar(store.getState().transform[2]);
+    return store.subscribe((s, prev) => {
+      if (s.transform === prev.transform && s.width === prev.width && s.height === prev.height) return;
+      if (s.transform[2] !== prev.transform[2]) aplicar(s.transform[2]);
+      alMover?.();
+    });
+  }, [store, cajaRef, alMover]);
+}
 
 /** Mismo contenido que el anterior (para no re-renderizar nodos que no cambiaron). */
 function mismoDato(a, b) {
@@ -206,6 +248,7 @@ function BotonCanvas({ texto, onClick, children, activo }) {
 function Lienzo({
   nodes, edges, visibleIds, selectedId, highlightIds, onSelect, relIndex,
   pinnedEdge, onClearPin, colorMode, onColorMode, colorDe, temas, compacto, ego, onFijar,
+  centros, portales = [], onPortal, navegacion, adentro = false,
 }) {
   const rf = useReactFlow();
   const store = useStoreApi();
@@ -219,7 +262,6 @@ function Lienzo({
   const hudRef = useRef({ t: -Infinity, rects: [] });
   const datosRef = useRef(new Map());
 
-  const centros = useMemo(() => layout(nodes, podar(edges, 3)), [nodes, edges]);
   const nodesById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   const grado = useCallback((id) => relIndex.get(id)?.length || 0, [relIndex]);
 
@@ -299,20 +341,7 @@ function Lienzo({
   // Cada movimiento del viewport (arrastre, rueda, fitView animado): el tamaño fijo en
   // pantalla va por CSS al instante y el detalle se recalcula en el próximo frame.
   // Se escucha el store y no `onMove`, que no avisa de los movimientos programáticos.
-  useEffect(() => {
-    const aplicar = (zoom) => {
-      const el = cajaRef.current;
-      if (!el) return;
-      el.style.setProperty('--inv', String(1 / zoom));
-      el.style.setProperty('--escala', String(escalaDe(zoom)));
-    };
-    aplicar(store.getState().transform[2]);
-    return store.subscribe((s, prev) => {
-      if (s.transform === prev.transform && s.width === prev.width && s.height === prev.height) return;
-      if (s.transform[2] !== prev.transform[2]) aplicar(s.transform[2]);
-      programar();
-    });
-  }, [store, programar]);
+  useEscalaCss(store, cajaRef, programar);
 
   const rfNodes = useMemo(() => {
     const cache = datosRef.current;
@@ -346,8 +375,19 @@ function Lienzo({
           : Z_PUNTO[estado] || 4,
       });
     }
+    // Adentro de un tema: los temas vecinos como portales en el borde.
+    for (const p of portales) {
+      const id = `portal:${p.key}`;
+      out.push({
+        id,
+        type: 'portal',
+        position: { x: p.x - CAJA / 2, y: p.y - CAJA / 2 },
+        data: { key: p.key, nombre: p.nombre, color: p.color, n: p.n, lado: p.lado, hover: hoverId === id },
+        zIndex: hoverId === id ? 50 : 25,
+      });
+    }
     return out;
-  }, [nodes, estados, centros, piezas, colorDe, grado, highlightIds, hoverId]);
+  }, [nodes, estados, centros, piezas, colorDe, grado, highlightIds, hoverId, portales]);
 
   // Mismas relaciones, mismo corte de fuertes y mismo estilo que el 3D (lib/aristas).
   const aristas = useMemo(() => aristasVisibles(edges, visibleIds), [edges, visibleIds]);
@@ -370,8 +410,30 @@ function Lienzo({
         zIndex: e.fijada ? 2 : e.acento ? 1 : 0,
       });
     }
+    // Hacia los portales: punteadas y tenues; se encienden con el portal o el documento.
+    for (const p of portales) {
+      const pid = `portal:${p.key}`;
+      for (const [doc, n] of p.docs) {
+        if (!visibleIds.has(doc)) continue;
+        const encendida = hoverId === pid || hoverId === doc || selectedId === doc;
+        out.push({
+          id: `${doc}→${pid}`,
+          source: doc,
+          target: pid,
+          type: 'straight',
+          focusable: false,
+          style: {
+            stroke: encendida ? 'var(--color-accent)' : 'var(--arista)',
+            strokeWidth: 1 + Math.min(n, 4) * 0.3,
+            strokeOpacity: encendida ? 0.75 : hoverId ? 0.07 : 0.2,
+            strokeDasharray: '3 4',
+          },
+          zIndex: encendida ? 1 : 0,
+        });
+      }
+    }
     return out;
-  }, [aristas, selectedId, pin, ego, hoverId, todas]);
+  }, [aristas, selectedId, pin, ego, hoverId, todas, portales, visibleIds]);
   // Lo que se dibuja sin el hover: el conteo no parpadea al pasar el mouse.
   const nAristas = useMemo(
     () => aristas.filter((a) => estiloArista(a, { selectedId, pin, ego, todas }).visible).length,
@@ -380,12 +442,33 @@ function Lienzo({
 
   const leyenda = useMemo(() => calcularLeyenda(nodes, visibleIds, colorMode, temas), [nodes, visibleIds, colorMode, temas]);
 
-  // Encuadrar cuando cambia el conjunto visible (sección / filtros).
+  // Encuadrar. Con portales, el zoom deja lugar a sus rótulos a cada lado: crecen hacia
+  // afuera y se contra-escalan, y fitView no sabe cuánto ocupan.
+  const relleno = portales.length ? 0.2 : 0.12;
+  const encuadrar = useCallback((duration = 250) => {
+    if (!portales.length) { rf.fitView({ padding: 0.12, duration }); return; }
+    const { width: W, height: H } = store.getState();
+    if (!W || !H) return;
+    const pts = [...visibleIds].map((id) => centros.get(id)).filter(Boolean).concat(portales);
+    const xs = pts.map((p) => p.x);
+    const ys = pts.map((p) => p.y);
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    // Lugar para los rótulos sólo del lado donde hay portales (crecen hacia afuera).
+    const aireIzq = portales.some((p) => p.lado === 'izq') ? 185 : 40;
+    const aireDer = portales.some((p) => p.lado === 'der') ? 185 : 40;
+    const ancho = Math.max(W - aireIzq - aireDer, W * 0.4);
+    const alto = Math.max(H - 2 * 70, H * 0.4);
+    const zoom = Math.max(0.03, Math.min(ancho / Math.max(x1 - x0, 1), alto / Math.max(y1 - y0, 1), 1.2));
+    const x = aireIzq + (ancho - (x1 - x0) * zoom) / 2 - x0 * zoom;
+    rf.setViewport({ x, y: H / 2 - ((y0 + y1) / 2) * zoom, zoom }, { duration });
+  }, [portales, rf, store, visibleIds, centros]);
+
+  // Encuadrar cuando cambia el conjunto visible (sección / filtros / tema).
   const firma = useMemo(() => `${visibleIds.size}:${nodes.length}`, [visibleIds, nodes.length]);
   useEffect(() => {
-    const t = setTimeout(() => rf.fitView({ padding: 0.12, duration: 250 }), 30);
+    const t = setTimeout(() => encuadrar(), 30);
     return () => clearTimeout(t);
-  }, [firma, rf]);
+  }, [firma, encuadrar]);
 
   // Al elegir un nodo: encuadrar el nodo y sus vecinos. Al fijar una relación:
   // encuadrar sólo esas dos puntas.
@@ -407,8 +490,12 @@ function Lienzo({
     return () => clearTimeout(t);
   }, [claveEncuadre, pin, ego, selectedId, vecinos, rf, visibleIds]);
 
-  const onNodeClick = useCallback((_, n) => onSelect(n.id), [onSelect]);
+  const onNodeClick = useCallback(
+    (_, n) => (n.type === 'portal' ? onPortal?.(n.data.key) : onSelect(n.id)),
+    [onSelect, onPortal],
+  );
   const moverHover = useCallback((ev, n) => {
+    if (n.type === 'portal') { setHover(null); setHoverId(n.id); return; }
     const r = cajaRef.current?.getBoundingClientRect();
     if (!r) return;
     setHover({ node: n.data.node, x: ev.clientX - r.left, y: ev.clientY - r.top, ancho: r.width, alto: r.height });
@@ -421,6 +508,8 @@ function Lienzo({
 
   return (
     <div ref={cajaRef} className="algedi-flow fondo-grafo relative size-full">
+      {/* Adentro de un tema: estás en una habitación del teseracto. */}
+      {adentro && <FondoTeseracto />}
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
@@ -439,13 +528,15 @@ function Lienzo({
         minZoom={0.03}
         maxZoom={2.5}
         fitView
-        fitViewOptions={{ padding: 0.12 }}
+        fitViewOptions={{ padding: relleno }}
         proOptions={{ hideAttribution: true }}
       />
 
       <div className="pointer-events-none absolute left-3 right-3 top-3 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">
+        {navegacion}
         <span data-hud className="whitespace-nowrap rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
-          {rfNodes.length} nodos · {nAristas} aristas{todas ? '' : ' fuertes'}
+          {estados.size} nodos · {nAristas} aristas{todas ? '' : ' fuertes'}
+          {portales.length > 0 && ` · conecta con ${portales.length} ${portales.length === 1 ? 'tema' : 'temas'}`}
         </span>
         {pin && (
           <span data-hud className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
@@ -478,7 +569,7 @@ function Lienzo({
         )}
         <BotonCanvas texto="Acercar" onClick={() => rf.zoomIn({ duration: 150 })}><Plus /></BotonCanvas>
         <BotonCanvas texto="Alejar" onClick={() => rf.zoomOut({ duration: 150 })}><Minus /></BotonCanvas>
-        <BotonCanvas texto="Encuadrar todo" onClick={() => rf.fitView({ padding: 0.12, duration: 250 })}><Maximize /></BotonCanvas>
+        <BotonCanvas texto="Encuadrar todo" onClick={() => encuadrar()}><Maximize /></BotonCanvas>
         <div className="h-px bg-hair" />
         <BotonCanvas
           texto={todas ? 'Sólo aristas fuertes' : 'Mostrar también las débiles (más tenues)'}
@@ -492,13 +583,236 @@ function Lienzo({
   );
 }
 
-export default function GraphCanvas(props) {
-  if (!props.nodes.length) {
-    return <div className="fondo-grafo grid size-full place-items-center text-[12px] text-ink-dim">Sin nodos para graficar.</div>;
+const temaInfo = (temas, key) => temas?.get(key) || { key, nombre: 'Sin tema', color: 'var(--cl-noise)', auto: false };
+const capital = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+const cantidad = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
+
+/**
+ * El edificio: cada sección es una habitación (en una empresa, cada gerencia o sector),
+ * y adentro se ven en miniatura las habitaciones de sus temas. Las puertas son las
+ * relaciones entre documentos de secciones distintas. Clic → entrar a la sección.
+ */
+let ultimoEdificio = null;   // el último leído: al volver (o al cambiar de sección) se ve ya, y se actualiza
+
+function Edificio({ seccion, onEntrar, navegacion }) {
+  const [datos, setDatos] = useState(() => ultimoEdificio);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let vivo = true;
+    fetchSalas()
+      .then((d) => { ultimoEdificio = d; if (vivo) setDatos(d); })
+      .catch((e) => vivo && setError(e.message));
+    return () => { vivo = false; };
+  }, [seccion]);
+
+  const salas = useMemo(() => (datos?.secciones || []).map((s, i) => ({
+    key: s.nombre,
+    nombre: capital(s.nombre),
+    detalle: s.docs
+      ? `${cantidad(s.docs, 'documento', 'documentos')} · ${cantidad(s.temas.length, 'tema', 'temas')}`
+      : 'Vacía',
+    color: colorSeccion(i),
+    peso: s.docs,
+    vacia: !s.docs,
+    actual: s.nombre === seccion,
+    // Sus temas, como habitaciones chiquitas: los colores siguen el orden por tamaño,
+    // igual que adentro de la sección.
+    contenido: (fondo) => {
+      const sub = planta(s.temas.map((t) => ({ key: t.key, peso: t.docs })), {
+        ancho: fondo.w, alto: fondo.h, pared: Math.min(fondo.w, fondo.h) * 0.06, minimo: 0.02,
+      });
+      let k = 0;
+      return {
+        salas: s.temas.map((t) => {
+          const r = sub.get(t.key);
+          const color = t.key === 'sin-tema' ? 'var(--cl-noise)' : `var(--cl-${k++ % 10})`;
+          return { key: t.key, color, x: fondo.x + r.x, y: fondo.y + r.y, w: r.w, h: r.h };
+        }),
+      };
+    },
+  })), [datos, seccion]);
+
+  const actualVacia = datos && !datos.secciones.find((s) => s.nombre === seccion)?.docs;
+  return (
+    <Planta
+      salas={salas}
+      puertas={datos?.puertas || []}
+      onEntrar={onEntrar}
+      navegacion={navegacion}
+      minimo={0.13}
+      resumen={datos ? `${cantidad(salas.length, 'sección', 'secciones')} · clic en una para entrar` : 'Leyendo el edificio…'}
+      aviso={error ? `No se pudo leer el edificio: ${error}`
+        : actualVacia ? `«${capital(seccion)}» está vacía: ingestá documentos para llenarla` : null}
+    />
+  );
+}
+
+/** Dónde estás: Edificio › sección › tema, o todos los documentos de la sección. */
+function Niveles({ vista, seccion, temas, onEdificio, onSeccion, onDocs, fijo }) {
+  const t = vista.modo === 'tema' ? temaInfo(temas, vista.key) : null;
+  const clase = (activo) => cn('px-1.5 py-0.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+    activo ? 'text-ink' : 'text-ink-dim hover:text-ink');
+  const desfijar = fijo ? 'Desfijá el vecindario para recorrer las habitaciones' : null;
+  return (
+    <span data-hud className="pointer-events-auto flex items-center whitespace-nowrap rounded-xs border border-hair bg-surface/95">
+      <button type="button" onClick={onEdificio} disabled={fijo} className={clase(vista.modo === 'edificio')}
+        title={desfijar || 'Todas las secciones como habitaciones'}>
+        Edificio
+      </button>
+      <ChevronRight className="size-3 text-ink-dim" />
+      <button type="button" onClick={onSeccion} disabled={fijo} className={clase(vista.modo === 'temas')}
+        title={desfijar || 'Los temas de la sección como habitaciones'}>
+        {capital(seccion)}
+      </button>
+      {t && (
+        <>
+          <ChevronRight className="size-3 text-ink-dim" />
+          <span className="flex max-w-[200px] items-center gap-1 px-1 text-ink">
+            <span className="size-2 shrink-0 rounded-[3px] dot-cat" style={{ '--c': t.color }} />
+            <span className="truncate">{t.nombre}</span>
+          </span>
+        </>
+      )}
+      <span className="mx-0.5 h-3.5 w-px bg-hair-strong" />
+      <button type="button" onClick={onDocs} className={clase(vista.modo === 'docs')} title="Todos los documentos de la sección">
+        Documentos
+      </button>
+    </span>
+  );
+}
+
+const FUERA_DE_SALAS = new Set(['ISSUE', 'EXPEDIENTE']);
+const NIVEL_KEY = 'algedi_grafo_nivel';
+const NIVELES = ['edificio', 'temas', 'docs'];
+function leerNivel() {
+  try {
+    const v = localStorage.getItem(NIVEL_KEY);
+    return NIVELES.includes(v) ? v : 'temas';
+  } catch { return 'temas'; }
+}
+
+/**
+ * Grafo de grafos, en el plano, como habitaciones (el teseracto de Interstellar):
+ * Edificio (secciones) → una sección (sus temas) → un tema (sus documentos, con
+ * puertas a los temas vecinos). «Documentos» muestra la sección entera. El layout de
+ * documentos es uno solo: entrar a un tema es acercarse a donde ya estaban.
+ */
+function Grafo2D(props) {
+  const { nodes, edges, visibleIds, temas, selectedId, ego, seccion, onSeccion } = props;
+  const [vista, setVista] = useState(() => ({ modo: leerNivel() }));   // edificio | temas | tema (key) | docs
+  useEffect(() => {
+    try { localStorage.setItem(NIVEL_KEY, vista.modo === 'tema' ? 'temas' : vista.modo); } catch { /* sin storage */ }
+  }, [vista.modo]);
+
+  const centros = useMemo(() => layout(nodes, podar(edges, 3)), [nodes, edges]);
+  // Issues y expedientes viven fuera de las secciones (se ven en todas): no son de
+  // ninguna habitación. Quedan en «Documentos» y en la biblioteca.
+  const enSalas = useMemo(
+    () => new Set(nodes.filter((n) => visibleIds.has(n.id) && !FUERA_DE_SALAS.has(n.type)).map((n) => n.id)),
+    [nodes, visibleIds],
+  );
+  const { grupos, temaDeId } = useMemo(() => agruparPorTema(nodes, enSalas), [nodes, enSalas]);
+  const temasPos = useMemo(() => centrosDeTemas(grupos, centros), [grupos, centros]);
+  const pares = useMemo(() => aristasEntreTemas(edges, temaDeId), [edges, temaDeId]);
+
+  // Elegir un documento (en la lista, el inspector o siguiendo un vínculo) entra a la
+  // habitación de su tema: el grafo muestra lo que estás mirando. Con «Documentos» no
+  // se mueve.
+  useEffect(() => {
+    const k = selectedId ? temaDeId.get(selectedId) : null;
+    if (!k) return;
+    setVista((v) => (v.modo === 'docs' || (v.modo === 'tema' && v.key === k) ? v : { modo: 'tema', key: k }));
+  }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Lo que se muestra de verdad: sin documentos en habitaciones (sección vacía o
+  // cargando), el edificio; un vecindario fijado es un foco de documentos; un tema que
+  // ya no está (filtros, se movió) vuelve a la sección.
+  const efectiva = !nodes.length || (!grupos.size && vista.modo !== 'docs') ? { modo: 'edificio' }
+    : ego ? { modo: 'docs' }
+    : vista.modo === 'tema' && !grupos.has(vista.key) ? { modo: 'temas' }
+    : vista;
+
+  const entrarSeccion = useCallback((nombre) => {
+    setVista({ modo: 'temas' });
+    if (nombre !== seccion) {
+      try { localStorage.setItem(NIVEL_KEY, 'temas'); } catch { /* sin storage */ }
+      onSeccion?.(nombre);
+    }
+  }, [seccion, onSeccion]);
+
+  const temaSel = selectedId ? temaDeId.get(selectedId) : null;
+  const salasTemas = useMemo(() => [...grupos.entries()].map(([key, ids]) => {
+    const t = temaInfo(temas, key);
+    return {
+      key,
+      nombre: t.nombre,
+      color: t.color,
+      peso: ids.length,
+      detalle: `${cantidad(ids.length, 'documento', 'documentos')}${t.auto ? ' · nombre automático' : ''}`,
+      actual: key === temaSel,
+      // Sus documentos en miniatura, con la misma forma que tienen al entrar.
+      contenido: (fondo) => ({ puntos: encajar(ids.map((id) => ({ id, ...(centros.get(id) || { x: 0, y: 0 }) })), fondo) }),
+    };
+  }), [grupos, temas, centros, temaSel]);
+
+  const delTema = useMemo(
+    () => (efectiva.modo === 'tema' ? new Set(grupos.get(efectiva.key) || []) : null),
+    [efectiva.modo, efectiva.key, grupos],
+  );
+  const portales = useMemo(() => {
+    if (efectiva.modo !== 'tema') return [];
+    return portalesDe(efectiva.key, {
+      edges, temaDeId, centros, temasPos, idsDelTema: grupos.get(efectiva.key) || [],
+    }).map((p) => ({ ...p, nombre: temaInfo(temas, p.key).nombre, color: temaInfo(temas, p.key).color }));
+  }, [efectiva.modo, efectiva.key, edges, temaDeId, centros, temasPos, grupos, temas]);
+
+  const navegacion = (
+    <Niveles
+      vista={efectiva}
+      seccion={seccion}
+      temas={temas}
+      fijo={!!ego}
+      onEdificio={() => setVista({ modo: 'edificio' })}
+      onSeccion={() => setVista({ modo: 'temas' })}
+      onDocs={() => setVista({ modo: 'docs' })}
+    />
+  );
+
+  if (efectiva.modo === 'edificio') {
+    return (
+      <ReactFlowProvider key="edificio">
+        <Edificio seccion={seccion} onEntrar={entrarSeccion} navegacion={navegacion} />
+      </ReactFlowProvider>
+    );
+  }
+  if (efectiva.modo === 'temas') {
+    return (
+      <ReactFlowProvider key={`temas:${seccion}`}>
+        <Planta
+          salas={salasTemas}
+          puertas={pares}
+          onEntrar={(key) => setVista({ modo: 'tema', key })}
+          navegacion={navegacion}
+          resumen={`${cantidad(grupos.size, 'tema', 'temas')} · ${cantidad(pares.length, 'puerta', 'puertas')} entre temas · clic en uno para entrar`}
+        />
+      </ReactFlowProvider>
+    );
   }
   return (
-    <ReactFlowProvider>
-      <Lienzo {...props} />
+    <ReactFlowProvider key={efectiva.modo === 'tema' ? `tema:${efectiva.key}` : 'docs'}>
+      <Lienzo
+        {...props}
+        visibleIds={delTema || visibleIds}
+        centros={centros}
+        portales={portales}
+        adentro={efectiva.modo === 'tema'}
+        onPortal={(key) => setVista({ modo: 'tema', key })}
+        navegacion={navegacion}
+      />
     </ReactFlowProvider>
   );
+}
+
+export default function GraphCanvas(props) {
+  return <Grafo2D {...props} />;
 }

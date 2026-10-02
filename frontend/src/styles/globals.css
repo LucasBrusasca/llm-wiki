@@ -235,3 +235,62 @@ body {
   opacity: 1;
   box-shadow: 0 0 0 1.5px var(--color-ink), 0 0 calc(var(--rpx) * 3) color-mix(in oklab, var(--c) 65%, transparent);
 }
+
+/* Habitaciones del grafo de grafos, con el aire del teseracto de Interstellar: cada
+   habitación es una caja vista de frente (marco, pared del fondo, aristas en
+   perspectiva, estantes). Las líneas quedan a 1 px en pantalla a cualquier zoom y el
+   rótulo se contra-escala; adentro, en miniatura, lo que contiene. */
+.algedi-flow .sala-2d { position: relative; transition: opacity 140ms; }
+.algedi-flow .sala-2d-svg { position: absolute; inset: 0; overflow: visible; transition: filter 160ms; }
+.algedi-flow .sala-2d-svg line,
+.algedi-flow .sala-2d-svg rect { vector-effect: non-scaling-stroke; stroke-width: 1px; fill: none; }
+.algedi-flow .sala-caja .caja-frente { fill: color-mix(in oklab, var(--c) 5%, transparent); stroke: color-mix(in oklab, var(--c) 58%, transparent); }
+.algedi-flow .sala-caja .caja-fondo { fill: color-mix(in oklab, var(--c) 9%, transparent); stroke: color-mix(in oklab, var(--c) 40%, transparent); }
+.algedi-flow .sala-caja line { stroke: color-mix(in oklab, var(--c) 30%, transparent); }
+.algedi-flow .sala-estante { stroke: color-mix(in oklab, var(--c) 10%, transparent); }
+.algedi-flow .sala-sub .caja-frente { fill: color-mix(in oklab, var(--c) 9%, transparent); stroke: color-mix(in oklab, var(--c) 70%, transparent); }
+.algedi-flow .sala-sub .caja-fondo { fill: color-mix(in oklab, var(--c) 15%, transparent); stroke: color-mix(in oklab, var(--c) 45%, transparent); }
+.algedi-flow .sala-sub line { stroke: color-mix(in oklab, var(--c) 35%, transparent); }
+.algedi-flow .sala-punto { fill: color-mix(in oklab, var(--c) 80%, white); }
+.algedi-flow .sala-2d[data-hover] .sala-caja .caja-frente { stroke: var(--c); fill: color-mix(in oklab, var(--c) 9%, transparent); }
+.algedi-flow .sala-2d[data-hover] .sala-2d-svg {
+  filter: drop-shadow(0 0 calc(12px * var(--inv, 1)) color-mix(in oklab, var(--c) 40%, transparent));
+}
+.algedi-flow .sala-2d[data-actual] .sala-caja .caja-frente { stroke: var(--c); stroke-width: 2px; }
+.algedi-flow .sala-2d[data-vacia] { opacity: 0.55; }
+.algedi-flow .sala-2d[data-tenue] { opacity: 0.28; }
+.algedi-flow .sala-2d-rotulo {
+  position: absolute; left: 0; top: 0; transform-origin: 0 0; transform: scale(var(--inv, 1));
+  display: flex; flex-direction: column; gap: 1px; padding: 9px 11px; pointer-events: none;
+  max-width: calc(var(--w) * 1px / var(--inv, 1));
+  font-size: 13px; line-height: 1.25; color: var(--color-ink); text-shadow: 0 1px 3px rgb(0 0 0 / 0.85);
+}
+.algedi-flow .sala-2d-rotulo > b,
+.algedi-flow .sala-2d-rotulo > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.algedi-flow .sala-2d-rotulo > b { font-weight: 600; }
+.algedi-flow .sala-2d-rotulo > span { font-size: 11px; color: var(--color-ink-muted); }
+
+/* Fondo de túnel: marcos que se pierden hacia el centro (el teseracto, de lejos). */
+.algedi-flow .fondo-teseracto { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.algedi-flow .fondo-teseracto rect,
+.algedi-flow .fondo-teseracto line { fill: none; stroke: var(--color-accent); stroke-opacity: 0.08; stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.algedi-flow .fondo-teseracto .viga { stroke-opacity: 0.04; }
+
+/* Portal: otro tema, visto desde adentro de uno, en una columna al costado. El ancla es
+   donde llegan las aristas; el rótulo crece desde ahí hacia afuera (el encuadre del
+   tema le deja lugar a cada lado). */
+.algedi-flow .portal-2d-ancla { position: absolute; left: 50%; top: 50%; transform-origin: 100% 50%;
+  transform: translate(-100%, -50%) scale(var(--inv, 1)); }
+.algedi-flow .portal-2d-ancla[data-lado='der'] { transform-origin: 0 50%; transform: translate(0, -50%) scale(var(--inv, 1)); }
+.algedi-flow .portal-2d {
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; max-width: 170px;
+  border-radius: 9999px; padding: 2px 9px; font-size: 11.5px;
+  border: 1px dashed color-mix(in oklab, var(--c) 70%, transparent);
+  background: color-mix(in oklab, var(--color-surface) 92%, transparent);
+  color: var(--color-ink-muted);
+  transition: color 120ms, border-color 120ms;
+}
+.algedi-flow .portal-2d[data-hover] { border-style: solid; border-color: var(--c); color: var(--color-ink); }
+.algedi-flow .portal-2d > i { flex: none; width: 7px; height: 7px; border-radius: 9999px; background: var(--c); }
+.algedi-flow .portal-2d > b { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 400; }
+.algedi-flow .portal-2d > span { color: var(--color-ink-dim); font-variant-numeric: tabular-nums; }
