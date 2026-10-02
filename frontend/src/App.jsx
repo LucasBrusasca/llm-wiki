@@ -29,6 +29,8 @@ import { normalizar } from '@/lib/utils';
 const GraphCanvas = lazy(() => import('@/app/GraphCanvas'));
 // El 3D (three.js) es el modo "explorar": nunca el home, se carga sólo si se abre.
 const Graph3DView = lazy(() => import('@/app/Graph3DView'));
+// 4D: el espacio de las secciones (teseractos con su grafo adentro). También a demanda.
+const Vista4D = lazy(() => import('@/app/Vista4D'));
 
 const LS = {
   get(k, def) { try { const v = localStorage.getItem(k); return v == null ? def : v; } catch { return def; } },
@@ -47,7 +49,7 @@ function guardarExtras(arr) {
   LS.set(EXTRA_SECCIONES_KEY, JSON.stringify([...new Set(arr.map((x) => x.trim().toLowerCase()).filter(Boolean))]));
 }
 
-const VISTAS = ['lista', 'split', 'grafo', '3d'];
+const VISTAS = ['lista', 'split', 'grafo', '3d', '4d'];
 
 // Paneles redimensionables: ancho por defecto y límites (px, o % para el split).
 const PANELES = {
@@ -401,6 +403,24 @@ export default function App() {
     setSelectedId(id);
   }, [autoAbrir]);
 
+  // 4D: un documento de otra sección cambia de sección y se abre apenas llega su grafo.
+  const pendiente4D = useRef(null);
+  const elegirEn4D = useCallback((id, dominio) => {
+    setInspectorAbierto(true);
+    if (dominio && dominio !== seccion) {
+      pendiente4D.current = id;
+      cambiarSeccion(dominio);
+      return;
+    }
+    seleccionar(id);
+  }, [seccion, cambiarSeccion, seleccionar]);
+  useEffect(() => {
+    const id = pendiente4D.current;
+    if (status !== 'ok' || !id || !graph.nodes.some((n) => n.id === id)) return;
+    pendiente4D.current = null;
+    seleccionar(id);
+  }, [status, graph.nodes, seleccionar]);
+
   // Seguir un vínculo: el documento actual pasa al camino y la arista usada queda fijada.
   const abrirVinculo = useCallback((id, edge) => {
     if (!id || id === selectedId) return;
@@ -593,6 +613,7 @@ export default function App() {
       if (e.key === '2') setVista('split');
       if (e.key === '3') setVista('grafo');
       if (e.key === '4') setVista('3d');
+      if (e.key === '5') setVista('4d');
       if (e.key === ']') { e.preventDefault(); setInspectorAbierto((v) => !v); }
       if (e.key === '[') { e.preventDefault(); setRailAbierto((v) => !v); }
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'j' || e.key === 'k') {
@@ -637,7 +658,9 @@ export default function App() {
   };
   const grafo = (
     <Suspense fallback={<div className="grid h-full place-items-center text-[12px] text-ink-dim">Cargando grafo…</div>}>
-      {vista === '3d' ? <Graph3DView {...propsGrafo} /> : <GraphCanvas {...propsGrafo} />}
+      {vista === '3d' ? <Graph3DView {...propsGrafo} />
+        : vista === '4d' ? <Vista4D selectedId={selectedId} onElegir={elegirEn4D} />
+        : <GraphCanvas {...propsGrafo} />}
     </Suspense>
   );
 

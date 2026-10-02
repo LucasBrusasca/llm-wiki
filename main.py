@@ -867,6 +867,32 @@ async def get_sections(db: AsyncSession = Depends(get_async_session)):
     return {"secciones": secciones}
 
 
+@app.get("/api/dimensiones")
+async def dimensiones(db: AsyncSession = Depends(get_async_session)):
+    """El espacio 4D: todas las secciones (mismo orden y colores que /api/sections) con
+    sus documentos —posición 3D de la proyección semántica, origen y fechas— y las
+    relaciones entre ellos. Liviano: sin embeddings ni textos largos. Issues y
+    expedientes no van: viven fuera de las secciones."""
+    secciones = (await get_sections(db))["secciones"]
+    filas = (await db.execute(
+        select(Node.id, Node.label, Node.dominio, Node.x3d, Node.y3d, Node.z3d, Node.fuente,
+               Node.type, Node.created_at, Node.fecha_doc)
+        .where(Node.is_centroid == False, Node.is_issue == False)
+    )).all()
+    nodos = [{
+        "id": f.id, "label": f.label, "dominio": f.dominio or "personal",
+        "x": f.x3d, "y": f.y3d, "z": f.z3d, "fuente": f.fuente, "type": f.type,
+        "creado": f.created_at.isoformat() if f.created_at else None, "fecha_doc": f.fecha_doc,
+    } for f in filas]
+    ids = {n["id"] for n in nodos}
+    aristas = (await db.execute(select(Edge.source, Edge.target, Edge.score))).all()
+    return {
+        "secciones": secciones,
+        "nodos": nodos,
+        "aristas": [{"s": s, "t": t, "score": round(sc or 0, 3)} for s, t, sc in aristas if s in ids and t in ids],
+    }
+
+
 @app.get("/api/traceability/status")
 async def traceability_status(db: AsyncSession = Depends(get_async_session)):
     """Cobertura de la migración Source → Document → Chunk."""

@@ -291,6 +291,9 @@ export const restaurarDePapelera = (id) => postJson(`/api/papelera/${id}/restaur
 export const eliminarDePapelera = (id, password) => postJson(`/api/papelera/${id}/eliminar`, { password });
 export const vaciarPapelera = (password) => postJson('/api/papelera/vaciar', { password });
 
+/** El espacio 4D: todas las secciones con sus documentos y relaciones (liviano). */
+export const fetchDimensiones = () => fetch('/api/dimensiones').then(jsonOError);
+
 /** El mismo tema para varios documentos (vacío = sin tema). */
 export const temaNodos = (ids, tema) => postJson('/api/nodes/tema', { ids, tema });
 

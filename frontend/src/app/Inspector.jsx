@@ -385,7 +385,7 @@ function Panorama({ seccionCount, edgesCount, relIndex, nodesById, onSelect }) {
             ['↑ ↓', 'moverse por la lista'],
             ['/', 'filtrar la biblioteca'],
             ['Ctrl K', 'buscar en todo'],
-            ['1 2 3 4', 'Lista · Split · Grafo · 3D'],
+            ['1 2 3 4 5', 'Lista · Split · Grafo · 3D · 4D'],
             ['Esc', 'cerrar el detalle'],
           ].map(([k, v]) => (
             <React.Fragment key={k}>

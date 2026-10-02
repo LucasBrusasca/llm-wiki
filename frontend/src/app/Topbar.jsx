@@ -1,5 +1,5 @@
 import React from 'react';
-import { Search, List, Columns2, Share2, Orbit, RotateCw } from 'lucide-react';
+import { Search, List, Columns2, Share2, Orbit, Box, RotateCw } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -9,6 +9,7 @@ const VISTAS = [
   { id: 'split', label: 'Split', icon: Columns2, key: '2' },
   { id: 'grafo', label: 'Grafo', icon: Share2, key: '3' },
   { id: '3d', label: '3D', icon: Orbit, key: '4' },
+  { id: '4d', label: '4D', icon: Box, key: '5' },
 ];
 
 /** Marca: dos nodos y una arista; el nodo activo toma el acento con halo. */
