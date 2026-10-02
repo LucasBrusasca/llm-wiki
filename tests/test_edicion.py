@@ -7,22 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 from fastapi import HTTPException
 
-from main import NodesMove, _campos_editables, _clave_tema, _nombre_seccion, move_nodes
-
-
-class ClaveTemaTest(unittest.TestCase):
-    """La clave de tema del edificio (/api/salas) es la misma que arma el frontend
-    (lib/temas.js → temaKey): si no, el edificio y la sección cuentan distinto."""
-
-    def test_tema_real_cluster_o_sin_tema(self):
-        self.assertEqual(_clave_tema("  Estadística ", 3), "t:Estadística")
-        self.assertEqual(_clave_tema("", 3), "c:3")
-        self.assertEqual(_clave_tema(None, None), "sin-tema")
-        self.assertEqual(_clave_tema(None, -1), "sin-tema")
-
-    def test_sin_clasificar_no_es_un_tema(self):
-        for t in ("Sin clasificar", "SIN CLASIFICAR", "Sín clasificar"):
-            self.assertEqual(_clave_tema(t, 2), "c:2", msg=t)
+from main import NodesMove, _campos_editables, _nombre_seccion, move_nodes
 
 
 class NombreSeccionTest(unittest.TestCase):

@@ -291,9 +291,6 @@ export const restaurarDePapelera = (id) => postJson(`/api/papelera/${id}/restaur
 export const eliminarDePapelera = (id, password) => postJson(`/api/papelera/${id}/eliminar`, { password });
 export const vaciarPapelera = (password) => postJson('/api/papelera/vaciar', { password });
 
-/** El edificio del grafo de grafos: secciones con sus temas, y relaciones entre secciones. */
-export const fetchSalas = () => fetch('/api/salas').then(jsonOError);
-
 /** El mismo tema para varios documentos (vacío = sin tema). */
 export const temaNodos = (ids, tema) => postJson('/api/nodes/tema', { ids, tema });
 

@@ -634,9 +634,6 @@ export default function App() {
     relIndex,
     colorMode: modoColor,
     onColorMode: vista === '3d' ? setColorMode3d : setColorMode,
-    // El edificio del grafo de grafos: cada sección es una habitación.
-    seccion,
-    onSeccion: cambiarSeccion,
   };
   const grafo = (
     <Suspense fallback={<div className="grid h-full place-items-center text-[12px] text-ink-dim">Cargando grafo…</div>}>
