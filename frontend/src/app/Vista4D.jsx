@@ -249,6 +249,9 @@ export default function Vista4D({ selectedId, onElegir }) {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.setSize(W, H);
     renderer.setClearColor(FONDO);
+    // Fuera del flujo: con su ancho fijo en px, el lienzo no dejaba que la caja se
+    // achicara al abrir el panel derecho, y el panel quedaba afuera de la pantalla.
+    Object.assign(renderer.domElement.style, { position: 'absolute', inset: '0' });
     caja.appendChild(renderer.domElement);
     const capa = new CSS2DRenderer();
     capa.setSize(W, H);
