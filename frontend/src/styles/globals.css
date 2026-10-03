@@ -255,9 +255,3 @@ body {
 .sala-4d:hover > div { border-color: var(--c); }
 .sala-4d b { font-weight: 600; text-transform: capitalize; }
 .sala-4d span { font-size: 10.5px; color: var(--color-ink-muted); }
-.nodo-4d { pointer-events: none; transition: opacity 200ms; }
-.nodo-4d > span {
-  display: block; max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  transform: translateY(-15px); font-size: 11.5px; color: var(--color-ink);
-  text-shadow: 0 1px 3px #000, 0 0 10px #000;
-}

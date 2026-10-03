@@ -7,9 +7,13 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { Plus, Minus, Maximize, Undo2, Loader2, Pause, Eye, EyeOff, Rotate3d } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
+import Etiquetas3D from '@/app/Etiquetas3D';
+import NodoTooltip from '@/app/NodoTooltip';
 import { fetchDimensiones } from '@/lib/api';
-import { resolverColor, colorFuente, colorSeccion, fuenteLabel } from '@/lib/nodes';
+import { resolverColor, colorFuente, colorSeccion, colorCluster } from '@/lib/nodes';
 import { podar } from '@/lib/aristas';
+import { TARJETA, estadoNodo, claseDetalle, colocarPiezas, medirHud } from '@/lib/detalle';
+import { temaKey } from '@/lib/temas';
 
 /**
  * Vista 4D: la cuarta dimensión son las secciones unidas.
@@ -34,6 +38,10 @@ const ACENTO = 0x22d3ee;
 const D4 = 2.6;        // distancia del observador en la cuarta dimensión
 const ESCALA = 1000;   // unidades de escena por unidad del hipercubo
 const MARGEN = 0.84;   // el grafo no toca las paredes de su habitación
+// Las reglas de detalle (lib/detalle) están medidas en px por unidad del 3D, cuyas
+// unidades son más chicas: con este factor las tarjetas aparecen cuando te acercaste
+// a una zona del grafo, no apenas tenés la habitación entera a la vista.
+const DETALLE_4D = 1.6;
 
 // ── El teseracto ─────────────────────────────────────────────────────────────
 const V4 = Array.from({ length: 16 }, (_, i) => [i & 1 ? 1 : -1, i & 2 ? 1 : -1, i & 4 ? 1 : -1, i & 8 ? 1 : -1]);
@@ -209,7 +217,8 @@ export default function Vista4D({ selectedId, onElegir }) {
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState(null);
   const [dentro, setDentro] = useState(null);
-  const [tip, setTip] = useState(null);
+  const [hover, setHover] = useState(null);       // documento bajo el mouse (NodoTooltip)
+  const etiquetasRef = useRef(null);              // tarjetas y chips (Etiquetas3D)
   const [ayuda, setAyuda] = useState(true);
   const [girando, setGirando] = useState(false);   // una vuelta en la 4ª dimensión
   // Intensidad de los cubos (marco y paredes), 0–100: 0 los oculta (quedan los grafos
@@ -329,6 +338,7 @@ export default function Vista4D({ selectedId, onElegir }) {
       const cc = new THREE.Color(resolverColor(colorFuente(x.n), '#8a9099'));
       col.set([cc.r, cc.g, cc.b], i * 3);
     });
+    const colBase = col.slice();   // para devolverle el color al punto que deja de ser tarjeta
     const gp = new THREE.BufferGeometry();
     gp.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     gp.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -435,15 +445,21 @@ export default function Vista4D({ selectedId, onElegir }) {
     }
     let hoverId = null;
 
-    const titulos = Array.from({ length: 14 }, () => {
-      const d = document.createElement('div');
-      d.className = 'nodo-4d';
-      d.innerHTML = '<span></span>';
-      const o = new CSS2DObject(d);
-      o.visible = false;
-      scene.add(o);
-      return o;
-    });
+    // Lo que se muestra al pasar el mouse: los temas con nombre de cada documento y la
+    // habitación (sección) a la que pertenece.
+    const temas = new Map();
+    for (const { n } of nodos) {
+      const k = temaKey(n);
+      if (k.startsWith('t:') && !temas.has(k)) temas.set(k, { key: k, nombre: n.tema.trim(), color: colorCluster(n), auto: false });
+    }
+    const seccionDe4D = new Map(datos.secciones.map((s, i) => [s.nombre, { nombre: s.nombre, color: colorSeccion(i) }]));
+    // Sin nada elegido, los más conectados de cada habitación son los primeros en
+    // mostrar su nombre (los «hitos» del 2D y el 3D, pero por sección).
+    const hitos = new Set();
+    for (const s of salas) {
+      s.docs.map((n) => [n.id, vecinos.get(n.id)?.length || 0]).sort((a, b) => b[1] - a[1])
+        .slice(0, 3).forEach(([id]) => hitos.add(id));
+    }
 
     const posicion = (i, v = new THREE.Vector3()) => v.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
     const mostrarRelaciones = (id) => {
@@ -454,6 +470,100 @@ export default function Vista4D({ selectedId, onElegir }) {
       gHover.setAttribute('position', new THREE.BufferAttribute(arr, 3));
       gHover.setDrawRange(0, otros.length * 2);
       sucio = true;
+    };
+
+    // ── De cerca, cada documento ES su tarjeta, como en el 2D y el 3D ──
+    // Lejos es un punto; más cerca, un chip con su título; más cerca todavía, su tarjeta
+    // (miniatura, título y origen). Las reglas y las piezas son las de siempre
+    // (lib/detalle, PiezasNodo, Etiquetas3D): acá sólo se mide cada documento en pantalla.
+    const piezas = new Map();      // `${modo}:${id}` → CSS2DObject, reusados entre cuadros
+    let colocadas = new Map();     // id → { modo, dim, sep, i }
+    let enTarjeta = new Set();     // índices de los puntos que hoy son tarjeta
+    let vecinosSel = null;
+    let firmaPiezas = '';
+    let hud = { t: -Infinity, rects: [] };
+    const pPieza = new THREE.Vector3();
+    const actualizarDetalle = () => {
+      const focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(camara.fov / 2));
+      const ahora = performance.now();
+      if (ahora - hud.t > 400) hud = { t: ahora, rects: medirHud(caja) };   // paneles: ahí no va nada
+      const selId = selRef.current;
+      const cands = [];
+      for (let i = 0; i < nodos.length; i++) {
+        const { n } = nodos[i];
+        const estado = estadoNodo(n.id, { selectedId: selId, pinOtro: null, vecinos: vecinosSel, ego: null });
+        const clase = claseDetalle(estado, { hito: !selId && hitos.has(n.id) });
+        if (!clase) continue;
+        posicion(i, pPieza);
+        const dist = Math.max(1, pPieza.distanceTo(camara.position));
+        pPieza.project(camara);
+        if (pPieza.z < -1 || pPieza.z > 1) continue;                   // detrás de la cámara
+        const x = (pPieza.x * 0.5 + 0.5) * W;
+        const y = (-pPieza.y * 0.5 + 0.5) * H;
+        if (x < -60 || x > W + 60 || y < -60 || y > H + 60) continue;
+        const pxu = focal / dist;
+        const alCentro = Math.hypot((x - W / 2) / (W / 2), (y - H / 2) / (H / 2));
+        cands.push({
+          id: n.id, i, x, y, clase, estado, escala: pxu * DETALLE_4D, rpx: Math.max(3, Math.min(4, 3.6 * pxu)),
+          label: n.label, orden: dist * (1 + 0.6 * alCentro),   // primero lo cercano y al centro
+        });
+      }
+      const puestas = colocarPiezas(cands, { W, H, ocupadas: hud.rects });
+      const items = [];
+      const usadas = new Set();
+      const tarjetas = new Set();
+      colocadas = new Map();
+      for (const c of cands) {
+        const p = puestas.get(c.id);
+        if (!p) continue;
+        const tarjeta = p.modo === 'tarjeta';
+        if (tarjeta) tarjetas.add(c.i);
+        colocadas.set(c.id, { ...p, i: c.i });
+        const clave = `${p.modo}:${c.id}`;
+        usadas.add(clave);
+        let pieza = piezas.get(clave);
+        if (!pieza) {
+          pieza = new CSS2DObject(document.createElement('div'));
+          pieza.element.style.pointerEvents = 'none';
+          pieza.center.set(tarjeta ? 0.5 : 0, 0.5);   // tarjeta centrada en el punto; chip a su derecha
+          piezas.set(clave, pieza);
+        }
+        posicion(c.i, pieza.position);
+        if (pieza.parent !== scene) scene.add(pieza);
+        if (!tarjeta && pieza.sep !== p.sep) {
+          pieza.sep = p.sep;
+          pieza.element.style.setProperty('--sep', `${p.sep}px`);
+        }
+        const { n } = nodos[c.i];
+        items.push({
+          clave, id: c.id, tipo: p.modo, el: pieza.element, node: n, estado: c.estado,
+          color: colorFuente(n), grande: p.dim === TARJETA.grande, medida: tarjeta ? null : p.dim, marcado: false,
+        });
+      }
+      for (const [clave, pieza] of piezas) if (!usadas.has(clave) && pieza.parent) pieza.parent.remove(pieza);
+      // La tarjeta reemplaza al punto: con mezcla aditiva, un punto negro no suma nada.
+      let cambio = false;
+      for (const i of enTarjeta) if (!tarjetas.has(i)) { col.set(colBase.subarray(i * 3, i * 3 + 3), i * 3); cambio = true; }
+      for (const i of tarjetas) if (!enTarjeta.has(i)) { col.fill(0, i * 3, i * 3 + 3); cambio = true; }
+      if (cambio) gp.attributes.color.needsUpdate = true;
+      enTarjeta = tarjetas;
+      const firma = items.map((it) => `${it.clave}|${it.estado}`).join(',');
+      if (firma !== firmaPiezas) {
+        firmaPiezas = firma;
+        etiquetasRef.current?.mostrar(items);
+      }
+    };
+    // La tarjeta o el chip bajo el mouse: van encima de los puntos y cuentan como su documento.
+    const piezaBajo = (mx, my) => {
+      for (const p of colocadas.values()) {
+        posicion(p.i, pPieza).project(camara);
+        const x = (pPieza.x * 0.5 + 0.5) * W;
+        const y = (-pPieza.y * 0.5 + 0.5) * H;
+        const { w, h } = p.dim;
+        const [x0, x1] = p.modo === 'tarjeta' ? [x - w / 2, x + w / 2] : [x + p.sep, x + p.sep + w];
+        if (mx >= x0 && mx <= x1 && my >= y - h / 2 && my <= y + h / 2) return nodos[p.i].n;
+      }
+      return null;
     };
 
     // ── Proyectar todo con el giro actual en la cuarta dimensión ──
@@ -555,12 +665,16 @@ export default function Vista4D({ selectedId, onElegir }) {
     const mouse = new THREE.Vector2();
     let quiereElegir = false;
     let abajo = null;
+    let mousePx = { x: -1, y: -1 };
     const aNdc = (e) => {
       const r = renderer.domElement.getBoundingClientRect();
       mouse.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      mousePx = { x: e.clientX - r.left, y: e.clientY - r.top };
       return r;
     };
     const elegirBajo = () => {
+      const enPieza = piezaBajo(mousePx.x, mousePx.y);
+      if (enPieza) return enPieza;
       ray.params.Points.threshold = Math.max(5, camara.position.distanceTo(controles.target) * 0.012);
       ray.setFromCamera(mouse, camara);
       const h = ray.intersectObject(puntos, false).sort((a, b) => a.distanceToRay - b.distanceToRay || a.distance - b.distance)[0];
@@ -570,7 +684,14 @@ export default function Vista4D({ selectedId, onElegir }) {
       const r = aNdc(e);
       quiereElegir = { x: e.clientX - r.left, y: e.clientY - r.top, ancho: r.width };
     };
-    const onLeave = () => { quiereElegir = false; hoverId = null; setTip(null); gHover.setDrawRange(0, 0); sucio = true; };
+    const onLeave = () => {
+      quiereElegir = false;
+      hoverId = null;
+      setHover(null);
+      etiquetasRef.current?.resaltar(null);
+      gHover.setDrawRange(0, 0);
+      sucio = true;
+    };
     const onDown = (e) => { abajo = { x: e.clientX, y: e.clientY }; setAyuda(false); };
     const onUp = (e) => {
       if (!abajo || Math.hypot(e.clientX - abajo.x, e.clientY - abajo.y) > 5) return;
@@ -610,14 +731,14 @@ export default function Vista4D({ selectedId, onElegir }) {
     // ── Cada cuadro ──
     let raf = 0;
     let antes = performance.now();
-    let ultimoTitulo = 0;
+    let ultimoDetalle = 0;
+    let detallePendiente = true;
     let ultimoPulso = 0;
     let dentroActual = null;
     let selPrevio = null;
     let tSel = 0;
     let kCubos = cubosRef.current / 50;
     marco.visible = kCubos > 0;
-    const tmp = new THREE.Vector3();
     const cuadro = (ahora) => {
       raf = requestAnimationFrame(cuadro);
       const dt = Math.min(0.05, (ahora - antes) / 1000);
@@ -683,50 +804,25 @@ export default function Vista4D({ selectedId, onElegir }) {
         if (opRotulo !== s.opRotulo) { s.opRotulo = opRotulo; s.rotulo.element.style.opacity = opRotulo; }
       }
 
-      // Títulos: los documentos más cercanos a vos, sin pisarse.
-      if (ahora - ultimoTitulo > 250) {
-        ultimoTitulo = ahora;
-        const cerca = [];
-        for (let i = 0; i < nodos.length; i++) {
-          const p = posicion(i);
-          const d = p.distanceTo(camara.position);
-          if (d > ESCALA * 0.75) continue;
-          tmp.copy(p).project(camara);
-          if (tmp.z < -1 || tmp.z > 1 || Math.abs(tmp.x) > 1.05 || Math.abs(tmp.y) > 1.05) continue;
-          cerca.push({ x: nodos[i], p, d, sx: tmp.x, sy: tmp.y });
-        }
-        cerca.sort((a, b) => a.d - b.d);
-        const elegidos = [];
-        const ocupadas = [];
-        for (const c of cerca) {
-          if (elegidos.length >= titulos.length) break;
-          const x = ((c.sx + 1) / 2) * W;
-          const y = ((1 - c.sy) / 2) * H - 15;
-          const w = Math.min(230, c.x.n.label.length * 6.6) + 10;
-          const r = [x - w / 2, y - 10, x + w / 2, y + 10];
-          if (ocupadas.some((o) => r[0] < o[2] && r[2] > o[0] && r[1] < o[3] && r[3] > o[1])) continue;
-          ocupadas.push(r);
-          elegidos.push(c);
-        }
-        titulos.forEach((o, k) => {
-          const c = elegidos[k];
-          if (!c) {
-            if (o.visible) { o.visible = false; sucio = true; }
-            return;
-          }
-          if (!o.visible || o.userData.id !== c.x.n.id) {
-            o.visible = true;
-            o.userData.id = c.x.n.id;
-            o.element.firstChild.textContent = c.x.n.label;
-            sucio = true;
-          }
-          o.position.copy(c.p);
-          const op = (1 - suave(ESCALA * 0.35, ESCALA * 0.75, c.d)).toFixed(2);
-          if (op !== o.userData.op) { o.userData.op = op; o.element.style.opacity = op; }
-        });
+      // El elegido: sus vecinos ganan detalle (y lo que no tiene que ver queda en punto).
+      const iSel = selRef.current != null ? (indice.get(selRef.current) ?? null) : null;
+      if (iSel !== selPrevio) {
+        selPrevio = iSel;
+        tSel = ahora;
+        vecinosSel = iSel != null ? new Set(vecinos.get(selRef.current) || []) : null;
+        sucio = true;
       }
 
-      // Hover.
+      // Tarjetas y chips: se recalculan cuando algo cambió, como mucho ~14 veces por segundo.
+      if (sucio) detallePendiente = true;
+      if (detallePendiente && ahora - ultimoDetalle > 70) {
+        ultimoDetalle = ahora;
+        detallePendiente = false;
+        actualizarDetalle();
+        sucio = true;
+      }
+
+      // Hover: el documento (o su tarjeta) bajo el mouse enciende sus relaciones.
       if (quiereElegir) {
         const q = quiereElegir;
         quiereElegir = false;
@@ -735,16 +831,17 @@ export default function Vista4D({ selectedId, onElegir }) {
         if (id !== hoverId) {
           hoverId = id;
           if (id) mostrarRelaciones(id); else gHover.setDrawRange(0, 0);
+          etiquetasRef.current?.resaltar(id);
           sucio = true;
         }
-        setTip(n ? { label: n.label, seccion: n.dominio, fuente: fuenteLabel(n), x: q.x, y: q.y, ancho: q.ancho } : null);
+        setHover(n ? { node: n, x: q.x, y: q.y, ancho: W, alto: H, temas, seccion: seccionDe4D.get(n.dominio) } : null);
       }
 
-      // El elegido: late unos segundos para encontrarlo y después queda quieto.
-      const iSel = selRef.current != null ? (indice.get(selRef.current) ?? null) : null;
-      if (iSel !== selPrevio) { selPrevio = iSel; tSel = ahora; sucio = true; }
-      halo.visible = iSel != null;
-      if (iSel != null) {
+      // Halo del elegido: late unos segundos para encontrarlo y después queda quieto.
+      // Si ya es su tarjeta, la tarjeta lo marca.
+      const conHalo = iSel != null && !enTarjeta.has(iSel);
+      if (halo.visible !== conHalo) { halo.visible = conHalo; sucio = true; }
+      if (conHalo) {
         const pulso = 0.15 * Math.max(0, 1 - (ahora - tSel) / 4000);
         if (pulso > 0 && ahora - ultimoPulso > 40) { ultimoPulso = ahora; sucio = true; }
         if (sucio) {
@@ -774,6 +871,7 @@ export default function Vista4D({ selectedId, onElegir }) {
       renderer.dispose();
       renderer.domElement.remove();
       capa.domElement.remove();
+      etiquetasRef.current?.mostrar([]);
       apiRef.current = null;
     };
   }, [datos]);
@@ -782,7 +880,7 @@ export default function Vista4D({ selectedId, onElegir }) {
   return (
     <div ref={cajaRef} className="relative size-full overflow-hidden bg-[#05060c]">
       <div className="pointer-events-none absolute left-3 right-3 top-3 z-10 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">
-        <span className="pointer-events-auto flex items-center gap-1 whitespace-nowrap rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
+        <span data-hud className="pointer-events-auto flex items-center gap-1 whitespace-nowrap rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
           <span className="font-medium text-ink">4D</span>
           <span>· {dentro ? <>adentro de <b className="font-medium capitalize text-ink">{dentro}</b></> : 'tus secciones, unidas en un teseracto'}</span>
           {dentro && (
@@ -794,7 +892,7 @@ export default function Vista4D({ selectedId, onElegir }) {
       </div>
 
       {secciones.length > 0 && (
-        <div className="absolute right-3 top-3 z-10 flex flex-col gap-0.5 rounded-sm border border-hair bg-surface/90 p-1.5 text-[11.5px]">
+        <div data-hud className="absolute right-3 top-3 z-10 flex flex-col gap-0.5 rounded-sm border border-hair bg-surface/90 p-1.5 text-[11.5px]">
           <span className="px-1 pb-0.5 text-[10px] uppercase tracking-[0.08em] text-ink-dim">Habitaciones</span>
           {secciones.map((s, i) => (
             <button
@@ -819,24 +917,23 @@ export default function Vista4D({ selectedId, onElegir }) {
       )}
       {error && <p className="absolute inset-0 grid place-items-center text-[12px] text-danger">No se pudo abrir el espacio: {error}</p>}
 
-      {tip && (
-        <div
-          className="pointer-events-none absolute z-20 max-w-[280px] rounded-sm border border-hair-strong bg-surface/95 px-2.5 py-1.5 text-[11.5px] shadow-lg"
-          style={{ left: Math.min(tip.x + 14, tip.ancho - 290), top: tip.y + 14 }}
-        >
-          <p className="text-ink">{tip.label}</p>
-          <p className="text-ink-dim"><span className="capitalize">{tip.seccion}</span>{tip.fuente ? ` · ${tip.fuente}` : ''} · clic para abrirlo</p>
-        </div>
+      {/* De cerca, cada documento es su tarjeta (o su chip): las mismas piezas del 3D. */}
+      <Etiquetas3D ref={etiquetasRef} />
+      {hover && (
+        <NodoTooltip
+          node={hover.node} x={hover.x} y={hover.y} ancho={hover.ancho} alto={hover.alto}
+          temas={hover.temas} seccion={hover.seccion}
+        />
       )}
 
       {datos && (
         <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1.5">
           {ayuda && (
-            <p className="pointer-events-none whitespace-nowrap rounded-xs border border-hair bg-surface/90 px-2.5 py-1 text-[11.5px] text-ink-muted">
+            <p data-hud className="pointer-events-none whitespace-nowrap rounded-xs border border-hair bg-surface/90 px-2.5 py-1 text-[11.5px] text-ink-muted">
               Rueda: acercarte hacia donde apuntás · arrastrá: mirar alrededor · doble clic: ir ahí
             </p>
           )}
-          <div className="flex items-center gap-2 rounded-sm border border-hair bg-surface/90 px-2 py-1 text-[11px] text-ink-dim">
+          <div data-hud className="flex items-center gap-2 rounded-sm border border-hair bg-surface/90 px-2 py-1 text-[11px] text-ink-dim">
             <button
               type="button"
               onClick={() => setGirando((g) => !g)}
@@ -869,7 +966,7 @@ export default function Vista4D({ selectedId, onElegir }) {
         </div>
       )}
 
-      <div className="absolute bottom-3 left-3 z-10 flex flex-col overflow-hidden rounded-sm border border-hair bg-surface">
+      <div data-hud className="absolute bottom-3 left-3 z-10 flex flex-col overflow-hidden rounded-sm border border-hair bg-surface">
         <Boton texto="Acercar" onClick={() => apiRef.current?.zoom(0.6)}><Plus /></Boton>
         <Boton texto="Alejar" onClick={() => apiRef.current?.zoom(1.6)}><Minus /></Boton>
         <Boton texto="Ver todo el teseracto" onClick={() => apiRef.current?.salir()}><Maximize /></Boton>

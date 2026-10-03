@@ -875,13 +875,18 @@ async def dimensiones(db: AsyncSession = Depends(get_async_session)):
     secciones = (await get_sections(db))["secciones"]
     filas = (await db.execute(
         select(Node.id, Node.label, Node.dominio, Node.x3d, Node.y3d, Node.z3d, Node.fuente,
-               Node.type, Node.created_at, Node.fecha_doc)
+               Node.type, Node.created_at, Node.fecha_doc, Node.autor, Node.tema, Node.cluster,
+               Node.fuente_path, Node.fuente_url)
         .where(Node.is_centroid == False, Node.is_issue == False)
     )).all()
+    # De cerca, cada documento es su tarjeta (miniatura, origen, tema, autor, fecha):
+    # van los campos cortos que eso necesita, no los textos.
     nodos = [{
         "id": f.id, "label": f.label, "dominio": f.dominio or "personal",
         "x": f.x3d, "y": f.y3d, "z": f.z3d, "fuente": f.fuente, "type": f.type,
         "creado": f.created_at.isoformat() if f.created_at else None, "fecha_doc": f.fecha_doc,
+        "autor": f.autor, "tema": f.tema, "cluster": f.cluster if f.cluster is not None else -1,
+        "fuente_path": f.fuente_path, "fuente_url": f.fuente_url,
     } for f in filas]
     ids = {n["id"] for n in nodos}
     aristas = (await db.execute(select(Edge.source, Edge.target, Edge.score))).all()

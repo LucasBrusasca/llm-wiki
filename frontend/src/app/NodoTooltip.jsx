@@ -8,9 +8,10 @@ import { fechaCorta } from '@/lib/utils';
  * Tarjeta de hover para los grafos (2D y 3D). Título COMPLETO (no el label
  * truncado del nodo), tipo, origen, tema y miniatura. `pointer-events: none`:
  * nunca intercepta el mouse, así que no traba el orbit/pan ni el clic.
- * x/y son relativos al contenedor del lienzo.
+ * x/y son relativos al contenedor del lienzo. `seccion` ({ nombre, color }) es para
+ * la 4D, donde se ven todas las secciones juntas.
  */
-export default function NodoTooltip({ node, x, y, ancho, alto, temas }) {
+export default function NodoTooltip({ node, x, y, ancho, alto, temas, seccion }) {
   if (!node) return null;
   const W = 300;
   // Del lado del cursor donde haya lugar.
@@ -29,6 +30,11 @@ export default function NodoTooltip({ node, x, y, ancho, alto, temas }) {
       <div className="min-w-0 flex-1">
         <p className="text-[12.5px] font-medium leading-snug text-ink [overflow-wrap:anywhere]">{node.label}</p>
         <div className="mt-1.5 flex flex-wrap items-center gap-1">
+          {seccion && (
+            <span className="chip-cat rounded-xs px-1.5 text-[10.5px] capitalize leading-4" style={{ '--c': seccion.color }}>
+              {seccion.nombre}
+            </span>
+          )}
           <span className="chip-cat rounded-xs px-1.5 text-[10.5px] leading-4" style={{ '--c': colorTipo(node.type) }}>
             {tipoMeta(node.type).label}
           </span>
