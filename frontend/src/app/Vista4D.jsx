@@ -5,7 +5,7 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { Plus, Minus, Maximize, Undo2, Loader2, Play, Pause, Eye, EyeOff } from 'lucide-react';
+import { Plus, Minus, Maximize, Undo2, Loader2, Pause, Eye, EyeOff, Rotate3d } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
 import { fetchDimensiones } from '@/lib/api';
 import { resolverColor, colorFuente, colorSeccion, fuenteLabel } from '@/lib/nodes';
@@ -162,8 +162,9 @@ function texturaBrillo() {
   return t;
 }
 
-/** Estrellas de fondo: lejísimos, quietas (determinísticas). */
-function estrellas(n = 1800) {
+/** Estrellas de fondo: lejísimos, quietas (determinísticas). Afuera del teseracto
+ *  son lo único que hay: tienen que verse, o ese vacío parece un corte de la imagen. */
+function estrellas(n = 2600) {
   let s = 1234567;
   const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
   const pos = new Float32Array(n * 3);
@@ -177,7 +178,7 @@ function estrellas(n = 1800) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   return new THREE.Points(g, new THREE.PointsMaterial({
-    color: 0x9fb4ff, size: 1.6, sizeAttenuation: false, transparent: true, opacity: 0.5, depthWrite: false, fog: false,
+    color: 0x9fb4ff, size: 1.8, sizeAttenuation: false, transparent: true, opacity: 0.7, depthWrite: false, fog: false,
   }));
 }
 
@@ -210,15 +211,20 @@ export default function Vista4D({ selectedId, onElegir }) {
   const [dentro, setDentro] = useState(null);
   const [tip, setTip] = useState(null);
   const [ayuda, setAyuda] = useState(true);
-  const [giro, setGiro] = useState(0);          // grados, para el control
-  const [girando, setGirando] = useState(false);
-  // Los cubos (marco y paredes) se pueden ocultar: quedan los grafos y los rótulos.
-  // Preferencia de cada uno, recordada en este navegador.
+  const [girando, setGirando] = useState(false);   // una vuelta en la 4ª dimensión
+  // Intensidad de los cubos (marco y paredes), 0–100: 0 los oculta (quedan los grafos
+  // y los nombres) y 50 es el punto de partida. Recordada en este navegador.
   const [cubos, setCubos] = useState(() => {
-    try { return localStorage.getItem('algedi_4d_cubos') !== 'ocultos'; } catch { return true; }
+    try {
+      const v = localStorage.getItem('algedi_4d_cubos');
+      if (v === 'ocultos') return 0;
+      const n = Number(v);
+      return v && Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 50;
+    } catch { return 50; }
   });
   const cubosRef = useRef(cubos);
   cubosRef.current = cubos;
+  const ultimosCubos = useRef(cubos || 50);   // para volver a mostrarlos con el ojo
 
   useEffect(() => {
     let vivo = true;
@@ -228,7 +234,8 @@ export default function Vista4D({ selectedId, onElegir }) {
   useEffect(() => { const t = setTimeout(() => setAyuda(false), 10000); return () => clearTimeout(t); }, []);
   useEffect(() => { girandoRef.current = girando; }, [girando]);
   useEffect(() => {
-    try { localStorage.setItem('algedi_4d_cubos', cubos ? 'visibles' : 'ocultos'); } catch { /* sin storage */ }
+    if (cubos > 0) ultimosCubos.current = cubos;
+    try { localStorage.setItem('algedi_4d_cubos', String(cubos)); } catch { /* sin storage */ }
   }, [cubos]);
 
   useEffect(() => {
@@ -297,6 +304,9 @@ export default function Vista4D({ selectedId, onElegir }) {
       const ejes = [0, 1, 2].map((k) => conPos.map((n) => [n.x, n.y, n.z][k]).sort((a, b) => a - b));
       const c = ejes.map((e) => (e.length ? (cuantil(e, 0.05) + cuantil(e, 0.95)) / 2 : 0));
       const ext = Math.max(...ejes.map((e) => (e.length ? (cuantil(e, 0.95) - cuantil(e, 0.05)) / 2 : 0)), 1e-6);
+      // Una sección chica forma un grupo en el centro de su habitación, no tres puntos
+      // perdidos en las esquinas; desde ~150 documentos ocupa la habitación entera.
+      s.llenado = Math.min(1, Math.max(0.25, Math.sqrt(s.docs.length / 150)));
       for (const n of s.docs) {
         let u; let v; let t;
         if (n.x != null && n.y != null && n.z != null) {
@@ -305,7 +315,7 @@ export default function Vista4D({ selectedId, onElegir }) {
           const hh = hash(n.id);
           [u, v, t] = [((hh & 255) / 255 - 0.5) * 0.3, (((hh >> 8) & 255) / 255 - 0.5) * 0.3, (((hh >> 16) & 255) / 255 - 0.5) * 0.3];
         }
-        nodos.push({ n, sala: s, p4: a4D(s.h, u, v, t) });
+        nodos.push({ n, sala: s, p4: a4D(s.h, u * s.llenado, v * s.llenado, t * s.llenado) });
       }
     }
     const indice = new Map(nodos.map((x, i) => [x.n.id, i]));
@@ -520,7 +530,8 @@ export default function Vista4D({ selectedId, onElegir }) {
         if (!s) return;
         const dir = camara.position.clone().sub(s.centro).normalize();
         if (dir.lengthSq() < 0.01) dir.set(0, 0, 1);
-        volar(s.centro.clone().add(dir.multiplyScalar(s.radio * 0.9)), s.centro.clone());
+        // Más cerca cuanto más chico es su grupo de documentos.
+        volar(s.centro.clone().add(dir.multiplyScalar(s.radio * (0.35 + 0.55 * s.llenado))), s.centro.clone());
       },
       volarA(id) {
         const i = indice.get(id);
@@ -597,12 +608,11 @@ export default function Vista4D({ selectedId, onElegir }) {
     let raf = 0;
     let antes = performance.now();
     let ultimoTitulo = 0;
-    let ultimoGiroUI = 0;
     let ultimoPulso = 0;
     let dentroActual = null;
     let selPrevio = null;
     let tSel = 0;
-    let kCubos = cubosRef.current ? 1 : 0;
+    let kCubos = cubosRef.current / 50;
     marco.visible = kCubos > 0;
     const tmp = new THREE.Vector3();
     const cuadro = (ahora) => {
@@ -619,10 +629,18 @@ export default function Vista4D({ selectedId, onElegir }) {
       }
       controles.update();
 
-      // Girar en la cuarta dimensión.
+      // Una vuelta en la cuarta dimensión: las habitaciones fluyen unas en otras y todo
+      // termina donde empezó. Si se corta antes, vuelve a su lugar por el camino corto.
       if (girandoRef.current) {
-        giroRef.current = (giroRef.current + dt * 0.22) % (Math.PI * 2);
-        if (ahora - ultimoGiroUI > 120) { ultimoGiroUI = ahora; setGiro(Math.round((giroRef.current * 180) / Math.PI)); }
+        giroRef.current += dt * 0.7;
+        if (giroRef.current >= Math.PI * 2) {
+          giroRef.current = 0;
+          girandoRef.current = false;
+          setGirando(false);
+        }
+      } else if (giroRef.current !== 0) {
+        const falta = (giroRef.current > Math.PI ? Math.PI * 2 : 0) - giroRef.current;
+        giroRef.current = Math.abs(falta) < 0.003 ? 0 : giroRef.current + falta * Math.min(1, dt * 5);
       }
       if (Math.abs(giroRef.current - giroProyectado) > 1e-4) {
         giroProyectado = giroRef.current;
@@ -636,17 +654,17 @@ export default function Vista4D({ selectedId, onElegir }) {
       const nuevo = aqui ? aqui.nombre : null;
       if (nuevo !== dentroActual) { dentroActual = nuevo; setDentro(nuevo); }
 
-      // Adentro de la estructura el marco se aquieta; el rótulo de la habitación en la
-      // que estás se apaga para no tapar su grafo (las de al lado se siguen viendo).
-      // Cubos visibles u ocultos, con un fundido corto.
-      const metaCubos = cubosRef.current ? 1 : 0;
+      // Intensidad de los cubos (0 = ocultos), con un fundido corto.
+      const metaCubos = cubosRef.current / 50;
       if (kCubos !== metaCubos) {
         kCubos = Math.abs(metaCubos - kCubos) < 0.01 ? metaCubos : kCubos + (metaCubos - kCubos) * Math.min(1, dt * 6);
         marco.visible = kCubos > 0;
         sucio = true;
       }
+      // Adentro de la estructura el marco se aquieta; el rótulo de la habitación en la
+      // que estás se apaga para no tapar su grafo (las de al lado se siguen viendo).
       const dEst = camara.position.length() / cascara;
-      const opMarco = (0.13 + 0.19 * suave(0.35, 1.1, dEst)) * kCubos;
+      const opMarco = Math.min(1, (0.13 + 0.19 * suave(0.35, 1.1, dEst)) * kCubos);
       const opAristas = 0.14 + 0.14 * (1 - suave(0.4, 1.3, dEst));
       if (Math.abs(opMarco - mm.opacity) > 1e-3 || Math.abs(opAristas - ma.opacity) > 1e-3) {
         mm.opacity = opMarco;
@@ -758,10 +776,6 @@ export default function Vista4D({ selectedId, onElegir }) {
   }, [datos]);
 
   const secciones = datos?.secciones || [];
-  const cambiarGiro = (grados) => {
-    setGiro(grados);
-    giroRef.current = (grados * Math.PI) / 180;
-  };
   return (
     <div ref={cajaRef} className="relative size-full overflow-hidden bg-[#05060c]">
       <div className="pointer-events-none absolute left-3 right-3 top-3 z-10 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">
@@ -823,31 +837,31 @@ export default function Vista4D({ selectedId, onElegir }) {
             <button
               type="button"
               onClick={() => setGirando((g) => !g)}
-              className="grid size-6 place-items-center rounded-xs text-ink-muted hover:bg-surface-2 hover:text-ink [&_svg]:size-3.5"
-              aria-label={girando ? 'Detener el giro' : 'Girar en la cuarta dimensión'}
-              title={girando ? 'Detener el giro' : 'Girar en la cuarta dimensión'}
+              className="flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-ink-muted hover:bg-surface-2 hover:text-ink [&_svg]:size-3.5"
+              title={girando ? 'Detener y volver a su lugar' : 'Dar una vuelta en la 4ª dimensión: las habitaciones fluyen unas en otras'}
             >
-              {girando ? <Pause /> : <Play />}
+              {girando ? <Pause /> : <Rotate3d />}
+              <span>{girando ? 'Detener' : 'Girar'}</span>
             </button>
-            <span className="whitespace-nowrap">Girar en la 4ª dimensión</span>
-            <input
-              type="range" min={0} max={359} value={giro}
-              onChange={(e) => { setGirando(false); cambiarGiro(Number(e.target.value)); }}
-              className="w-40 accent-[var(--color-accent)]"
-              aria-label="Girar en la cuarta dimensión"
-            />
-            <span className="w-8 text-right tabular-nums">{giro}°</span>
             <span className="h-4 w-px bg-hair" aria-hidden />
             <button
               type="button"
-              onClick={() => setCubos((v) => !v)}
-              aria-pressed={cubos}
-              title={cubos ? 'Ocultar los cubos (quedan los grafos y los nombres)' : 'Mostrar los cubos'}
-              className="flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-ink-muted hover:bg-surface-2 hover:text-ink [&_svg]:size-3.5"
+              onClick={() => setCubos((v) => (v > 0 ? 0 : ultimosCubos.current))}
+              aria-pressed={cubos > 0}
+              aria-label={cubos > 0 ? 'Ocultar los cubos' : 'Mostrar los cubos'}
+              title={cubos > 0 ? 'Ocultar los cubos (quedan los grafos y los nombres)' : 'Mostrar los cubos'}
+              className="grid size-6 place-items-center rounded-xs text-ink-muted hover:bg-surface-2 hover:text-ink [&_svg]:size-3.5"
             >
-              {cubos ? <Eye /> : <EyeOff />}
-              <span>Cubos</span>
+              {cubos > 0 ? <Eye /> : <EyeOff />}
             </button>
+            <span className="whitespace-nowrap">Cubos</span>
+            <input
+              type="range" min={0} max={100} value={cubos}
+              onChange={(e) => setCubos(Number(e.target.value))}
+              className="w-32 accent-[var(--color-accent)]"
+              aria-label="Intensidad de los cubos"
+            />
+            <span className="w-9 text-right tabular-nums">{cubos} %</span>
           </div>
         </div>
       )}
