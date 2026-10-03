@@ -364,7 +364,10 @@ function Lienzo({
         focusable: false,
         style: {
           stroke: e.acento ? 'var(--color-accent)' : 'var(--arista)',
-          strokeWidth: e.fijada ? 2.2 : e.grosor * 1.4,
+          // Grosor en px de pantalla, igual que los nodos (--inv = 1/zoom). Antes era en
+          // unidades del grafo: con todo a la vista el zoom es chico y las relaciones
+          // quedaban por debajo de un píxel, casi invisibles.
+          strokeWidth: `calc(${(e.fijada ? 2.2 : e.grosor * 1.4).toFixed(2)}px * var(--inv, 1))`,
           strokeOpacity: e.alfa,
         },
         zIndex: e.fijada ? 2 : e.acento ? 1 : 0,
