@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Loader2, CheckCircle2, AlertTriangle, Clock, RefreshCw, X, FileText, Link as LinkIcon, Video,
 } from 'lucide-react';
@@ -114,25 +114,37 @@ function JobRow({ job, onRetry, onCancel, onDone }) {
 export function useJobs(onJobDone) {
   const [active, setActive] = useState([]);
   const [recent, setRecent] = useState([]);
-  const [lastCompletedId, setLastCompletedId] = useState(null);
+  // Trabajos terminados que ya se avisaron, o que ya estaban terminados al abrir la
+  // app. Es un ref y no estado: antes, guardar «el último avisado» en el estado
+  // recreaba `refresh`, reiniciaba el sondeo y, con dos o más terminados en la lista,
+  // alternaba entre ellos sin fin. Cada vuelta recargaba el grafo entero (1-2 por
+  // segundo, mientras la app estuviera abierta).
+  const vistos = useRef(null);
+  const avisar = useRef(onJobDone);
+  avisar.current = onJobDone;
 
   const refresh = useCallback(async () => {
     try {
       const data = await getActiveJobs();
+      const recientes = data.recent || [];
       setActive(data.active || []);
-      setRecent(data.recent || []);
+      setRecent(recientes);
 
-      const justCompleted = (data.recent || []).find(
-        (j) => j.status === 'done' && j.id !== lastCompletedId
-      );
-      if (justCompleted && onJobDone) {
-        setLastCompletedId(justCompleted.id);
-        onJobDone(justCompleted);
+      const terminados = recientes.filter((j) => j.status === 'done');
+      if (vistos.current === null) {
+        // Primera lectura: lo que ya estaba terminado no es novedad.
+        vistos.current = new Set(terminados.map((j) => j.id));
+        return;
+      }
+      for (const j of terminados) {
+        if (vistos.current.has(j.id)) continue;
+        vistos.current.add(j.id);
+        avisar.current?.(j);
       }
     } catch (e) {
       console.error('[jobs] Error al obtener jobs:', e);
     }
-  }, [onJobDone, lastCompletedId]);
+  }, []);
 
   useEffect(() => {
     refresh();

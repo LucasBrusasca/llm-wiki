@@ -191,13 +191,12 @@ def _resolve(rel: str) -> Path:
 
 # ── Conversion helpers ────────────────────────────────────────────────
 
-def node_to_dict(n) -> dict:
-    emb = n.embedding
+def node_to_dict(n, con_embedding: bool = True) -> dict:
+    emb = n.embedding if con_embedding else None
     if hasattr(emb, "tolist"):
         emb = emb.tolist()
     if emb:
-        # 4 decimales bastan para el coseno del frontend (descubrimientos/centroide)
-        # y achican ~60% el peso del payload de /api/graph.
+        # 4 decimales bastan para los cosenos que se calculan con este dict.
         emb = [round(float(x), 4) for x in emb]
     return {
         "id": n.id,
@@ -1042,7 +1041,10 @@ async def get_graph(seccion: str = None, db: AsyncSession = Depends(get_async_se
     nodes_list = []
     node_ids = set()
     for n in nodes_rows:
-        nd = node_to_dict(n)
+        # Sin embedding: la UI no lo usa (api.js lo descartaba al llegar) y era ~40 % del
+        # peso de la respuesta, que viaja entera en cada carga y cambio de sección.
+        nd = node_to_dict(n, con_embedding=False)
+        nd.pop("embedding", None)
         if nd["x3d"] is None:
             nd["x3d"] = rng.uniform(-1, 1)
             nd["y3d"] = rng.uniform(-1, 1)

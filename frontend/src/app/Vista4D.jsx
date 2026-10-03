@@ -228,7 +228,8 @@ export default function Vista4D({ selectedId, onElegir }) {
     let H = caja.clientHeight || 600;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Con placa integrada cada píxel cuesta: más de 1.5× no se nota y pesa el doble.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.setSize(W, H);
     renderer.setClearColor(FONDO);
     caja.appendChild(renderer.domElement);
@@ -242,12 +243,16 @@ export default function Vista4D({ selectedId, onElegir }) {
     const camara = new THREE.PerspectiveCamera(55, W / H, 1, 80000);
     const controles = new OrbitControls(camara, renderer.domElement);
     controles.enableDamping = true;
-    controles.dampingFactor = 0.08;
+    controles.dampingFactor = 0.12;
     controles.zoomToCursor = true;      // la rueda va hacia donde apuntás
     controles.screenSpacePanning = true;
     controles.minDistance = 6;
     controles.maxDistance = 30000;
     controles.rotateSpeed = 0.55;
+    // Se dibuja sólo cuando algo cambia (cámara, giro, hover, títulos…): quieta, la
+    // vista no gasta placa de video ni le quita máquina al resto.
+    let sucio = true;
+    controles.addEventListener('change', () => { sucio = true; });
 
     const desechar = [];
     const fondo = estrellas();
@@ -351,7 +356,7 @@ export default function Vista4D({ selectedId, onElegir }) {
     const gm = new LineSegmentsGeometry();
     gm.setPositions(arrMarco);
     const mm = new LineMaterial({
-      color: 0x7fe3f5, linewidth: 1.6, transparent: true, opacity: 0.6, depthWrite: false, blending: THREE.AdditiveBlending,
+      color: 0x7fe3f5, linewidth: 1.1, transparent: true, opacity: 0.32, depthWrite: false, blending: THREE.AdditiveBlending,
     });
     mm.resolution.set(W, H);
     const marco = new LineSegments2(gm, mm);
@@ -425,6 +430,7 @@ export default function Vista4D({ selectedId, onElegir }) {
       otros.forEach((j, k) => arr.set([pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], pos[j * 3], pos[j * 3 + 1], pos[j * 3 + 2]], k * 6));
       gHover.setAttribute('position', new THREE.BufferAttribute(arr, 3));
       gHover.setDrawRange(0, otros.length * 2);
+      sucio = true;
     };
 
     // ── Proyectar todo con el giro actual en la cuarta dimensión ──
@@ -472,6 +478,7 @@ export default function Vista4D({ selectedId, onElegir }) {
         s.rotulo.position.set(s.centro.x, s.centro.y + r * 0.25, s.centro.z);
       }
       if (hoverId) mostrarRelaciones(hoverId);
+      sucio = true;
     };
     reproyectar(0);
     let giroProyectado = 0;
@@ -539,7 +546,7 @@ export default function Vista4D({ selectedId, onElegir }) {
       const r = aNdc(e);
       quiereElegir = { x: e.clientX - r.left, y: e.clientY - r.top, ancho: r.width };
     };
-    const onLeave = () => { quiereElegir = false; hoverId = null; setTip(null); gHover.setDrawRange(0, 0); };
+    const onLeave = () => { quiereElegir = false; hoverId = null; setTip(null); gHover.setDrawRange(0, 0); sucio = true; };
     const onDown = (e) => { abajo = { x: e.clientX, y: e.clientY }; setAyuda(false); };
     const onUp = (e) => {
       if (!abajo || Math.hypot(e.clientX - abajo.x, e.clientY - abajo.y) > 5) return;
@@ -572,6 +579,7 @@ export default function Vista4D({ selectedId, onElegir }) {
       camara.aspect = W / H;
       camara.updateProjectionMatrix();
       mm.resolution.set(W, H);
+      sucio = true;
     });
     ro.observe(caja);
 
@@ -580,7 +588,10 @@ export default function Vista4D({ selectedId, onElegir }) {
     let antes = performance.now();
     let ultimoTitulo = 0;
     let ultimoGiroUI = 0;
+    let ultimoPulso = 0;
     let dentroActual = null;
+    let selPrevio = null;
+    let tSel = 0;
     const tmp = new THREE.Vector3();
     const cuadro = (ahora) => {
       raf = requestAnimationFrame(cuadro);
@@ -592,6 +603,7 @@ export default function Vista4D({ selectedId, onElegir }) {
         camara.position.lerpVectors(vuelo.dp, vuelo.hp, k);
         controles.target.lerpVectors(vuelo.dt, vuelo.ht, k);
         if (k >= 1) vuelo = null;
+        sucio = true;
       }
       controles.update();
 
@@ -615,12 +627,20 @@ export default function Vista4D({ selectedId, onElegir }) {
       // Adentro de la estructura el marco se aquieta; el rótulo de la habitación en la
       // que estás se apaga para no tapar su grafo (las de al lado se siguen viendo).
       const dEst = camara.position.length() / cascara;
-      mm.opacity = 0.28 + 0.37 * suave(0.35, 1.1, dEst);
-      ma.opacity = 0.14 + 0.14 * (1 - suave(0.4, 1.3, dEst));
+      const opMarco = 0.13 + 0.19 * suave(0.35, 1.1, dEst);
+      const opAristas = 0.14 + 0.14 * (1 - suave(0.4, 1.3, dEst));
+      if (Math.abs(opMarco - mm.opacity) > 1e-3 || Math.abs(opAristas - ma.opacity) > 1e-3) {
+        mm.opacity = opMarco;
+        ma.opacity = opAristas;
+        sucio = true;
+      }
       for (const s of salas) {
-        s.k += ((s === aqui ? 1 : 0) - s.k) * Math.min(1, dt * 4);
-        s.paredes.material.opacity = (s.hover ? 0.11 : 0.045) * (s.docs.length ? 1 : 0.55);
-        s.rotulo.element.style.opacity = String(1 - s.k * 0.85);
+        const meta = s === aqui ? 1 : 0;
+        s.k = Math.abs(meta - s.k) > 0.003 ? s.k + (meta - s.k) * Math.min(1, dt * 4) : meta;
+        const op = (s.hover ? 0.11 : 0.045) * (s.docs.length ? 1 : 0.55);
+        if (op !== s.paredes.material.opacity) { s.paredes.material.opacity = op; sucio = true; }
+        const opRotulo = (1 - s.k * 0.85).toFixed(2);   // es DOM: no hace falta redibujar
+        if (opRotulo !== s.opRotulo) { s.opRotulo = opRotulo; s.rotulo.element.style.opacity = opRotulo; }
       }
 
       // Títulos: los documentos más cercanos a vos, sin pisarse.
@@ -650,11 +670,19 @@ export default function Vista4D({ selectedId, onElegir }) {
         }
         titulos.forEach((o, k) => {
           const c = elegidos[k];
-          if (!c) { o.visible = false; return; }
-          o.visible = true;
+          if (!c) {
+            if (o.visible) { o.visible = false; sucio = true; }
+            return;
+          }
+          if (!o.visible || o.userData.id !== c.x.n.id) {
+            o.visible = true;
+            o.userData.id = c.x.n.id;
+            o.element.firstChild.textContent = c.x.n.label;
+            sucio = true;
+          }
           o.position.copy(c.p);
-          o.element.firstChild.textContent = c.x.n.label;
-          o.element.style.opacity = String(1 - suave(ESCALA * 0.35, ESCALA * 0.75, c.d));
+          const op = (1 - suave(ESCALA * 0.35, ESCALA * 0.75, c.d)).toFixed(2);
+          if (op !== o.userData.op) { o.userData.op = op; o.element.style.opacity = op; }
         });
       }
 
@@ -667,20 +695,29 @@ export default function Vista4D({ selectedId, onElegir }) {
         if (id !== hoverId) {
           hoverId = id;
           if (id) mostrarRelaciones(id); else gHover.setDrawRange(0, 0);
+          sucio = true;
         }
         setTip(n ? { label: n.label, seccion: n.dominio, fuente: fuenteLabel(n), x: q.x, y: q.y, ancho: q.ancho } : null);
       }
 
-      // El elegido.
-      const iSel = selRef.current ? indice.get(selRef.current) : null;
+      // El elegido: late unos segundos para encontrarlo y después queda quieto.
+      const iSel = selRef.current != null ? (indice.get(selRef.current) ?? null) : null;
+      if (iSel !== selPrevio) { selPrevio = iSel; tSel = ahora; sucio = true; }
       halo.visible = iSel != null;
       if (iSel != null) {
-        posicion(iSel, halo.position);
-        halo.scale.setScalar(Math.max(2, camara.position.distanceTo(halo.position) * 0.045) * (1 + 0.15 * Math.sin(ahora / 300)));
+        const pulso = 0.15 * Math.max(0, 1 - (ahora - tSel) / 4000);
+        if (pulso > 0 && ahora - ultimoPulso > 40) { ultimoPulso = ahora; sucio = true; }
+        if (sucio) {
+          posicion(iSel, halo.position);
+          halo.scale.setScalar(Math.max(2, camara.position.distanceTo(halo.position) * 0.045) * (1 + pulso * Math.sin(ahora / 300)));
+        }
       }
 
-      renderer.render(scene, camara);
-      capa.render(scene, camara);
+      if (sucio) {
+        renderer.render(scene, camara);
+        capa.render(scene, camara);
+        sucio = false;
+      }
     };
     raf = requestAnimationFrame(cuadro);
 
