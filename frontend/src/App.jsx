@@ -404,23 +404,6 @@ export default function App() {
   }, [autoAbrir]);
 
   // 4D: un documento de otra sección cambia de sección y se abre apenas llega su grafo.
-  const pendiente4D = useRef(null);
-  const elegirEn4D = useCallback((id, dominio) => {
-    setInspectorAbierto(true);
-    if (dominio && dominio !== seccion) {
-      pendiente4D.current = id;
-      cambiarSeccion(dominio);
-      return;
-    }
-    seleccionar(id);
-  }, [seccion, cambiarSeccion, seleccionar]);
-  useEffect(() => {
-    const id = pendiente4D.current;
-    if (status !== 'ok' || !id || !graph.nodes.some((n) => n.id === id)) return;
-    pendiente4D.current = null;
-    seleccionar(id);
-  }, [status, graph.nodes, seleccionar]);
-
   // Seguir un vínculo: el documento actual pasa al camino y la arista usada queda fijada.
   const abrirVinculo = useCallback((id, edge) => {
     if (!id || id === selectedId) return;
@@ -450,6 +433,25 @@ export default function App() {
     const r = selectedId && (relIndex.get(selectedId) || []).find((x) => x.otherId === id);
     if (r) abrirVinculo(id, r.edge); else seleccionar(id);
   }, [selectedId, relIndex, abrirVinculo, seleccionar, ego]);
+
+  // En la 4D se ven todas las secciones: un documento de otra sección primero la abre
+  // y lo elige cuando llega su grafo. En la misma sección, igual que en el grafo.
+  const pendiente4D = useRef(null);
+  const elegirEn4D = useCallback((id, dominio) => {
+    setInspectorAbierto(true);
+    if (dominio && dominio !== seccion) {
+      pendiente4D.current = id;
+      cambiarSeccion(dominio);
+      return;
+    }
+    elegirEnGrafo(id);
+  }, [seccion, cambiarSeccion, elegirEnGrafo]);
+  useEffect(() => {
+    const id = pendiente4D.current;
+    if (status !== 'ok' || !id || !graph.nodes.some((n) => n.id === id)) return;
+    pendiente4D.current = null;
+    seleccionar(id);
+  }, [status, graph.nodes, seleccionar]);
 
   const fijarVecindario = useCallback(() => {
     if (ego) { setEgo(null); return; }
@@ -633,7 +635,9 @@ export default function App() {
   const seccionInfo = sections.find((s) => s.nombre === seccion);
   const visibleIds = useMemo(() => new Set(orden), [orden]);
 
-  const modoColor = vista === '3d' ? colorMode3d : colorMode;
+  // El 3D y la 4D comparten el color (las dos son espaciales); el 2D tiene el suyo.
+  const espacial = vista === '3d' || vista === '4d';
+  const modoColor = espacial ? colorMode3d : colorMode;
   const colorDe = useCallback(
     (n) => (modoColor === 'cluster' ? temaDe(temas, n).color : (MODOS_COLOR[modoColor] || MODOS_COLOR.cluster).de(n)),
     [modoColor, temas],
@@ -654,12 +658,18 @@ export default function App() {
     onSelect: elegirEnGrafo,
     relIndex,
     colorMode: modoColor,
-    onColorMode: vista === '3d' ? setColorMode3d : setColorMode,
+    onColorMode: espacial ? setColorMode3d : setColorMode,
   };
   const grafo = (
     <Suspense fallback={<div className="grid h-full place-items-center text-[12px] text-ink-dim">Cargando grafo…</div>}>
       {vista === '3d' ? <Graph3DView {...propsGrafo} />
-        : vista === '4d' ? <Vista4D selectedId={selectedId} onElegir={elegirEn4D} />
+        : vista === '4d' ? (
+          <Vista4D
+            selectedId={selectedId} onElegir={elegirEn4D} seccion={seccion} visibleIds={visibleIds}
+            pinnedEdge={pinnedEdge} onClearPin={propsGrafo.onClearPin} ego={ego} onFijar={fijarVecindario}
+            highlightIds={highlightIds} colorMode={modoColor} onColorMode={setColorMode3d} colorDe={colorDe} temas={temas}
+          />
+        )
         : <GraphCanvas {...propsGrafo} />}
     </Suspense>
   );

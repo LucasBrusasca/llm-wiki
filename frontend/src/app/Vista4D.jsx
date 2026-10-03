@@ -1,14 +1,17 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { Plus, Minus, Maximize, Undo2, Loader2, Pause, Eye, EyeOff, Rotate3d } from 'lucide-react';
+import {
+  Plus, Minus, Maximize, Undo2, Loader2, Pause, Eye, EyeOff, Rotate3d, Link2, X, Pin, PinOff,
+} from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
 import Etiquetas3D from '@/app/Etiquetas3D';
 import NodoTooltip from '@/app/NodoTooltip';
+import ColorPanel, { calcularLeyenda } from '@/app/ColorPanel';
 import { fetchDimensiones } from '@/lib/api';
 import { resolverColor, colorFuente, colorSeccion, colorCluster } from '@/lib/nodes';
 import { podar } from '@/lib/aristas';
@@ -205,7 +208,10 @@ function Boton({ texto, onClick, children }) {
   );
 }
 
-export default function Vista4D({ selectedId, onElegir }) {
+export default function Vista4D({
+  selectedId, onElegir, seccion, visibleIds, pinnedEdge, onClearPin, ego, onFijar, highlightIds,
+  colorMode, onColorMode, colorDe, temas: temasSeccion,
+}) {
   const cajaRef = useRef(null);
   const apiRef = useRef(null);
   const selRef = useRef(selectedId);
@@ -214,6 +220,13 @@ export default function Vista4D({ selectedId, onElegir }) {
   const girandoRef = useRef(false);
   selRef.current = selectedId;
   elegirRef.current = onElegir;
+  // Lo mismo que recibe el 3D (vínculo fijado, vecindario, marcas del agente, color,
+  // filtros de la sección actual). La escena lo lee de acá y se entera de los cambios
+  // por `cambios`, sin rearmarse.
+  const estadoRef = useRef({});
+  estadoRef.current = { seccion, visibleIds, pinnedEdge, onClearPin, ego, highlightIds, colorMode, colorDe };
+  const cambios = useRef(0);
+  useEffect(() => { cambios.current += 1; }, [seccion, visibleIds, pinnedEdge, ego, highlightIds, colorMode, colorDe]);
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState(null);
   const [dentro, setDentro] = useState(null);
@@ -332,13 +345,32 @@ export default function Vista4D({ selectedId, onElegir }) {
     }
     const indice = new Map(nodos.map((x, i) => [x.n.id, i]));
 
+    // Color de cada documento según el modo elegido (Tema, Tipo, Origen), el mismo del
+    // 3D. Los temas tienen nombre y color por sección: fuera de la sección abierta, el
+    // tema se pinta por su grupo.
+    const hexDe = new Map();
+    const hex = (expr) => {
+      if (!hexDe.has(expr)) hexDe.set(expr, resolverColor(expr, '#8a9099'));
+      return hexDe.get(expr);
+    };
+    const colorNodo = (n) => {
+      const { colorMode: modo, colorDe: de, seccion: actual } = estadoRef.current;
+      if (modo === 'cluster' && n.dominio !== actual) return colorCluster(n);
+      return de ? de(n) : colorFuente(n);
+    };
+    // Los filtros de la biblioteca valen para la sección abierta, como en el 3D; las
+    // otras habitaciones se ven completas.
+    const visible = new Uint8Array(nodos.length).fill(1);
+
     const pos = new Float32Array(Math.max(nodos.length, 1) * 3);
     const col = new Float32Array(Math.max(nodos.length, 1) * 3);
-    nodos.forEach((x, i) => {
-      const cc = new THREE.Color(resolverColor(colorFuente(x.n), '#8a9099'));
-      col.set([cc.r, cc.g, cc.b], i * 3);
+    const colBase = new Float32Array(Math.max(nodos.length, 1) * 3);
+    const pintar = () => nodos.forEach((x, i) => {
+      const c = new THREE.Color(hex(colorNodo(x.n)));
+      colBase.set([c.r, c.g, c.b], i * 3);
     });
-    const colBase = col.slice();   // para devolverle el color al punto que deja de ser tarjeta
+    pintar();
+    col.set(colBase);
     const gp = new THREE.BufferGeometry();
     gp.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     gp.setAttribute('color', new THREE.BufferAttribute(col, 3));
@@ -445,6 +477,43 @@ export default function Vista4D({ selectedId, onElegir }) {
     }
     let hoverId = null;
 
+    // Relaciones que acompañan al foco, como en el 3D: las del elegido; con un vínculo
+    // fijado, sólo ese; con el vecindario fijado, las de adentro del vecindario.
+    const gSel = new THREE.BufferGeometry();
+    const lSel = new THREE.LineSegments(gSel, new THREE.LineBasicMaterial({
+      color: ACENTO, transparent: true, opacity: 0.75, depthWrite: false, blending: THREE.AdditiveBlending,
+    }));
+    lSel.frustumCulled = false;
+    scene.add(lSel);
+    desechar.push(gSel, lSel.material);
+    let paresSel = [];          // [i, j]: índices de los extremos
+    let pinOtro = null;         // el otro extremo del vínculo fijado
+    let egoAhora = null;        // el vecindario fijado ({ origen, ids })
+    let marcados = new Set();   // lo que marcó el agente
+    const dibujarEnfasis = () => {
+      const arr = new Float32Array(Math.max(paresSel.length, 1) * 6);
+      paresSel.forEach(([i, j], k) => arr.set([pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], pos[j * 3], pos[j * 3 + 1], pos[j * 3 + 2]], k * 6));
+      gSel.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      gSel.setDrawRange(0, paresSel.length * 2);
+      sucio = true;
+    };
+    const marcarEnfasis = () => {
+      const sel = selRef.current;
+      const iSel = sel != null ? indice.get(sel) : undefined;
+      paresSel = [];
+      if (iSel != null && pinOtro) paresSel = [[iSel, indice.get(pinOtro)]];
+      else if (egoAhora) {
+        for (const a of todas) {
+          if (egoAhora.ids.has(a.source) && egoAhora.ids.has(a.target)) paresSel.push([indice.get(a.source), indice.get(a.target)]);
+        }
+      } else if (iSel != null) {
+        for (const v of vecinos.get(sel) || []) paresSel.push([iSel, indice.get(v)]);
+      }
+      paresSel = paresSel.filter(([i, j]) => visible[i] && visible[j]);
+      lSel.material.opacity = pinOtro ? 1 : egoAhora ? 0.55 : 0.75;
+      dibujarEnfasis();
+    };
+
     // Lo que se muestra al pasar el mouse: los temas con nombre de cada documento y la
     // habitación (sección) a la que pertenece.
     const temas = new Map();
@@ -464,7 +533,7 @@ export default function Vista4D({ selectedId, onElegir }) {
     const posicion = (i, v = new THREE.Vector3()) => v.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
     const mostrarRelaciones = (id) => {
       const i = indice.get(id);
-      const otros = (vecinos.get(id) || []).map((v) => indice.get(v));
+      const otros = (vecinos.get(id) || []).map((v) => indice.get(v)).filter((j) => visible[j]);
       const arr = new Float32Array(Math.max(otros.length, 1) * 6);
       otros.forEach((j, k) => arr.set([pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], pos[j * 3], pos[j * 3 + 1], pos[j * 3 + 2]], k * 6));
       gHover.setAttribute('position', new THREE.BufferAttribute(arr, 3));
@@ -483,6 +552,16 @@ export default function Vista4D({ selectedId, onElegir }) {
     let firmaPiezas = '';
     let hud = { t: -Infinity, rects: [] };
     const pPieza = new THREE.Vector3();
+    // Un punto se apaga (negro no suma nada con mezcla aditiva) si es tarjeta o si los
+    // filtros de la sección lo dejan afuera.
+    const aplicarColores = () => {
+      for (let i = 0; i < nodos.length; i++) {
+        if (enTarjeta.has(i) || !visible[i]) col.fill(0, i * 3, i * 3 + 3);
+        else col.set(colBase.subarray(i * 3, i * 3 + 3), i * 3);
+      }
+      gp.attributes.color.needsUpdate = true;
+      sucio = true;
+    };
     const actualizarDetalle = () => {
       const focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(camara.fov / 2));
       const ahora = performance.now();
@@ -490,9 +569,10 @@ export default function Vista4D({ selectedId, onElegir }) {
       const selId = selRef.current;
       const cands = [];
       for (let i = 0; i < nodos.length; i++) {
+        if (!visible[i]) continue;
         const { n } = nodos[i];
-        const estado = estadoNodo(n.id, { selectedId: selId, pinOtro: null, vecinos: vecinosSel, ego: null });
-        const clase = claseDetalle(estado, { hito: !selId && hitos.has(n.id) });
+        const estado = estadoNodo(n.id, { selectedId: selId, pinOtro, vecinos: vecinosSel, ego: egoAhora });
+        const clase = claseDetalle(estado, { destacado: marcados.has(n.id), hito: !selId && !egoAhora && hitos.has(n.id) });
         if (!clase) continue;
         posicion(i, pPieza);
         const dist = Math.max(1, pPieza.distanceTo(camara.position));
@@ -537,17 +617,17 @@ export default function Vista4D({ selectedId, onElegir }) {
         const { n } = nodos[c.i];
         items.push({
           clave, id: c.id, tipo: p.modo, el: pieza.element, node: n, estado: c.estado,
-          color: colorFuente(n), grande: p.dim === TARJETA.grande, medida: tarjeta ? null : p.dim, marcado: false,
+          color: colorNodo(n), grande: p.dim === TARJETA.grande, medida: tarjeta ? null : p.dim,
+          marcado: marcados.has(c.id),
         });
       }
       for (const [clave, pieza] of piezas) if (!usadas.has(clave) && pieza.parent) pieza.parent.remove(pieza);
-      // La tarjeta reemplaza al punto: con mezcla aditiva, un punto negro no suma nada.
-      let cambio = false;
-      for (const i of enTarjeta) if (!tarjetas.has(i)) { col.set(colBase.subarray(i * 3, i * 3 + 3), i * 3); cambio = true; }
-      for (const i of tarjetas) if (!enTarjeta.has(i)) { col.fill(0, i * 3, i * 3 + 3); cambio = true; }
-      if (cambio) gp.attributes.color.needsUpdate = true;
-      enTarjeta = tarjetas;
-      const firma = items.map((it) => `${it.clave}|${it.estado}`).join(',');
+      // La tarjeta reemplaza al punto.
+      if (tarjetas.size !== enTarjeta.size || [...tarjetas].some((i) => !enTarjeta.has(i))) {
+        enTarjeta = tarjetas;
+        aplicarColores();
+      }
+      const firma = items.map((it) => `${it.clave}|${it.estado}|${it.color}|${it.marcado}`).join(',');
       if (firma !== firmaPiezas) {
         firmaPiezas = firma;
         etiquetasRef.current?.mostrar(items);
@@ -574,7 +654,8 @@ export default function Vista4D({ selectedId, onElegir }) {
       gp.computeBoundingSphere();
       dibujadas.forEach((a, k) => {
         const i = indice.get(a.source);
-        const j = indice.get(a.target);
+        // Con un extremo filtrado, la arista queda de largo cero (no se ve).
+        const j = visible[i] && visible[indice.get(a.target)] ? indice.get(a.target) : i;
         pa.set([pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], pos[j * 3], pos[j * 3 + 1], pos[j * 3 + 2]], k * 6);
       });
       ga.attributes.position.needsUpdate = true;
@@ -611,10 +692,66 @@ export default function Vista4D({ selectedId, onElegir }) {
         s.rotulo.position.set(s.centro.x, s.centro.y + r * 0.25, s.centro.z);
       }
       if (hoverId) mostrarRelaciones(hoverId);
+      if (paresSel.length) dibujarEnfasis();
       sucio = true;
     };
     reproyectar(0);
     let giroProyectado = 0;
+
+    // ── Lo que llega de afuera: filtros, vínculo fijado, vecindario, marcas y color ──
+    const aplicarEstado = () => {
+      const { seccion: actual, visibleIds: vis, pinnedEdge: pe, ego: eg, highlightIds: hl } = estadoRef.current;
+      // Sin lista todavía (recién cambiada la sección, mientras llega su grafo) = sin filtro.
+      const filtra = vis && vis.size > 0;
+      nodos.forEach((x, i) => { visible[i] = x.n.dominio !== actual || !filtra || vis.has(x.n.id) ? 1 : 0; });
+      const sel = selRef.current;
+      pinOtro = pe && sel && (pe.source === sel || pe.target === sel) && indice.has(pe.source) && indice.has(pe.target)
+        ? (pe.source === sel ? pe.target : pe.source) : null;
+      egoAhora = eg && indice.has(eg.origen) ? eg : null;
+      marcados = hl || new Set();
+      vecinosSel = egoAhora ? egoAhora.ids : (sel != null && indice.has(sel) ? new Set(vecinos.get(sel) || []) : null);
+      pintar();
+      aplicarColores();
+      reproyectar(giroProyectado);
+      marcarEnfasis();
+    };
+
+    // Una sola autoridad para la cámara, como en el 3D: al elegir, volar al elegido (al
+    // medio del vínculo fijado, o a encuadrar el vecindario fijado). Al soltar, se queda.
+    let focoPrevio = null;
+    const enfocar = () => {
+      const sel = selRef.current;
+      const firmaFoco = egoAhora ? `ego:${egoAhora.origen}` : `${sel}|${pinOtro}`;
+      if (firmaFoco === focoPrevio) return;
+      const primera = focoPrevio === null;
+      focoPrevio = firmaFoco;
+      if (primera) return;   // al abrir la vista manda la llegada desde lejos
+      let centro;
+      let dist;
+      if (egoAhora) {
+        const pts = [...egoAhora.ids].map((id) => indice.get(id)).filter((i) => i != null && visible[i]).map((i) => posicion(i));
+        if (!pts.length) return;
+        centro = pts.reduce((c, p) => c.add(p), new THREE.Vector3()).multiplyScalar(1 / pts.length);
+        const r = Math.max(120, ...pts.map((p) => p.distanceTo(centro)));
+        dist = r / Math.sin(THREE.MathUtils.degToRad(camara.fov / 2)) + 120;
+      } else {
+        const iSel = sel != null ? indice.get(sel) : undefined;
+        if (iSel == null) return;   // sin elegido, la cámara queda donde está
+        const a = posicion(iSel);
+        const iOtro = pinOtro ? indice.get(pinOtro) : undefined;
+        if (iOtro != null) {
+          const b = posicion(iOtro);
+          centro = a.clone().add(b).multiplyScalar(0.5);
+          dist = Math.max(420, a.distanceTo(b) * 1.8);
+        } else {
+          centro = a;
+          dist = 420;
+        }
+      }
+      const dir = camara.position.clone().sub(centro).normalize();
+      if (dir.lengthSq() < 0.01) dir.set(0, 0, 1);
+      volar(centro.clone().add(dir.multiplyScalar(dist)), centro.clone(), 900);
+    };
 
     // ── Encuadres y vuelos ──
     const cascara = ESCALA * (D4 / (D4 - 1)) * Math.sqrt(3);   // radio del cubo de afuera
@@ -677,7 +814,8 @@ export default function Vista4D({ selectedId, onElegir }) {
       if (enPieza) return enPieza;
       ray.params.Points.threshold = Math.max(5, camara.position.distanceTo(controles.target) * 0.012);
       ray.setFromCamera(mouse, camara);
-      const h = ray.intersectObject(puntos, false).sort((a, b) => a.distanceToRay - b.distanceToRay || a.distance - b.distance)[0];
+      const h = ray.intersectObject(puntos, false).filter((x) => visible[x.index])
+        .sort((a, b) => a.distanceToRay - b.distanceToRay || a.distance - b.distance)[0];
       return h ? nodos[h.index]?.n : null;
     };
     const onMove = (e) => {
@@ -698,6 +836,7 @@ export default function Vista4D({ selectedId, onElegir }) {
       aNdc(e);
       const n = elegirBajo();
       if (n) elegirRef.current?.(n.id, n.dominio);
+      else if (estadoRef.current.pinnedEdge) estadoRef.current.onClearPin?.();   // clic al vacío suelta el vínculo, como en el 3D
     };
     // Doble clic: sobre un documento, ir hasta él; en cualquier otro lado, acercarte ahí.
     const onDbl = (e) => {
@@ -737,6 +876,7 @@ export default function Vista4D({ selectedId, onElegir }) {
     let dentroActual = null;
     let selPrevio = null;
     let tSel = 0;
+    let cambiosVistos = -1;
     let kCubos = cubosRef.current / 50;
     marco.visible = kCubos > 0;
     const cuadro = (ahora) => {
@@ -789,7 +929,8 @@ export default function Vista4D({ selectedId, onElegir }) {
       // que estás se apaga para no tapar su grafo (las de al lado se siguen viendo).
       const dEst = camara.position.length() / cascara;
       const opMarco = Math.min(1, (0.13 + 0.19 * suave(0.35, 1.1, dEst)) * kCubos);
-      const opAristas = 0.14 + 0.14 * (1 - suave(0.4, 1.3, dEst));
+      // Con algo elegido, el resto de las relaciones baja la voz (como en el 3D).
+      const opAristas = (0.14 + 0.14 * (1 - suave(0.4, 1.3, dEst))) * (selRef.current != null || egoAhora ? 0.4 : 1);
       if (Math.abs(opMarco - mm.opacity) > 1e-3 || Math.abs(opAristas - ma.opacity) > 1e-3) {
         mm.opacity = opMarco;
         ma.opacity = opAristas;
@@ -804,12 +945,15 @@ export default function Vista4D({ selectedId, onElegir }) {
         if (opRotulo !== s.opRotulo) { s.opRotulo = opRotulo; s.rotulo.element.style.opacity = opRotulo; }
       }
 
-      // El elegido: sus vecinos ganan detalle (y lo que no tiene que ver queda en punto).
+      // El elegido, o algo que cambió afuera (filtros, vínculo, vecindario, marcas,
+      // color): se recalcula el foco y, si cambió, la cámara vuela hacia él.
       const iSel = selRef.current != null ? (indice.get(selRef.current) ?? null) : null;
-      if (iSel !== selPrevio) {
-        selPrevio = iSel;
-        tSel = ahora;
-        vecinosSel = iSel != null ? new Set(vecinos.get(selRef.current) || []) : null;
+      const cambioSel = iSel !== selPrevio;
+      if (cambioSel || cambios.current !== cambiosVistos) {
+        if (cambioSel) { selPrevio = iSel; tSel = ahora; }
+        cambiosVistos = cambios.current;
+        aplicarEstado();
+        enfocar();
         sucio = true;
       }
 
@@ -877,6 +1021,21 @@ export default function Vista4D({ selectedId, onElegir }) {
   }, [datos]);
 
   const secciones = datos?.secciones || [];
+  // Lo mismo que muestra el 3D arriba: el vínculo fijado, el vecindario fijado y el
+  // panel de color con su leyenda. Con «Tema», la leyenda es la de la sección abierta
+  // (los temas se nombran por sección); con Tipo u Origen, la de todas.
+  const porId = useMemo(() => new Map((datos?.nodos || []).map((n) => [n.id, n])), [datos]);
+  const pinOtroId = pinnedEdge && selectedId && (pinnedEdge.source === selectedId || pinnedEdge.target === selectedId)
+    ? (pinnedEdge.source === selectedId ? pinnedEdge.target : pinnedEdge.source) : null;
+  const pinLabel = pinOtroId ? porId.get(pinOtroId)?.label : null;
+  const egoLabel = ego ? porId.get(ego.origen)?.label : null;
+  const leyenda = useMemo(() => {
+    if (!datos) return null;
+    const ns = colorMode === 'cluster' ? datos.nodos.filter((n) => n.dominio === seccion) : datos.nodos;
+    const filtra = visibleIds && visibleIds.size > 0;
+    const vis = new Set(ns.filter((n) => n.dominio !== seccion || !filtra || visibleIds.has(n.id)).map((n) => n.id));
+    return calcularLeyenda(ns, vis, colorMode, temasSeccion || new Map());
+  }, [datos, colorMode, seccion, visibleIds, temasSeccion]);
   return (
     <div ref={cajaRef} className="relative size-full overflow-hidden bg-[#05060c]">
       <div className="pointer-events-none absolute left-3 right-3 top-3 z-10 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">
@@ -889,24 +1048,42 @@ export default function Vista4D({ selectedId, onElegir }) {
             </button>
           )}
         </span>
+        {pinLabel && (
+          <span data-hud className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
+            <Link2 className="size-3 text-accent" />
+            <span className="max-w-[220px] truncate" title={pinLabel}>{pinLabel}</span>
+            <button type="button" onClick={onClearPin} className="text-ink-dim hover:text-ink" aria-label="Soltar vínculo"><X className="size-3" /></button>
+          </span>
+        )}
+        {ego && egoLabel && (
+          <span data-hud className="pointer-events-auto flex items-center gap-1.5 rounded-xs border border-accent/50 bg-surface/95 px-1.5 py-0.5 text-ink">
+            <Pin className="size-3 text-accent" />
+            <span className="max-w-[220px] truncate" title={`Vecindario de ${egoLabel}`}>Vecindario de {egoLabel}</span>
+            <span className="text-ink-dim">{ego.ids.size}</span>
+            <button type="button" onClick={onFijar} className="text-ink-dim hover:text-ink" aria-label="Desfijar vecindario"><X className="size-3" /></button>
+          </span>
+        )}
       </div>
 
       {secciones.length > 0 && (
-        <div data-hud className="absolute right-3 top-3 z-10 flex flex-col gap-0.5 rounded-sm border border-hair bg-surface/90 p-1.5 text-[11.5px]">
-          <span className="px-1 pb-0.5 text-[10px] uppercase tracking-[0.08em] text-ink-dim">Habitaciones</span>
-          {secciones.map((s, i) => (
-            <button
-              key={s.nombre}
-              type="button"
-              onClick={() => apiRef.current?.volarASala(s.nombre)}
-              className={`flex items-center gap-2 rounded-xs px-1 py-0.5 text-left hover:bg-surface-2 hover:text-ink ${
-                dentro === s.nombre ? 'bg-surface-2 text-ink' : 'text-ink-muted'}`}
-            >
-              <span className="size-2 rounded-[2px] dot-cat" style={{ '--c': colorSeccion(i) }} />
-              <span className="capitalize">{s.nombre}</span>
-              <span className="ml-auto pl-3 tabular-nums text-ink-dim">{s.count}</span>
-            </button>
-          ))}
+        <div className="pointer-events-none absolute right-3 top-3 z-10 flex flex-col items-end gap-2">
+          <div data-hud className="pointer-events-auto flex flex-col gap-0.5 rounded-sm border border-hair bg-surface/90 p-1.5 text-[11.5px]">
+            <span className="px-1 pb-0.5 text-[10px] uppercase tracking-[0.08em] text-ink-dim">Habitaciones</span>
+            {secciones.map((s, i) => (
+              <button
+                key={s.nombre}
+                type="button"
+                onClick={() => apiRef.current?.volarASala(s.nombre)}
+                className={`flex items-center gap-2 rounded-xs px-1 py-0.5 text-left hover:bg-surface-2 hover:text-ink ${
+                  dentro === s.nombre ? 'bg-surface-2 text-ink' : 'text-ink-muted'}`}
+              >
+                <span className="size-2 rounded-[2px] dot-cat" style={{ '--c': colorSeccion(i) }} />
+                <span className="capitalize">{s.nombre}</span>
+                <span className="ml-auto pl-3 tabular-nums text-ink-dim">{s.count}</span>
+              </button>
+            ))}
+          </div>
+          {onColorMode && <ColorPanel modo={colorMode} onModo={onColorMode} leyenda={leyenda} />}
         </div>
       )}
 
@@ -967,6 +1144,14 @@ export default function Vista4D({ selectedId, onElegir }) {
       )}
 
       <div data-hud className="absolute bottom-3 left-3 z-10 flex flex-col overflow-hidden rounded-sm border border-hair bg-surface">
+        {(selectedId || ego) && onFijar && (
+          <>
+            <Boton texto={ego ? 'Desfijar vecindario · Esc' : 'Fijar relaciones del elegido'} onClick={onFijar}>
+              {ego ? <PinOff className="text-accent" /> : <Pin />}
+            </Boton>
+            <div className="h-px bg-hair" />
+          </>
+        )}
         <Boton texto="Acercar" onClick={() => apiRef.current?.zoom(0.6)}><Plus /></Boton>
         <Boton texto="Alejar" onClick={() => apiRef.current?.zoom(1.6)}><Minus /></Boton>
         <Boton texto="Ver todo el teseracto" onClick={() => apiRef.current?.salir()}><Maximize /></Boton>
