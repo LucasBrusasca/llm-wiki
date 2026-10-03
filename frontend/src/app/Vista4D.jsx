@@ -5,7 +5,7 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { Plus, Minus, Maximize, Undo2, Loader2, Play, Pause } from 'lucide-react';
+import { Plus, Minus, Maximize, Undo2, Loader2, Play, Pause, Eye, EyeOff } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
 import { fetchDimensiones } from '@/lib/api';
 import { resolverColor, colorFuente, colorSeccion, fuenteLabel } from '@/lib/nodes';
@@ -212,6 +212,13 @@ export default function Vista4D({ selectedId, onElegir }) {
   const [ayuda, setAyuda] = useState(true);
   const [giro, setGiro] = useState(0);          // grados, para el control
   const [girando, setGirando] = useState(false);
+  // Los cubos (marco y paredes) se pueden ocultar: quedan los grafos y los rótulos.
+  // Preferencia de cada uno, recordada en este navegador.
+  const [cubos, setCubos] = useState(() => {
+    try { return localStorage.getItem('algedi_4d_cubos') !== 'ocultos'; } catch { return true; }
+  });
+  const cubosRef = useRef(cubos);
+  cubosRef.current = cubos;
 
   useEffect(() => {
     let vivo = true;
@@ -220,6 +227,9 @@ export default function Vista4D({ selectedId, onElegir }) {
   }, []);
   useEffect(() => { const t = setTimeout(() => setAyuda(false), 10000); return () => clearTimeout(t); }, []);
   useEffect(() => { girandoRef.current = girando; }, [girando]);
+  useEffect(() => {
+    try { localStorage.setItem('algedi_4d_cubos', cubos ? 'visibles' : 'ocultos'); } catch { /* sin storage */ }
+  }, [cubos]);
 
   useEffect(() => {
     const caja = cajaRef.current;
@@ -592,6 +602,8 @@ export default function Vista4D({ selectedId, onElegir }) {
     let dentroActual = null;
     let selPrevio = null;
     let tSel = 0;
+    let kCubos = cubosRef.current ? 1 : 0;
+    marco.visible = kCubos > 0;
     const tmp = new THREE.Vector3();
     const cuadro = (ahora) => {
       raf = requestAnimationFrame(cuadro);
@@ -626,8 +638,15 @@ export default function Vista4D({ selectedId, onElegir }) {
 
       // Adentro de la estructura el marco se aquieta; el rótulo de la habitación en la
       // que estás se apaga para no tapar su grafo (las de al lado se siguen viendo).
+      // Cubos visibles u ocultos, con un fundido corto.
+      const metaCubos = cubosRef.current ? 1 : 0;
+      if (kCubos !== metaCubos) {
+        kCubos = Math.abs(metaCubos - kCubos) < 0.01 ? metaCubos : kCubos + (metaCubos - kCubos) * Math.min(1, dt * 6);
+        marco.visible = kCubos > 0;
+        sucio = true;
+      }
       const dEst = camara.position.length() / cascara;
-      const opMarco = 0.13 + 0.19 * suave(0.35, 1.1, dEst);
+      const opMarco = (0.13 + 0.19 * suave(0.35, 1.1, dEst)) * kCubos;
       const opAristas = 0.14 + 0.14 * (1 - suave(0.4, 1.3, dEst));
       if (Math.abs(opMarco - mm.opacity) > 1e-3 || Math.abs(opAristas - ma.opacity) > 1e-3) {
         mm.opacity = opMarco;
@@ -637,8 +656,8 @@ export default function Vista4D({ selectedId, onElegir }) {
       for (const s of salas) {
         const meta = s === aqui ? 1 : 0;
         s.k = Math.abs(meta - s.k) > 0.003 ? s.k + (meta - s.k) * Math.min(1, dt * 4) : meta;
-        const op = (s.hover ? 0.11 : 0.045) * (s.docs.length ? 1 : 0.55);
-        if (op !== s.paredes.material.opacity) { s.paredes.material.opacity = op; sucio = true; }
+        const op = (s.hover ? 0.11 : 0.045) * (s.docs.length ? 1 : 0.55) * kCubos;
+        if (op !== s.paredes.material.opacity) { s.paredes.material.opacity = op; s.paredes.visible = op > 0; sucio = true; }
         const opRotulo = (1 - s.k * 0.85).toFixed(2);   // es DOM: no hace falta redibujar
         if (opRotulo !== s.opRotulo) { s.opRotulo = opRotulo; s.rotulo.element.style.opacity = opRotulo; }
       }
@@ -818,6 +837,17 @@ export default function Vista4D({ selectedId, onElegir }) {
               aria-label="Girar en la cuarta dimensión"
             />
             <span className="w-8 text-right tabular-nums">{giro}°</span>
+            <span className="h-4 w-px bg-hair" aria-hidden />
+            <button
+              type="button"
+              onClick={() => setCubos((v) => !v)}
+              aria-pressed={cubos}
+              title={cubos ? 'Ocultar los cubos (quedan los grafos y los nombres)' : 'Mostrar los cubos'}
+              className="flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-ink-muted hover:bg-surface-2 hover:text-ink [&_svg]:size-3.5"
+            >
+              {cubos ? <Eye /> : <EyeOff />}
+              <span>Cubos</span>
+            </button>
           </div>
         </div>
       )}

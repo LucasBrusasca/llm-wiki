@@ -371,6 +371,45 @@ def query_llm(messages: list, system: str = None) -> str:
         data = _post_llm_chat(url, payload, headers, httpx.Timeout(900.0, connect=10.0))
         return strip_thinking(data["choices"][0]["message"]["content"])
 
+    elif provider == "openai":
+        # Cualquier API compatible con OpenAI que pida clave: Z.ai (GLM-4.7-Flash es
+        # gratis), Groq, OpenRouter, DeepSeek, Qwen/DashScope… LLM_BASE_URL es la base
+        # (…/v1 o …/paas/v4); también se acepta la URL completa de /chat/completions.
+        base = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+        url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+        headers = {"Content-Type": "application/json",
+                   "Authorization": f"Bearer {os.getenv('LLM_API_KEY', '')}"}
+        payload_messages = []
+        if system:
+            payload_messages.append({"role": "system", "content": system})
+        for msg in messages:
+            content = msg["content"]
+            if isinstance(content, list):
+                text_content = ""
+                for block in content:
+                    if block["type"] == "text":
+                        text_content += block["text"]
+                content = text_content
+            payload_messages.append({"role": msg["role"], "content": content})
+
+        if "qwen3" in model.lower():
+            for m in reversed(payload_messages):
+                if m["role"] == "user":
+                    m["content"] = f"{m['content']}\n\n/no_think"
+                    break
+
+        payload = {
+            "model": model,
+            "messages": payload_messages,
+            "temperature": 0.1
+        }
+        # GLM 4.5+ razona antes de contestar salvo que se le diga que no: acá sólo
+        # alarga la espera (el razonamiento vuelve aparte, en reasoning_content).
+        if "api.z.ai" in url or "bigmodel.cn" in url:
+            payload["thinking"] = {"type": "disabled"}
+        data = _post_llm_chat(url, payload, headers, httpx.Timeout(900.0, connect=10.0))
+        return strip_thinking(data["choices"][0]["message"]["content"])
+
     else:
         # Default: Anthropic
         if not model:
