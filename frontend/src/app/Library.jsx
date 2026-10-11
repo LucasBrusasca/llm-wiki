@@ -311,7 +311,7 @@ export default function Library({
   filtros, onToggleTipo, onToggleFuente, onToggleConcepto, onToggleTema, onNombrarTemas, onLimpiar,
   onRetry, onIngest, compact,
   marcados = new Set(), onMarca, onMarcarVarios, onLimpiarMarcas, onMoverMarcados,
-  onTemaMarcados, onPapeleraMarcados, onEditar, onMover, onPapelera,
+  onTemaMarcados, onPapeleraMarcados, onEditar, onMover, onPapelera, tipoSugerido, onUsarTipo,
 }) {
   const [cerrados, setCerrados] = useState(() => new Set());
   const terms = useMemo(() => normalizar(query.trim()).split(/\s+/).filter(Boolean), [query]);
@@ -509,6 +509,22 @@ export default function Library({
           <button type="button" onClick={onLimpiarMarcas} className="ml-auto text-[11.5px] text-ink-dim hover:text-ink">
             Deseleccionar · Esc
           </button>
+        </div>
+      )}
+      {tipoSugerido && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 hairline-b bg-accent/[0.05] px-4 py-1.5 text-[11.5px] text-ink-muted">
+          <span>El buscador encuentra la palabra «{query.trim()}» en títulos y conceptos, no el tipo de nodo.</span>
+          {tipoSugerido.n ? (
+            <button type="button" onClick={() => onUsarTipo(tipoSugerido.tipo)}
+              className="rounded-xs border border-accent/40 px-1.5 py-px text-accent-soft hover:bg-accent/10">
+              Mostrar sólo los {tipoSugerido.plural} ({tipoSugerido.n})
+            </button>
+          ) : (
+            <span className="text-ink-dim">
+              No hay {tipoSugerido.plural} en esta sección
+              {tipoSugerido.tipo === 'SCRIPT' && ' (la navaja de data science está en «herramientas»)'}.
+            </span>
+          )}
         </div>
       )}
       {(chips.length > 0 || highlightIds.size > 0) && (

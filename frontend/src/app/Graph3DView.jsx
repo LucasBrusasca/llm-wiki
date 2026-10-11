@@ -119,7 +119,7 @@ function posicionesVista(nodes, aire) {
 
 export default function Graph3DView({
   nodes, edges, visibleIds, selectedId, highlightIds, onSelect, relIndex,
-  pinnedEdge, onClearPin, colorMode, onColorMode, colorDe: colorVar, temas, compacto, ego, onFijar,
+  pinnedEdge, onClearPin, onVacio, colorMode, onColorMode, colorDe: colorVar, temas, compacto, ego, onFijar,
 }) {
   const fgRef = useRef(null);
   const cajaRef = useRef(null);
@@ -542,7 +542,7 @@ export default function Graph3DView({
             linkOpacity={1}
             linkDirectionalParticles={0}
             onNodeClick={(d) => onSelect(d.id)}
-            onBackgroundClick={() => pinnedEdge && onClearPin?.()}
+            onBackgroundClick={() => (onVacio ? onVacio() : pinnedEdge && onClearPin?.())}
           />
         </div>
       )}

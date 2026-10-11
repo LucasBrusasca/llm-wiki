@@ -15,7 +15,7 @@ import {
   reagruparTemas, recalcularRelaciones, instalarHerramientas,
   fetchPapelera,
 } from '@/lib/api';
-import { AGRUPADORES, MODOS_COLOR, indexarRelaciones } from '@/lib/nodes';
+import { AGRUPADORES, MODOS_COLOR, TIPOS, indexarRelaciones } from '@/lib/nodes';
 import { construirTemas, temaKey, temaDe } from '@/lib/temas';
 import TaxonomiaDialog from '@/app/TaxonomiaDialog';
 import Splitter from '@/app/Splitter';
@@ -417,6 +417,16 @@ export default function App() {
     return { tipo, fuente };
   }, [graph.nodes]);
 
+  // Escribir «script» en el buscador busca la PALABRA (y trae documentos que hablan de
+  // scripts). Si lo escrito es el nombre de un tipo, se ofrece filtrar por el tipo.
+  const tipoSugerido = useMemo(() => {
+    const q = normalizar(query.trim());
+    if (!q) return null;
+    const hit = Object.entries(TIPOS).find(([t, m]) => !tipos.has(t)
+      && [m.label, m.plural].some((x) => normalizar(x) === q));
+    return hit ? { tipo: hit[0], plural: hit[1].plural, n: facetas.tipo.get(hit[0]) || 0 } : null;
+  }, [query, tipos, facetas]);
+
   // Si el nodo seleccionado desaparece (cambio de sección / borrado), limpiar.
   useEffect(() => {
     if (selectedId && status === 'ok' && !nodesById.has(selectedId)) setSelectedId(null);
@@ -616,6 +626,17 @@ export default function App() {
     setAgentOpen(true);
   }, []);
 
+  // Soltar el foco: de a una capa (Esc, click en el vacío) o todo junto («Ver todo»).
+  const soltarUno = useCallback(() => {
+    if (marcados.size) setMarcados(new Set());
+    else if (pinnedEdge) setPinnedEdge(null);
+    else if (ego) setEgo(null);
+    else setSelectedId(null);
+  }, [marcados, pinnedEdge, ego]);
+  const verTodo = useCallback(() => {
+    setMarcados(new Set()); setPinnedEdge(null); setEgo(null); setSelectedId(null);
+  }, []);
+
   // ── Atajos de teclado ──────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e) => {
@@ -632,10 +653,7 @@ export default function App() {
       if (e.key === 'Escape') {
         // Si hay un diálogo Radix abierto, el Esc es para cerrarlo, no para soltar la selección.
         if (document.querySelector('[role="dialog"][data-state="open"]')) return;
-        if (marcados.size) setMarcados(new Set());
-        else if (pinnedEdge) setPinnedEdge(null);
-        else if (ego) setEgo(null);
-        else setSelectedId(null);
+        soltarUno();
         return;
       }
       // Supr: a la papelera lo marcado (o el documento abierto). Sólo abre la
@@ -664,10 +682,11 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [orden, selectedId, pinnedEdge, ego, seleccionar, marcados]);
+  }, [orden, selectedId, seleccionar, marcados, soltarUno]);
 
   const selected = selectedId ? nodesById.get(selectedId) : null;
   const seccionInfo = sections.find((s) => s.nombre === seccion);
+  const hayFoco = Boolean(selectedId || ego || pinnedEdge || marcados.size);
   const visibleIds = useMemo(() => new Set(orden), [orden]);
 
   // El 3D y la 4D comparten el color (las dos son espaciales); el 2D tiene el suyo.
@@ -690,23 +709,37 @@ export default function App() {
     highlightIds,
     pinnedEdge,
     onClearPin: () => setPinnedEdge(null),
+    onVacio: soltarUno,
     onSelect: elegirEnGrafo,
     relIndex,
     colorMode: modoColor,
     onColorMode: espacial ? setColorMode3d : setColorMode,
   };
   const grafo = (
-    <Suspense fallback={<div className="grid h-full place-items-center text-[12px] text-ink-dim">Cargando grafo…</div>}>
-      {vista === '3d' ? <Graph3DView {...propsGrafo} />
-        : vista === '4d' ? (
-          <Vista4D
-            selectedId={selectedId} onElegir={elegirEn4D} seccion={seccion} visibleIds={visibleIds}
-            pinnedEdge={pinnedEdge} onClearPin={propsGrafo.onClearPin} ego={ego} onFijar={fijarVecindario}
-            highlightIds={highlightIds} colorMode={modoColor} onColorMode={setColorMode3d} colorDe={colorDe} temas={temas}
-          />
-        )
-        : <GraphCanvas {...propsGrafo} />}
-    </Suspense>
+    <div className="relative h-full">
+      <Suspense fallback={<div className="grid h-full place-items-center text-[12px] text-ink-dim">Cargando grafo…</div>}>
+        {vista === '3d' ? <Graph3DView {...propsGrafo} />
+          : vista === '4d' ? (
+            <Vista4D
+              selectedId={selectedId} onElegir={elegirEn4D} seccion={seccion} visibleIds={visibleIds}
+              pinnedEdge={pinnedEdge} onClearPin={propsGrafo.onClearPin} ego={ego} onFijar={fijarVecindario}
+              highlightIds={highlightIds} colorMode={modoColor} onColorMode={setColorMode3d} colorDe={colorDe} temas={temas}
+            />
+          )
+          : <GraphCanvas {...propsGrafo} />}
+      </Suspense>
+      {/* Con un nodo elegido el resto se atenúa: la salida tiene que estar a la vista,
+          no sólo en el Esc. */}
+      {hayFoco && (
+        <button
+          type="button"
+          onClick={verTodo}
+          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-hair-strong bg-surface/90 px-3 py-1.5 text-[12px] text-ink shadow-lg shadow-black/40 backdrop-blur hover:border-accent/60"
+        >
+          Ver todo <kbd className="rounded-xs border border-hair px-1 text-[10.5px] text-ink-dim">Esc</kbd>
+        </button>
+      )}
+    </div>
   );
 
   return (
@@ -805,6 +838,8 @@ export default function App() {
                   onMover={(ids) => setMoverIds(ids)}
                   onPapelera={(ids) => setPapeleraIds(ids)}
                   onToggleTipo={toggleIn(setTipos)}
+                  tipoSugerido={tipoSugerido}
+                  onUsarTipo={(t) => { setQuery(''); setTipos(new Set([t])); }}
                   onToggleFuente={toggleIn(setFuentes)}
                   onToggleConcepto={toggleIn(setConceptos)}
                   onLimpiar={limpiarFiltros}

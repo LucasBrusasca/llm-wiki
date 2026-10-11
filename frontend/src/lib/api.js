@@ -118,6 +118,11 @@ export async function ejecutarArchivo(nodeId, confirm = false, {
   }).then(jsonOError);
 }
 
+/** Parámetros de una herramienta (de su ficha) y los valores válidos: tablas y columnas. */
+export async function fetchParametros(nodeId) {
+  return fetch(`/api/node/${encodeURIComponent(nodeId)}/parametros`).then(jsonOError);
+}
+
 /** Corridas de un nodo (completas) y la versión actual de su código. */
 export async function fetchEjecuciones(nodeId, limit = 5) {
   const d = await fetch(`/api/node/${encodeURIComponent(nodeId)}/runs?limit=${limit}`).then(jsonOError);
@@ -185,11 +190,11 @@ export async function agregarConexion(nombre, seccion) {
 }
 
 /** SQL de sólo lectura sobre un nodo de datos. Una base real (SQLite o Postgres) pide `confirm`. */
-export async function consultarDatos(nodeId, { sql, confirm = false, limite = 200 }) {
+export async function consultarDatos(nodeId, { sql, limite = 200 }) {
   return fetch(`/api/node/${encodeURIComponent(nodeId)}/consulta`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sql, confirm, limite }),
+    body: JSON.stringify({ sql, limite }),
   }).then(jsonOError);
 }
 

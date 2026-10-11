@@ -205,7 +205,7 @@ function BotonCanvas({ texto, onClick, children, activo }) {
 
 function Lienzo({
   nodes, edges, visibleIds, selectedId, highlightIds, onSelect, relIndex,
-  pinnedEdge, onClearPin, colorMode, onColorMode, colorDe, temas, compacto, ego, onFijar,
+  pinnedEdge, onClearPin, onVacio, colorMode, onColorMode, colorDe, temas, compacto, ego, onFijar,
 }) {
   const rf = useReactFlow();
   const store = useStoreApi();
@@ -433,7 +433,7 @@ function Lienzo({
         onNodeMouseMove={moverHover}
         onNodeMouseLeave={soltarHover}
         onMoveStart={() => setHover(null)}
-        onPaneClick={() => pinnedEdge && onClearPin?.()}
+        onPaneClick={() => (onVacio ? onVacio() : pinnedEdge && onClearPin?.())}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable={false}

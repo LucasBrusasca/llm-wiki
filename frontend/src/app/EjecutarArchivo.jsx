@@ -3,7 +3,7 @@ import {
   Play, Loader2, ShieldAlert, CheckCircle2, AlertTriangle, History, Timer, Database, Bot, FileOutput,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { ejecutarArchivo, fetchEjecuciones } from '@/lib/api';
+import { ejecutarArchivo, fetchEjecuciones, fetchParametros } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 /** "27 sep 14:05:31": la hora importa en un log de corridas. */
@@ -105,11 +105,112 @@ export function PlanCorrida({ propuesta, onConfirmar, onCancelar, ocupado = fals
   );
 }
 
+const CLASE = { numerica: 'numérica', categorica: 'categórica', binaria: 'binaria', fecha: 'fecha' };
+const control = 'h-7 w-full rounded-sm border border-hair bg-surface-2 px-1.5 text-[12px] text-ink focus:border-accent/60 focus:outline-none';
+
+function valoresIniciales(params, tablas) {
+  const v = {};
+  for (const p of params) {
+    if (p.tipo === 'tabla') v[p.nombre] = tablas.length === 1 ? tablas[0].node_id : '';
+    else if (p.tipo === 'columnas') v[p.nombre] = [];
+    else v[p.nombre] = p.defecto ?? '';
+  }
+  return v;
+}
+
+/** Lo que recibe el backend: sin vacíos, y los números como números. */
+function limpiar(params, valores) {
+  const out = {};
+  for (const p of params) {
+    const v = valores[p.nombre];
+    if (v === '' || v == null || (Array.isArray(v) && !v.length)) continue;
+    out[p.nombre] = p.tipo === 'numero' ? Number(v) : v;
+  }
+  return out;
+}
+
+/**
+ * Parámetros de una herramienta (su ficha) como listas: sólo se puede elegir lo que vale.
+ * Una columna sólo entre las de la tabla elegida, y de la clase que la herramienta pide.
+ */
+function FormularioParametros({ params, tablas, valores, onCambio }) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-hair bg-surface-2/40 p-2">
+      <p className="text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Parámetros</p>
+      {params.map((p) => {
+        const valor = valores[p.nombre];
+        let campo;
+        if (p.tipo === 'tabla') {
+          campo = tablas.length ? (
+            <select className={control} value={valor} onChange={(e) => onCambio(p, e.target.value)}>
+              {!valor && <option value="">Elegí una tabla…</option>}
+              {tablas.map((t) => <option key={t.node_id} value={t.node_id}>{t.label}</option>)}
+            </select>
+          ) : <span className="text-[11.5px] text-warn">No hay tablas en la biblioteca: subí un CSV o un Excel.</span>;
+        } else if (p.tipo === 'columna' || p.tipo === 'columnas') {
+          const tabla = tablas.find((t) => t.node_id === valores[p.de || 'datos']);
+          const cols = (tabla?.columnas || []).filter((c) => !p.clase || c.clases.includes(p.clase));
+          if (!tabla) campo = <span className="text-[11.5px] text-ink-dim">elegí primero la tabla</span>;
+          else if (p.tipo === 'columna') {
+            campo = (
+              <select className={control} value={valor} onChange={(e) => onCambio(p, e.target.value)}>
+                <option value="">{p.opcional ? '— ninguna (usa todas) —' : 'Elegí una columna…'}</option>
+                {cols.map((c) => <option key={c.nombre} value={c.nombre}>{c.nombre}</option>)}
+              </select>
+            );
+          } else {
+            campo = (
+              <div className="flex flex-wrap gap-1">
+                {cols.map((c) => {
+                  const on = valor.includes(c.nombre);
+                  return (
+                    <button key={c.nombre} type="button"
+                      onClick={() => onCambio(p, on ? valor.filter((x) => x !== c.nombre) : [...valor, c.nombre])}
+                      className={cn('rounded-xs border px-1.5 py-px text-[11px]', on ? 'border-accent/60 bg-accent/[0.12] text-ink' : 'border-hair text-ink-dim hover:text-ink')}>
+                      {c.nombre}
+                    </button>
+                  );
+                })}
+                {!valor.length && <span className="text-[11px] text-ink-dim">ninguna marcada: usa todas</span>}
+              </div>
+            );
+          }
+        } else if (p.tipo === 'opcion') {
+          campo = (
+            <select className={control} value={valor} onChange={(e) => onCambio(p, e.target.value)}>
+              {p.opcional && <option value="">—</option>}
+              {(p.opciones || []).map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          );
+        } else {
+          campo = (
+            <input className={control} type={p.tipo === 'numero' ? 'number' : 'text'} value={valor}
+              placeholder={p.opcional ? 'opcional' : ''} onChange={(e) => onCambio(p, e.target.value)} />
+          );
+        }
+        const pista = [p.clase && `columna ${CLASE[p.clase] || p.clase}`, p.desc].filter(Boolean).join(' · ');
+        return (
+          <div key={p.nombre} className="flex items-start gap-2">
+            <span className="w-24 shrink-0 pt-1 text-[11.5px] text-ink-muted" title={pista}>
+              {p.nombre}{!p.opcional && <span className="text-accent"> *</span>}
+            </span>
+            <div className="min-w-0 flex-1">
+              {campo}
+              {pista && <p className="mt-0.5 text-[10.5px] text-ink-dim">{pista}</p>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /**
  * Correr el script del nodo: proponer (plan) → confirmar → correr la versión propuesta.
  * El backend lo corre en el sandbox (proceso aparte, carpeta temporal con copias de los
  * datos que el script lee, sin claves del servidor, con corte por tiempo) y cada
- * corrida queda en el log.
+ * corrida queda en el log. Si es una herramienta con ficha, primero se eligen sus
+ * parámetros (tabla, columnas…) de listas con los valores válidos.
  */
 export default function EjecutarArchivo({ node, onCorrida }) {
   const [fase, setFase] = useState('idle');     // idle | confirmar | corriendo | listo
@@ -117,19 +218,50 @@ export default function EjecutarArchivo({ node, onCorrida }) {
   const [resultado, setResultado] = useState(null);
   const [previas, setPrevias] = useState({ versionActual: null, runs: [] });
   const [error, setError] = useState(null);
+  const [params, setParams] = useState([]);
+  const [tablas, setTablas] = useState([]);
+  const [valores, setValores] = useState({});
 
   const refrescar = () => fetchEjecuciones(node.id, 6).then(setPrevias).catch(() => {});
 
   useEffect(() => {
     setFase('idle'); setPropuesta(null); setResultado(null); setError(null);
     setPrevias({ versionActual: null, runs: [] });
+    setParams([]); setTablas([]); setValores({});
     refrescar();
+    let vivo = true;
+    fetchParametros(node.id).then((d) => {
+      if (!vivo) return;
+      setParams(d.parametros || []);
+      setTablas(d.tablas || []);
+      setValores(valoresIniciales(d.parametros || [], d.tablas || []));
+    }).catch(() => {});
+    return () => { vivo = false; };
   }, [node.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function cambiar(p, valor) {
+    setFase('idle'); setPropuesta(null);
+    setValores((v) => {
+      const nuevo = { ...v, [p.nombre]: valor };
+      // Otra tabla: las columnas elegidas de la anterior ya no valen.
+      if (p.tipo === 'tabla') {
+        for (const q of params) {
+          if ((q.tipo === 'columna' || q.tipo === 'columnas') && (q.de || 'datos') === p.nombre) {
+            nuevo[q.nombre] = q.tipo === 'columnas' ? [] : '';
+          }
+        }
+      }
+      return nuevo;
+    });
+  }
+
+  const faltan = params.filter((p) => !p.opcional && (valores[p.nombre] === '' || valores[p.nombre] == null));
+  const parametros = params.length ? limpiar(params, valores) : undefined;
 
   async function proponer() {
     setError(null);
     try {
-      setPropuesta(await ejecutarArchivo(node.id, false));
+      setPropuesta(await ejecutarArchivo(node.id, false, { parametros }));
       setFase('confirmar');
     } catch (e) { setError(e.message); }
   }
@@ -137,7 +269,7 @@ export default function EjecutarArchivo({ node, onCorrida }) {
   async function correr() {
     setFase('corriendo'); setError(null);
     try {
-      const r = await ejecutarArchivo(node.id, true, { version: propuesta?.version });
+      const r = await ejecutarArchivo(node.id, true, { version: propuesta?.version, parametros });
       setResultado(r);
       refrescar();
       onCorrida?.(r);
@@ -152,14 +284,21 @@ export default function EjecutarArchivo({ node, onCorrida }) {
 
   return (
     <div className="flex flex-col gap-2.5">
+      {params.length > 0 && (
+        <FormularioParametros params={params} tablas={tablas} valores={valores} onCambio={cambiar} />
+      )}
       {fase === 'confirmar' && propuesta ? (
         <PlanCorrida propuesta={propuesta} onConfirmar={correr} onCancelar={() => setFase('idle')} />
       ) : (
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={proponer} disabled={fase === 'corriendo'}>
+          <Button variant="outline" size="sm" onClick={proponer} disabled={fase === 'corriendo' || faltan.length > 0}>
             {fase === 'corriendo' ? <Loader2 className="animate-spin" /> : <Play />} Ejecutar…
           </Button>
-          <span className="text-[11px] text-ink-dim">primero muestra el plan · sandbox · queda en Corridas</span>
+          <span className="text-[11px] text-ink-dim">
+            {faltan.length
+              ? `falta elegir: ${faltan.map((p) => p.nombre).join(', ')}`
+              : 'primero muestra el plan · sandbox · queda en Corridas'}
+          </span>
         </div>
       )}
 

@@ -2701,8 +2701,10 @@ def _archivo_de_datos(node: Node) -> Path:
 
 # ── Bases Postgres externas ───────────────────────────────────────────────────
 # Se declaran en el entorno (ALGEDI_PG_<NOMBRE>=postgresql://…); el nodo guarda sólo
-# `postgres:<nombre>`. Leer el esquema no pide confirmación (no toca datos); cada
-# consulta sí, y queda en Corridas. Ver las barreras de sólo lectura en workbench.py.
+# `postgres:<nombre>`. Ni leer el esquema ni consultar piden confirmación: la consulta
+# corre en una transacción de sólo lectura (la escritura la rechaza Postgres, no una
+# advertencia), con 5 s y un tope de filas, y queda en Corridas. Ver las barreras de
+# sólo lectura en workbench.py.
 
 def _es_postgres(node: Node) -> bool:
     return node.fuente == "postgres" and (node.fuente_path or "").startswith("postgres:")
@@ -2804,9 +2806,11 @@ async def consultar_datos(node_id: str, request: Request, db: AsyncSession = Dep
     """SQL de sólo lectura sobre un nodo de datos.
 
     - CSV/Excel: la hoja se carga como tabla `datos` en un SQLite en memoria. No toca
-      el archivo ni nada más: corre directo.
-    - Base real (SQLite o Postgres): sólo lectura, y primero PROPONE (`confirm`); la
-      consulta confirmada queda en el log de corridas."""
+      el archivo ni nada más.
+    - Base real (SQLite o Postgres): sólo lectura, garantizada por la base (transacción
+      de sólo lectura / modo ro), con tiempo y filas acotados; queda en Corridas.
+    Corre directo: antes pedía confirmar cada consulta, y confirmar algo que la base
+    igual no deja escribir era sólo un clic de más (lo pidió Lucas, 2026-10-11)."""
     body = await _read_body(request)
     node = await _nodo_o_404(db, node_id)
     sql = str(body.get("sql") or "")
@@ -2840,8 +2844,6 @@ async def consultar_datos(node_id: str, request: Request, db: AsyncSession = Dep
                 return await asyncio.to_thread(wb.consultar_sqlite, ruta, sql, limite=limite)
     except wb.ConsultaInvalida as e:
         raise HTTPException(400, str(e))
-    if not body.get("confirm"):
-        return {"needs_confirmation": True, "motor": motor, "archivo": destino, "sql": sql, "plan": plan}
 
     inicio = datetime.now(timezone.utc)
     fallo_conexion = None
@@ -2871,7 +2873,7 @@ async def consultar_datos(node_id: str, request: Request, db: AsyncSession = Dep
         raise _error_de_conexion(fallo_conexion)
     if error:
         raise HTTPException(400, error)
-    return {**res, "motor": motor}
+    return {**res, "motor": motor, "plan": plan}
 
 
 # ── JEV: de una necesidad a la herramienta justa (jev.py) ──────────────────────
@@ -2999,6 +3001,28 @@ async def _parametros_de_corrida(db: AsyncSession, ficha: dict | None,
         elif "defecto" in p and p["defecto"] is not None:
             al_script[nombre] = p["defecto"]
     return al_script, mostrados, archivos
+
+
+@app.get("/api/node/{node_id}/parametros")
+async def parametros_de_herramienta(node_id: str, db: AsyncSession = Depends(get_async_session)):
+    """Lo que hace falta para correr una herramienta desde su ficha, con los valores
+    válidos de cada parámetro: las tablas de la biblioteca y sus columnas con su clase.
+    El inspector arma con esto un formulario de listas (sólo se puede elegir lo que vale)."""
+    node = await _nodo_o_404(db, node_id)
+    try:
+        ficha = _ficha_de(_archivo_ejecutable(node))
+    except HTTPException:
+        ficha = None
+    spec = (ficha or {}).get("parametros") or {}
+    if not spec:
+        return {"parametros": [], "tablas": []}
+    tablas = await _tablas_disponibles(db) if any(p["tipo"] in ("tabla", "columna", "columnas")
+                                                   for p in spec.values()) else []
+    return {
+        "parametros": [{"nombre": n, **p} for n, p in spec.items()],
+        "tablas": [{"node_id": t["node_id"], "label": t["label"], "columnas": t["columnas"]}
+                   for t in tablas],
+    }
 
 
 async def _contexto_jev(db: AsyncSession, contexto_id: str | None) -> dict | None:

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Play, Loader2, Database, ShieldAlert } from 'lucide-react';
+import { Play, Loader2, Database } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { consultarDatos, fetchEsquema } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -14,21 +14,21 @@ function refTabla(t) {
  * Consulta SQL de sólo lectura sobre un nodo de datos, en el lugar.
  * - CSV/Excel: la hoja se consulta como tabla `datos` (SQLite en memoria; no toca el
  *   archivo), así que corre directo.
- * - Base real (SQLite o Postgres): el backend la abre en sólo lectura y primero
- *   propone; al confirmar, la consulta queda en Corridas.
+ * - Base real (SQLite o Postgres): el backend la abre en sólo lectura (la base rechaza
+ *   cualquier escritura), con 5 s y un tope de filas, y la deja en Corridas. Corre
+ *   directo: confirmar algo que la base no deja escribir era sólo un clic de más.
  * Ctrl/⌘ + Enter corre la consulta.
  */
 export default function ConsultaDatos({ node }) {
   const [esquema, setEsquema] = useState(null);
   const [sql, setSql] = useState('');
   const [res, setRes] = useState(null);
-  const [propuesta, setPropuesta] = useState(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     let vivo = true;
-    setEsquema(null); setRes(null); setPropuesta(null); setError(null);
+    setEsquema(null); setRes(null); setError(null);
     fetchEsquema(node.id)
       .then((e) => {
         if (!vivo) return;
@@ -39,13 +39,10 @@ export default function ConsultaDatos({ node }) {
     return () => { vivo = false; };
   }, [node.id]);
 
-  async function correr(confirm = false) {
+  async function correr() {
     setCargando(true); setError(null);
     try {
-      const r = await consultarDatos(node.id, { sql, confirm });
-      if (r.needs_confirmation) { setPropuesta(r); return; }
-      setPropuesta(null);
-      setRes(r);
+      setRes(await consultarDatos(node.id, { sql }));
     } catch (e) {
       setError(e.message);
     } finally {
@@ -96,24 +93,9 @@ export default function ConsultaDatos({ node }) {
           {cargando ? <Loader2 className="animate-spin" /> : <Play />} Consultar
         </Button>
         <span className="text-[11px] text-ink-dim">
-          sólo lectura · {real ? 'base real: pide confirmar y queda en Corridas' : 'la hoja es la tabla «datos»'} · Ctrl+Enter
+          sólo lectura · {real ? 'hasta 5 s y 200 filas · queda en Corridas' : 'la hoja es la tabla «datos»'} · Ctrl+Enter
         </span>
       </div>
-
-      {propuesta && (
-        <div className="rounded-md border border-accent/40 bg-accent/[0.06] p-2.5">
-          <p className="flex items-start gap-1.5 text-[12.5px] text-ink">
-            <ShieldAlert className="mt-px size-3.5 shrink-0 text-accent" /> ¿Consultar <b>{propuesta.archivo}</b>?
-          </p>
-          <ol className="mt-1.5 list-decimal pl-5 text-[11.5px] leading-relaxed text-ink-muted">
-            {propuesta.plan.map((p) => <li key={p}>{p}</li>)}
-          </ol>
-          <div className="mt-2 flex gap-1.5">
-            <Button variant="default" size="sm" onClick={() => correr(true)} disabled={cargando}><Play /> Confirmar y consultar</Button>
-            <Button variant="ghost" size="sm" onClick={() => setPropuesta(null)}>Cancelar</Button>
-          </div>
-        </div>
-      )}
 
       {error && <p className="text-[12px] text-danger">{error}</p>}
 
