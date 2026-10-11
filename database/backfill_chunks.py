@@ -7,7 +7,8 @@ from pathlib import Path
 from database.connection import get_sync_session
 from database.models import Chunk, Document, Node
 from processor import (crear_chunks, crear_chunks_paginas, extraer_paginas_pdf,
-                       get_embed_model, _extraer_texto_html, _extraer_texto_office)
+                       embed_pasajes, texto_de_fragmento, _extraer_texto_html,
+                       _extraer_texto_office)
 
 BASE = Path(__file__).parents[1].resolve()
 UPLOADS = BASE / "uploads"
@@ -76,7 +77,6 @@ def build_chunks_for_node(node: Node) -> list[dict]:
 
 
 def main():
-    model = None
     created = 0
     covered = 0
     skipped = 0
@@ -97,11 +97,7 @@ def main():
             if not chunks:
                 skipped += 1
                 continue
-            if model is None:
-                model = get_embed_model()
-            vectors = model.encode(
-                [chunk["content"] for chunk in chunks], batch_size=32, show_progress_bar=False
-            )
+            vectors = embed_pasajes([texto_de_fragmento(node.label, chunk["content"]) for chunk in chunks])
             for index, (chunk, vector) in enumerate(zip(chunks, vectors)):
                 ordinal = int(chunk.get("ordinal", index))
                 fingerprint = hashlib.sha256(

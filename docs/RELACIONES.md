@@ -97,8 +97,8 @@ De las 575 aristas, **482 entraron por similitud** y **93 por conceptos comparti
 
 | variable de entorno | default | qué hace |
 |---|---|---|
-| `ALGEDI_PISO_RELACION` | 0.62 | piso de coseno para unir sólo por vector |
-| `ALGEDI_PISO_CONCEPTOS` | 0.52 | piso rebajado cuando comparten conceptos |
+| `ALGEDI_PISO_RELACION` | según el modelo (e5: 0.862; MiniLM: 0.62) | piso de coseno para unir sólo por vector |
+| `ALGEDI_PISO_CONCEPTOS` | según el modelo (e5: 0.841; MiniLM: 0.52) | piso rebajado cuando comparten conceptos |
 | `ALGEDI_CONCEPTOS_MINIMOS` | 2 | conceptos no genéricos necesarios |
 | `ALGEDI_DF_GENERICO` | 0.15 | frecuencia documental desde la cual una palabra es genérica |
 | `ALGEDI_K_RELACIONES` | 4 | vínculos que conserva cada nodo |
@@ -106,8 +106,17 @@ De las 575 aristas, **482 entraron por similitud** y **93 por conceptos comparti
 Cambiar cualquiera **exige correr `POST /api/recompute-relations`**: si no, las aristas
 viejas siguen en la base afirmando algo que la regla actual ya no sostiene.
 
+### Los números dependen del modelo de embeddings
+
+Desde 2026-10-11 el modelo es `multilingual-e5-small`, que usa otra escala de coseno
+(la mediana de los pares de documentos es 0.82; con MiniLM era 0.40). Los 0.62 / 0.52 /
+0.75 de este documento son los de MiniLM; los de e5 son el MISMO percentil de los pares
+reales, medido con `eval/calibrar_umbrales.py` (0.862 / 0.841 / 0.895). Están en
+`processor.UMBRALES_POR_MODELO` y el detalle en `eval/RESULTADOS.md`. Cambiar de modelo
+exige `python reindexado.py`, que recalcula vectores, relaciones y temas.
+
 ## Qué NO se tocó
 
-`ALGEDI_CITA_UMBRAL` (0.62) sigue igual. Bajarlo sin medir haría que el agente cite
+`ALGEDI_CITA_UMBRAL` (0.62 con MiniLM, 0.86 con e5) sigue el mismo criterio. Bajarlo sin medir haría que el agente cite
 pasajes que no sostienen la respuesta, que es el problema opuesto al que resuelve este
 documento.

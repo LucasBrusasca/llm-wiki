@@ -63,6 +63,14 @@ from vigencia import (
 )
 from vault_watcher import VaultWatcher
 
+# Los tests de admisión y descripción de vínculos usan cosenos en la escala de MiniLM,
+# con la que se escribieron. Lo que fijan es la LÓGICA (por dónde se entra al grafo,
+# cómo se nombra cada vínculo); la calibración de cada modelo se mide aparte
+# (eval/calibrar_umbrales.py). Se fija la de MiniLM para que los números de estos
+# tests digan lo mismo con cualquier modelo de embeddings.
+ESCALA_MINILM = patch.multiple("processor", PISO_SIMILITUD=0.62, PISO_CON_CONCEPTOS=0.52,
+                               PISO_SIMILITUD_DEFAULT=0.62, SIM_COMPLEMENTA=0.75)
+
 
 class RelationAcrossSectionsTests(unittest.TestCase):
     """Las secciones están vinculadas: el mismo criterio vale adentro y entre secciones."""
@@ -334,6 +342,7 @@ class ArchitectContractTests(unittest.TestCase):
         self.assertEqual(session.commits, 1)
 
 
+@ESCALA_MINILM
 class RelacionesIncrementalesTests(unittest.TestCase):
     """El camino de la ingesta no debe inventar aristas distintas de las del recálculo
     global: sólo mirar menos candidatos. Si divergieran, una misma arista significaría
@@ -466,6 +475,7 @@ class ConfinamientoDeArchivosTests(unittest.TestCase):
             archivo.unlink()
 
 
+@ESCALA_MINILM
 class DescripcionDeRelacionTests(unittest.TestCase):
     def test_la_etiqueta_describe_la_fuerza_del_vinculo(self):
         fuerte = _describir_relacion("a", "b", 0.80, ["uno", "dos"])
@@ -491,6 +501,7 @@ class DescripcionDeRelacionTests(unittest.TestCase):
         self.assertIn("2 conceptos", rel["description"])
 
 
+@ESCALA_MINILM
 class AdmisionDeVinculosTests(unittest.TestCase):
     """Una arista dice "estos dos documentos tienen que ver". Si entra cualquier par, el
     grafo miente. Estos tests fijan por dónde se puede entrar."""
@@ -572,6 +583,7 @@ class ResolucionDeTemaTests(unittest.TestCase):
         self.assertEqual(_resolver_tema("Sin clasificar", self.TEMAS), "Sin clasificar")
 
 
+@ESCALA_MINILM
 class ProcedenciaDeRelacionTests(unittest.TestCase):
     """Una arista tiene que poder decir POR QUE existe: con que metodo se calculo, que
     la sostiene y con que numeros. Sin esto el grafo muestra que dos cosas estan unidas

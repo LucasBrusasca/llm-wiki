@@ -1,0 +1,14 @@
+{
+  "modelo": "intfloat/multilingual-e5-small",
+  "desde": "paraphrase-multilingual-MiniLM-L12-v2",
+  "umbrales": {
+    "piso_relacion": 0.862,
+    "piso_conceptos": 0.841,
+    "complementa": 0.895,
+    "cita": 0.86,
+    "veto": 0.784
+  },
+  "pares_documentos": 26335,
+  "preguntas_con_respaldo": 38,
+  "preguntas_fuera_de_tema": 15
+}

@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import sys
+import threading
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -10,29 +11,85 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _embed_model = None
+_embed_lock = threading.Lock()
 
-# Modelo MULTILINGÜE (384d, misma dimensión que el anterior → sin migración de DB).
-# Antes se usaba 'all-MiniLM-L6-v2' (inglés, chico) sobre un corpus en español, lo que
-# achataba las similitudes ("todo se parece ~0.4"). Este está pensado para español y es
-# el mismo que valida la tesis (paraphrase-multilingual-MiniLM-L12-v2) → mejor separación.
-EMBED_MODEL_NAME = 'paraphrase-multilingual-MiniLM-L12-v2'
+# Modelo de embeddings: multilingüe, 384 dimensiones (las mismas columnas de siempre).
+# multilingual-e5-small lee hasta 512 tokens; el anterior (paraphrase-multilingual-
+# MiniLM-L12-v2) cortaba en 128, así que veía la mitad de cada fragmento y nunca los
+# conceptos del final. Medido con preguntas reales (eval/evaluar_busqueda.py, 2026-10-11):
+# documento correcto entre los 5 primeros 89 % con e5 contra 74 % con MiniLM.
+# Cambiar de modelo exige `python reindexado.py`: los vectores de uno no se comparan
+# con los del otro.
+EMBED_MODEL_NAME = os.getenv("ALGEDI_EMBED_MODEL", "intfloat/multilingual-e5-small")
+EMBED_MAX_TOKENS = 512
+
+# Cada modelo tiene su propia escala de coseno: con e5 hasta dos textos sin relación dan
+# ~0.8, y 0.62 (el piso de MiniLM) uniría todo con todo. Los valores de e5 no son a ojo:
+# salen de eval/calibrar_umbrales.py (mismo percentil de los pares reales para los pisos
+# entre documentos; preguntas con y sin respaldo para los del agente). Ver
+# eval/calibracion_e5.json. Cada uno se puede pisar con su variable de entorno.
+UMBRALES_POR_MODELO = {
+    "paraphrase-multilingual-MiniLM-L12-v2": {
+        "piso_relacion": 0.62, "piso_conceptos": 0.52, "complementa": 0.75,
+        "cita": 0.62, "veto": 0.28,
+    },
+    "intfloat/multilingual-e5-small": {
+        "piso_relacion": 0.862, "piso_conceptos": 0.841, "complementa": 0.895,
+        "cita": 0.86, "veto": 0.784,
+    },
+}
+UMBRALES = UMBRALES_POR_MODELO.get(EMBED_MODEL_NAME)
+if UMBRALES is None:
+    print(f"[!] No hay umbrales medidos para {EMBED_MODEL_NAME}: se usan los de MiniLM. "
+          f"Corré eval/calibrar_umbrales.py y agregalos a UMBRALES_POR_MODELO.")
+    UMBRALES = UMBRALES_POR_MODELO["paraphrase-multilingual-MiniLM-L12-v2"]
 
 
 def get_embed_model():
     global _embed_model
     if _embed_model is None:
-        from sentence_transformers import SentenceTransformer
-        print(f"Cargando modelo de embeddings ({EMBED_MODEL_NAME}, primera vez: ~470MB)...")
-        _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
-        print("✓ Modelo listo")
+        # Al arrancar lo piden a la vez el precalentado y otros hilos: que cargue uno solo.
+        with _embed_lock:
+            if _embed_model is None:
+                from sentence_transformers import SentenceTransformer
+                print(f"Cargando modelo de embeddings ({EMBED_MODEL_NAME})...")
+                modelo = SentenceTransformer(EMBED_MODEL_NAME)
+                modelo.max_seq_length = min(EMBED_MAX_TOKENS, modelo.max_seq_length or EMBED_MAX_TOKENS)
+                _embed_model = modelo
+                print("✓ Modelo listo")
     return _embed_model
 
+def _prefijos() -> tuple[str, str]:
+    """Los modelos e5 se entrenaron con «query: » / «passage: » adelante: sin eso rinden peor."""
+    return ("query: ", "passage: ") if "e5" in EMBED_MODEL_NAME.lower() else ("", "")
+
+
+def embed_pasajes(textos: list, batch_size: int = 32):
+    """Vectores (normalizados) de textos a INDEXAR: documentos y fragmentos."""
+    pre = _prefijos()[1]
+    return get_embed_model().encode([f"{pre}{t}" for t in textos], batch_size=batch_size,
+                                    normalize_embeddings=True, show_progress_bar=False)
+
+
+def embed_consulta(texto: str) -> list:
+    """Vector (normalizado) de una pregunta o búsqueda."""
+    pre = _prefijos()[0]
+    return get_embed_model().encode([f"{pre}{texto}"], normalize_embeddings=True,
+                                    show_progress_bar=False)[0].tolist()
+
+
+def texto_de_fragmento(titulo: str | None, contenido: str) -> str:
+    """El fragmento va con el título de su documento: «Capítulo 3» solo no dice de qué es."""
+    return f"{titulo}\n{contenido}" if titulo else contenido
+
+
+def texto_de_documento(nodo: dict) -> str:
+    conceptos_str = ', '.join(nodo.get('conceptos') or [])
+    return f"{nodo['label']}. {nodo.get('desc') or ''}. {nodo.get('fragmento') or ''}. {conceptos_str}"
+
+
 def generar_embedding(nodo):
-    model = get_embed_model()
-    conceptos_str = ', '.join(nodo.get('conceptos', []))
-    texto = f"{nodo['label']}. {nodo.get('desc','')}. {nodo.get('fragmento','')}. {conceptos_str}"
-    vec = model.encode([texto], show_progress_bar=False)[0]
-    nodo['embedding'] = vec.tolist()
+    nodo['embedding'] = embed_pasajes([texto_de_documento(nodo)])[0].tolist()
 
 
 CHUNK_MAX_CHARS = 1400
@@ -1074,17 +1131,21 @@ def _palabra_comun(ta: set, tb: set) -> bool:
 RELACIONES_K = int(os.getenv("ALGEDI_K_RELACIONES", "4"))
 
 # Piso de coseno para que dos documentos queden unidos SÓLO por similitud vectorial.
-# 0.62 no es un número elegido a ojo: es ~percentil 95 de los pares reales de este corpus
-# (personal p95=0.624, maestria p93≈0.62) y coincide con el piso que ya se exigía para
-# citar (ALGEDI_CITA_UMBRAL). Si un pasaje por debajo de eso no es citable, tampoco
-# merece dibujarse como relación. Configurable porque depende del modelo y del corpus.
-PISO_SIMILITUD = float(os.getenv("ALGEDI_PISO_RELACION", "0.62"))
+# No es un número elegido a ojo: con MiniLM, 0.62 era ~percentil 95 de los pares reales
+# de este corpus (personal p95=0.624, maestria p93≈0.62) y coincidía con el piso que ya
+# se exigía para citar (ALGEDI_CITA_UMBRAL). Si un pasaje por debajo de eso no es
+# citable, tampoco merece dibujarse como relación. Con e5 es el mismo percentil (0.862).
+PISO_SIMILITUD = float(os.getenv("ALGEDI_PISO_RELACION", UMBRALES["piso_relacion"]))
 
 # Piso más bajo que se acepta cuando además comparten conceptos NO genéricos. Compartir
-# vocabulario propio es evidencia inspeccionable, así que compra 0.10 de coseno — no más.
+# vocabulario propio es evidencia inspeccionable, así que compra algo de coseno — no
+# mucho (0.10 con MiniLM, el equivalente en percentiles con e5).
 # Antes compartir conceptos salteaba el piso por completo: 1079 pares con coseno <0.5
 # entraban al grafo por dos palabras genéricas ("Gestión de datos" + "Flujo de trabajo").
-PISO_CON_CONCEPTOS = float(os.getenv("ALGEDI_PISO_CONCEPTOS", "0.52"))
+PISO_CON_CONCEPTOS = float(os.getenv("ALGEDI_PISO_CONCEPTOS", UMBRALES["piso_conceptos"]))
+
+# Desde acá el vínculo se describe como «complementa» (el ~1 % de pares más parecidos).
+SIM_COMPLEMENTA = UMBRALES["complementa"]
 
 # Una palabra que aparece en esta fracción de los documentos de la sección no distingue
 # nada: es el vocabulario de fondo del silo ("datos" está en el 46% de `maestria`,
@@ -1208,14 +1269,14 @@ def _describir_relacion(source: str, target: str, sim: float, shared: list,
 
     `label` y `description` son INTERPRETACIÓN derivada de los números, no medición:
     "COMPLEMENTA_A" no significa que un documento complemente al otro, significa que el
-    coseno pasó 0.75. Por eso viajan junto a `evidencia`, que sí son los números crudos,
+    coseno pasó SIM_COMPLEMENTA. Por eso viajan junto a `evidencia`, que sí son los números crudos,
     y el panel los presenta separados.
     """
     comparten = len(shared) >= CONCEPTOS_PARA_EXPLICITA
     # Los cortes van atados al piso vigente: si se sube el piso por env, las etiquetas
     # siguen describiendo lo mismo en vez de quedar todas en la categoría más fuerte.
     piso_efectivo = PISO_SIMILITUD if piso is None else piso
-    if sim >= 0.75:
+    if sim >= SIM_COMPLEMENTA:
         label = "COMPLEMENTA_A"
     elif comparten and sim >= piso_efectivo:
         label = "PROFUNDIZA_EN"

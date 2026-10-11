@@ -87,7 +87,32 @@ async def lifespan(app: FastAPI):
     await init_db()
     _start_vault_watcher()
     _start_job_manager()
+    _precalentar_busqueda()
     yield
+
+
+def _precalentar_busqueda():
+    """Carga el modelo de embeddings al arrancar (si no, la primera búsqueda tarda ~15 s)
+    y avisa si los vectores de la base son de otro modelo que el del código."""
+    def tarea():
+        try:
+            from processor import EMBED_MODEL_NAME, get_embed_model
+            from reindexado import anotar_modelo, modelo_de_la_base
+            with get_sync_session() as s:
+                en_base = modelo_de_la_base(s)
+                hay_vectores = s.execute(text(
+                    "SELECT EXISTS (SELECT 1 FROM nodes WHERE embedding IS NOT NULL)")).scalar()
+                if en_base is None and not hay_vectores:
+                    anotar_modelo(s, EMBED_MODEL_NAME)   # base nueva: nace con este modelo
+                    s.commit()
+                elif en_base != EMBED_MODEL_NAME:
+                    print(f"[!] Los vectores de la base son de {en_base or 'un modelo anterior'} y el "
+                          f"código usa {EMBED_MODEL_NAME}: corré `python reindexado.py`, si no las "
+                          f"búsquedas y las relaciones comparan escalas distintas.")
+            get_embed_model()
+        except Exception as e:
+            print(f"[búsqueda] no se pudo precalentar el modelo: {e}")
+    threading.Thread(target=tarea, daemon=True, name="precalentar-busqueda").start()
 
 
 def _start_job_manager():
@@ -254,17 +279,73 @@ def edge_to_dict(e) -> dict:
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
+# Los PASAJES que cita el agente se buscan de forma híbrida: significado (vectores en
+# pgvector) + palabras (BM25 en memoria, busqueda.py), fusionadas por puesto con RRF.
+# Cada una encuentra lo que la otra pierde: los vectores, lo dicho con otras palabras;
+# BM25, siglas, nombres y términos técnicos. Los DOCUMENTOS, en cambio, sólo por el
+# vector del documento entero. Las dos decisiones están medidas: eval/evaluar_busqueda.py.
+
+def _mejor_sim(items: list) -> float:
+    """El coseno más alto de la lista. Con el orden híbrido el primero no es
+    necesariamente el más parecido (puede haber subido por palabras)."""
+    return max((x["sim"] for x in items), default=0.0)
+
+
+async def _preparar_knn(db: AsyncSession, n: int):
+    """El índice HNSW devuelve como mucho `ef_search` vecinos (40 por defecto): pedirle
+    50 devolvía 40 sin avisar."""
+    await db.execute(text(f"SET LOCAL hnsw.ef_search = {max(40, int(n) * 2)}"))
+
+
+async def _indice_lexico(db: AsyncSession):
+    """Índice BM25 de los fragmentos. Se arma una vez y se rehace solo si cambian."""
+    import busqueda
+    firma = tuple((await db.execute(text(
+        "SELECT count(*), COALESCE(sum(hashtext(id)::bigint), 0) FROM chunks"))).one())
+    idx = busqueda.indice_vigente(firma)
+    if idx is None:
+        filas = (await db.execute(text("""
+            SELECT c.id, n.id, n.label, c.content
+            FROM chunks c
+            JOIN documents d ON d.id = c.document_id
+            JOIN nodes n ON n.id = d.node_id
+            WHERE NOT COALESCE(n.is_issue, false)
+        """))).all()
+        idx = await asyncio.to_thread(busqueda.construir_indice, firma, [tuple(f) for f in filas])
+    return idx
+
+
+async def _fragmentos_candidatos(pregunta: str, vec: list, db: AsyncSession, n: int):
+    """Los `n` fragmentos más cercanos por significado y los `n` mejores por palabras."""
+    await _preparar_knn(db, n)
+    densos = (await db.execute(text("""
+        SELECT c.id, n.id AS node_id, (c.embedding <=> CAST(:vec AS vector)) AS dist
+        FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        JOIN nodes n ON n.id = d.node_id
+        WHERE c.embedding IS NOT NULL
+          AND NOT COALESCE(n.is_issue, false)
+        ORDER BY dist
+        LIMIT :lim
+    """), {"vec": str(vec), "lim": n})).all()
+    lexicos = (await _indice_lexico(db)).buscar(pregunta, n)
+    return densos, lexicos
+
+
 async def _nodos_relevantes(pregunta: str, max_n: int = 5,
                              db: AsyncSession = None) -> list[str]:
+    # Para encontrar DOCUMENTOS alcanza el vector del documento entero: medido, sumarle
+    # sus fragmentos o la búsqueda por palabras lo empeoraba (top 5: 89 % solo, 76-79 %
+    # fusionado). La fusión sí se usa para los pasajes (_chunks_relevantes_scored).
     try:
-        from processor import get_embed_model
-        model = get_embed_model()
-        vec = model.encode([pregunta], show_progress_bar=False)[0].tolist()
+        from processor import embed_consulta
+        vec = embed_consulta(pregunta)
         result = await db.execute(
             text("""
                 SELECT id
                 FROM nodes
                 WHERE NOT COALESCE(is_centroid, false)
+                  AND NOT COALESCE(is_issue, false)
                   AND embedding IS NOT NULL
                 ORDER BY embedding <=> CAST(:vec AS vector)
                 LIMIT :lim
@@ -273,6 +354,7 @@ async def _nodos_relevantes(pregunta: str, max_n: int = 5,
         )
         return [row.id for row in result]
     except Exception as e:
+        await db.rollback()
         print(f"Vector search fallback (keyword): {e}")
         stops = {"el","la","los","las","un","una","de","en","que","es",
                  "y","a","con","por","para","del","al","se","no","lo","su","sus"}
@@ -299,9 +381,8 @@ async def _nodos_relevantes_scored(pregunta: str, max_n: int = 6,
     """Como _nodos_relevantes pero devuelve también el contenido y la SIMILITUD coseno
     (sim = 1 - distancia). Lo usa el agente para fundamentar la respuesta y para el VETO."""
     try:
-        from processor import get_embed_model
-        model = get_embed_model()
-        vec = model.encode([pregunta], show_progress_bar=False)[0].tolist()
+        from processor import embed_consulta
+        vec = embed_consulta(pregunta)
         result = await db.execute(
             text("""
                 SELECT id, label, "desc", fragmento,
@@ -315,25 +396,28 @@ async def _nodos_relevantes_scored(pregunta: str, max_n: int = 6,
             """),
             {"vec": str(vec), "lim": max_n}
         )
-        out = []
-        for r in result:
-            out.append({
-                "id": r.id, "label": r.label, "desc": r.desc, "fragmento": r.fragmento,
-                "sim": max(0.0, 1.0 - float(r.dist)),
-            })
-        return out
+        return [{
+            "id": r.id, "label": r.label, "desc": r.desc, "fragmento": r.fragmento,
+            "sim": max(0.0, 1.0 - float(r.dist)),
+        } for r in result]
     except Exception as e:
         print(f"scored retrieval failed: {e}")
+        await db.rollback()
         return []
 
 
 async def _chunks_relevantes_scored(pregunta: str, max_n: int = 8,
                                     db: AsyncSession = None) -> list[dict]:
-    """Recupera pasajes citables, vinculados al documento y nodo de origen."""
+    """Recupera pasajes citables, vinculados al documento y nodo de origen.
+    Orden híbrido (significado + palabras); `sim` es el coseno del pasaje."""
     try:
-        from processor import get_embed_model
-        model = get_embed_model()
-        vec = model.encode([pregunta], show_progress_bar=False)[0].tolist()
+        import busqueda
+        from processor import embed_consulta
+        vec = embed_consulta(pregunta)
+        densos, lexicos = await _fragmentos_candidatos(pregunta, vec, db, busqueda.PROFUNDIDAD)
+        ids = busqueda.rrf([f.id for f in densos], [cid for cid, _, _ in lexicos])[:max_n]
+        if not ids:
+            return []
         result = await db.execute(
             text("""
                 SELECT c.id, c.content, c.page, c.ordinal,
@@ -342,13 +426,11 @@ async def _chunks_relevantes_scored(pregunta: str, max_n: int = 8,
                 FROM chunks c
                 JOIN documents d ON d.id = c.document_id
                 JOIN nodes n ON n.id = d.node_id
-                WHERE c.embedding IS NOT NULL
-                  AND NOT COALESCE(n.is_issue, false)
-                ORDER BY dist
-                LIMIT :lim
+                WHERE c.id = ANY(:ids)
             """),
-            {"vec": str(vec), "lim": max_n},
+            {"vec": str(vec), "ids": ids},
         )
+        filas = {row.id: row for row in result}
         return [{
             "id": row.id,
             "content": row.content,
@@ -359,9 +441,10 @@ async def _chunks_relevantes_scored(pregunta: str, max_n: int = 8,
             "fuente_url": row.fuente_url,
             "fuente_path": row.fuente_path,
             "sim": max(0.0, 1.0 - float(row.dist)),
-        } for row in result]
+        } for row in (filas[i] for i in ids if i in filas)]
     except Exception as exc:
         print(f"chunk retrieval failed: {exc}")
+        await db.rollback()
         return []
 
 
@@ -699,12 +782,9 @@ def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
             session.execute(sync_delete(ChunkModel).where(ChunkModel.document_id == document_id))
             valid_chunks = [c for c in chunks if (c.get("content") or "").strip()]
             if valid_chunks:
-                from processor import get_embed_model
-                model = get_embed_model()
-                vectors = model.encode(
-                    [c["content"] for c in valid_chunks],
-                    batch_size=32,
-                    show_progress_bar=False,
+                from processor import embed_pasajes, texto_de_fragmento
+                vectors = embed_pasajes(
+                    [texto_de_fragmento(nodo_data.get("label"), c["content"]) for c in valid_chunks]
                 )
                 for index, (chunk_data, vector) in enumerate(zip(valid_chunks, vectors)):
                     ordinal = int(chunk_data.get("ordinal", index))
@@ -3138,11 +3218,11 @@ async def agent_endpoint(
 
     chunks = await _chunks_relevantes_scored(ultima, max_n=8, db=db) if ultima else []
     scored = await _nodos_relevantes_scored(ultima, max_n=6, db=db) if ultima else []
-    max_sim = chunks[0]["sim"] if chunks else (scored[0]["sim"] if scored else 0.0)
+    max_sim = _mejor_sim(chunks) if chunks else _mejor_sim(scored)
     evidence_sufficient = bool(ultima and max_sim >= AGENT_VETO_UMBRAL)
     # Citable sólo si el mejor pasaje pasa el piso de citas: si no, no se le ofrecen
     # al modelo como citables y el agente se abstiene con motivo.
-    citable = bool(chunks and chunks[0]["sim"] >= AGENT_CITA_UMBRAL)
+    citable = bool(chunks and _mejor_sim(chunks) >= AGENT_CITA_UMBRAL)
 
     # Documentos relacionados para navegación del grafo, deduplicados por nodo.
     best_by_node = {}
@@ -3268,7 +3348,7 @@ async def synthesize_endpoint(request: Request, db: AsyncSession = Depends(get_a
     scored = await _nodos_relevantes_scored(query, max_n=6, db=db)
     foco_set = set(node_ids)
     scored = [s for s in scored if s["id"] not in foco_set]
-    max_sim = scored[0]["sim"] if scored else 0.0
+    max_sim = _mejor_sim(scored)
     contexto_grafo = "\n".join(
         f"- [{int(s['sim'] * 100)}% afinidad] {s['label']}: "
         f"{(s.get('desc') or s.get('fragmento') or '').strip()[:240]}"
@@ -3531,7 +3611,7 @@ async def analyze_with_architect(
     }
     search_query = "\n".join(value for value in inputs.values() if value)
     chunks = await _chunks_relevantes_scored(search_query, max_n=10, db=db)
-    evidence_sufficient = bool(chunks and chunks[0]["sim"] >= AGENT_VETO_UMBRAL)
+    evidence_sufficient = bool(chunks and _mejor_sim(chunks) >= AGENT_VETO_UMBRAL)
     citations = []
     evidence_lines = []
     if evidence_sufficient:
@@ -3791,7 +3871,7 @@ async def solve_issue(
     search_query = "\n".join(filter(None, [issue.label, problem, objective, constraints]))
 
     chunks = await _chunks_relevantes_scored(search_query, max_n=10, db=db)
-    evidence_sufficient = bool(chunks and chunks[0]["sim"] >= AGENT_VETO_UMBRAL)
+    evidence_sufficient = bool(chunks and _mejor_sim(chunks) >= AGENT_VETO_UMBRAL)
     citations = []
     evidence_lines = []
     if evidence_sufficient:
@@ -4029,7 +4109,7 @@ async def generar_proceso(
         for s in scored
     ) or "(sin conocimiento relevante en el grafo)"
     nodos_fundamento = [s["id"] for s in scored]
-    afinidad_max = round(scored[0]["sim"], 2) if scored else 0.0
+    afinidad_max = round(_mejor_sim(scored), 2)
 
     prompt = (
         "Sos un analista de procesos. A partir de la descripción, generá la estructura del "
@@ -4086,12 +4166,16 @@ def _set_progress(pct: int, msg: str):
 #     LLM. Conservador a propósito (los embeddings tienen "piso" alto y un umbral agresivo
 #     vetaría consultas válidas — hay solapamiento entre off-topic y cubierto).
 #  2) Soft: al LLM se le pasa el % de afinidad y se le instruye decir "no me alcanza" si es bajo.
-AGENT_VETO_UMBRAL = 0.28
+# Los dos números dependen del modelo de embeddings (processor.UMBRALES_POR_MODELO).
+from processor import UMBRALES as _UMBRALES_EMB
+AGENT_VETO_UMBRAL = _UMBRALES_EMB["veto"]
 # Piso para CITAR: con embeddings multilingües, textos sin relación igual dan
-# similitudes de ~0.5, así que el veto general (más laxo) no alcanza para decidir
-# si algo es citable. Medido sobre esta biblioteca: preguntas con respaldo dan
-# 0.69-0.88 y sin respaldo 0.52-0.58. Ajustable con ALGEDI_CITA_UMBRAL.
-AGENT_CITA_UMBRAL = float(os.getenv("ALGEDI_CITA_UMBRAL", "0.62"))
+# similitudes altas, así que el veto general (más laxo) no alcanza para decidir si algo
+# es citable. Medido sobre esta biblioteca (eval/calibrar_umbrales.py): con e5 el mejor
+# pasaje da 0.84-0.91 en preguntas con respaldo y 0.78-0.86 en preguntas fuera de tema;
+# con 0.86 se citan 35 de 38 con respaldo y 1 de 15 fuera de tema. Ajustable con
+# ALGEDI_CITA_UMBRAL.
+AGENT_CITA_UMBRAL = float(os.getenv("ALGEDI_CITA_UMBRAL", _UMBRALES_EMB["cita"]))
 
 # Techo de videos por playlist. NO es un capricho: cada video = 1 llamada al LLM, y
 # Gemini gratis limita req/min. 50 cubre casi cualquier playlist real; subilo si querés
@@ -4716,7 +4800,7 @@ def _run_issue(descripcion: str, ref_url: str = None, filepath: str = None):
             _issue_state.update({"progress": 70, "message": "Buscando conexiones relevantes…"})
 
         # Búsqueda semántica síncrona desde thread
-        from processor import get_embed_model, calcular_similitud_coseno
+        from processor import embed_consulta, calcular_similitud_coseno
         from database.models import Node as NodeModel
         related_ids = []
         with get_sync_session() as s:
@@ -4726,8 +4810,7 @@ def _run_issue(descripcion: str, ref_url: str = None, filepath: str = None):
                 NodeModel.embedding.isnot(None),
             ).all()
             try:
-                model = get_embed_model()
-                vec = model.encode([descripcion], show_progress_bar=False)[0].tolist()
+                vec = embed_consulta(descripcion)
                 scored = []
                 for n in all_nodes:
                     emb = n.embedding
