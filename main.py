@@ -2143,7 +2143,9 @@ async def recompute_layout():
 
 _NOTA_MAX = 20000
 EJECUTABLES = (".py",)
-RUN_TIMEOUT = int(os.getenv("ALGEDI_RUN_TIMEOUT", "25"))
+# 60 s: un modelo con validación cruzada (clasificación, importancia de variables) tarda
+# ~20 s en esta máquina con la CPU ocupada; 25 s lo cortaba.
+RUN_TIMEOUT = int(os.getenv("ALGEDI_RUN_TIMEOUT", "60"))
 RUN_SALIDA_MAX = 20000
 
 
@@ -2299,11 +2301,12 @@ async def node_table(node_id: str, hoja: str = None, limite: int = 200, stats: b
     return datos
 
 
-def _ejecutar_archivo(ruta: Path, datos: list[Path] = ()) -> dict:
+def _ejecutar_archivo(ruta: Path, datos: list[Path] = (), parametros: dict | None = None) -> dict:
     """Corre un .py en el sandbox (workbench.ejecutar_en_sandbox): proceso aparte, sin
     variables de entorno del servidor (ni claves ni DATABASE_URL), en un directorio
     temporal, con límite de tiempo y con copias de los datos que el script lee."""
-    return wb.ejecutar_en_sandbox(ruta, datos=datos, timeout_s=RUN_TIMEOUT, salida_max=RUN_SALIDA_MAX)
+    return wb.ejecutar_en_sandbox(ruta, datos=datos, timeout_s=RUN_TIMEOUT, salida_max=RUN_SALIDA_MAX,
+                                  parametros=parametros)
 
 
 # ── Workbench: scripts y datos como nodos, corridas y proponer → confirmar ──────
@@ -2353,15 +2356,19 @@ async def _datos_vinculados(db: AsyncSession, node_id: str) -> list[dict]:
     return datos
 
 
-async def _plan_de_corrida(db: AsyncSession, node: Node) -> dict:
-    """El plan que se muestra antes de confirmar, con la versión exacta del código."""
+async def _plan_de_corrida(db: AsyncSession, node: Node, parametros: dict | None = None) -> dict:
+    """El plan que se muestra antes de confirmar, con la versión exacta del código y,
+    si es una herramienta con ficha, los parámetros ya validados."""
     ruta = _archivo_ejecutable(node)
     datos = await _datos_vinculados(db, node.id)
+    al_script, mostrados, de_parametros = await _parametros_de_corrida(db, _ficha_de(ruta), parametros)
+    ya = {str(d["ruta"]) for d in datos}
+    datos = datos + [d for d in de_parametros if str(d["ruta"]) not in ya]
     plan = wb.plan_ejecucion(
         ruta.name, wb.hash_codigo(_leer_codigo(ruta)),
-        [{k: d[k] for k in ("node_id", "label", "archivo")} for d in datos], RUN_TIMEOUT,
+        [{k: d[k] for k in ("node_id", "label", "archivo")} for d in datos], RUN_TIMEOUT, mostrados,
     )
-    return {"plan": plan, "ruta": ruta, "datos": datos}
+    return {"plan": plan, "ruta": ruta, "datos": datos, "parametros": al_script}
 
 
 @app.post("/api/node/{node_id}/run")
@@ -2372,7 +2379,7 @@ async def run_node_file(node_id: str, request: Request, db: AsyncSession = Depen
     confirmación, no corre (409) y hay que volver a mirar el plan."""
     body = await _read_body(request)
     node = await _nodo_o_404(db, node_id)
-    p = await _plan_de_corrida(db, node)
+    p = await _plan_de_corrida(db, node, body.get("parametros"))
     plan = p["plan"]
     if not body.get("confirm"):
         return {
@@ -2390,13 +2397,18 @@ async def run_node_file(node_id: str, request: Request, db: AsyncSession = Depen
         raise HTTPException(409, "El script cambió desde la propuesta. Revisá el plan de nuevo antes de correrlo.")
     origen = body.get("origen") if body.get("origen") in ("ui", "agente") else "ui"
 
-    salida = await asyncio.to_thread(_ejecutar_archivo, p["ruta"], [d["ruta"] for d in p["datos"]])
+    salida = await asyncio.to_thread(_ejecutar_archivo, p["ruta"], [d["ruta"] for d in p["datos"]],
+                                     p["parametros"])
     estado = "completed" if salida["returncode"] == 0 else "error"
+    # Lo que pidió la persona y cómo se eligió la herramienta quedan con la corrida: es
+    # la experiencia con la que JEV va a aprender qué herramienta sirve para qué.
+    pedido = str(body.get("pedido") or "")[:1000] or None
     run = ScriptRun(
         script_id=f"node:{node_id}",
         script_version=plan["version"],
         inputs={"archivo": plan["archivo"], "label": node.label, "origen": origen,
-                "datos": plan["datos"], "plan": plan["pasos"]},
+                "datos": plan["datos"], "plan": plan["pasos"], "parametros": plan["parametros"],
+                "pedido": pedido, "decision": body.get("decision") if pedido else None},
         outputs=salida,
         status=estado,
         error_message=(salida["stderr"] or None) if estado == "error" else None,
@@ -2862,41 +2874,393 @@ async def consultar_datos(node_id: str, request: Request, db: AsyncSession = Dep
     return {**res, "motor": motor}
 
 
-async def _proponer_accion(db: AsyncSession, texto: str, seccion: str, contexto_id: str | None) -> dict | None:
-    """Si el mensaje al agente pide correr un script de la sección, el agente NO lo
-    corre: devuelve una propuesta con el plan, y la UI pide confirmar. Sin LLM."""
-    filas = (await db.execute(select(Node).where(
-        Node.type == wb.TIPO_SCRIPT,
-        Node.fuente_path.isnot(None),
-        func.coalesce(Node.dominio, "personal") == seccion,
-    ))).scalars().all()
-    if not filas:
-        return None
-    scripts = [{"id": n.id, "label": n.label, "archivo": Path(n.fuente_path.replace("\\", "/")).name}
-               for n in filas]
-    pedido = wb.detectar_pedido_ejecucion(texto, scripts, contexto_id)
-    if not pedido:
-        return None
-    por_id = {n.id: n for n in filas}
-    if pedido.get("ambiguo"):
-        nombres = ", ".join(f"«{por_id[i].label}»" for i in pedido["ambiguo"] if i in por_id)
-        return {"reply": f"Encontré varios scripts que coinciden: {nombres}. ¿Cuál querés correr?",
-                "conducta": "pedir_aclaracion", "motivo": "varios scripts coinciden", "accion": None,
-                "node_ids": pedido["ambiguo"]}
-    node = por_id[pedido["node_id"]]
+# ── JEV: de una necesidad a la herramienta justa (jev.py) ──────────────────────
+# El agente decide primero el CAMINO (biblioteca, herramienta o grafo), después qué
+# herramienta y con qué parámetros, todo con decisiones tipadas y sin LLM. Nunca
+# ejecuta: propone con un recibo (por qué esta, qué alternativas, qué parámetros) y la
+# persona confirma. Si duda, pregunta con opciones para tocar en vez de adivinar.
+
+_FICHAS: dict[str, tuple[float, dict | None]] = {}
+_COLUMNAS: dict[str, tuple[float, list]] = {}
+
+
+def _ficha_de(ruta: Path) -> dict | None:
+    """Ficha de herramienta del script (cacheada por fecha de modificación)."""
     try:
-        p = await _plan_de_corrida(db, node)
-    except HTTPException:
+        mtime = ruta.stat().st_mtime
+    except OSError:
         return None
+    clave = str(ruta)
+    if clave not in _FICHAS or _FICHAS[clave][0] != mtime:
+        _FICHAS[clave] = (mtime, wb.leer_ficha(_leer_codigo(ruta)))
+    return _FICHAS[clave][1]
+
+
+def _columnas_de(ruta: Path) -> list[dict]:
+    """Columnas de una tabla con su clase (numérica, categórica, binaria, fecha), mirando
+    hasta 500 filas. Cacheado por fecha de modificación."""
+    import jev
+    mtime = ruta.stat().st_mtime
+    clave = str(ruta)
+    if clave not in _COLUMNAS or _COLUMNAS[clave][0] != mtime:
+        t = _leer_tabla(ruta, None, 500)
+        _COLUMNAS[clave] = (mtime, jev.describir_tabla(t["columnas"], t["filas"]))
+    return _COLUMNAS[clave][1]
+
+
+async def _herramientas_disponibles(db: AsyncSession) -> list[dict]:
+    """Los scripts de TODAS las secciones que traen ficha: la navaja suiza."""
+    filas = (await db.execute(select(Node).where(
+        Node.type == wb.TIPO_SCRIPT, Node.fuente_path.isnot(None)))).scalars().all()
+    salida = []
+    for n in filas:
+        try:
+            ficha = _ficha_de(_archivo_ejecutable(n))
+        except HTTPException:
+            continue
+        if ficha:
+            salida.append({"node_id": n.id, "label": n.label, "ficha": ficha,
+                           "seccion": n.dominio or "personal"})
+    return salida
+
+
+async def _tablas_disponibles(db: AsyncSession) -> list[dict]:
+    """Nodos de datos que son una tabla (CSV o Excel) con sus columnas."""
+    filas = (await db.execute(select(Node).where(
+        Node.type == wb.TIPO_DATOS, Node.fuente_path.isnot(None)))).scalars().all()
+    salida = []
+    for n in filas:
+        if _es_postgres(n):
+            continue
+        try:
+            ruta = _archivo_de_datos(n)
+        except HTTPException:
+            continue
+        if ruta.suffix.lower() not in wb.EXT_TABLA:
+            continue
+        try:
+            columnas = await asyncio.to_thread(_columnas_de, ruta)
+        except Exception:
+            continue
+        salida.append({"node_id": n.id, "label": n.label, "desc": n.desc or "", "archivo": ruta.name,
+                       "ruta": ruta, "columnas": columnas})
+    return salida
+
+
+async def _parametros_de_corrida(db: AsyncSession, ficha: dict | None,
+                                 parametros: dict | None) -> tuple[dict, dict, list[dict]]:
+    """Valida los parámetros contra la ficha y los traduce a lo que recibe el script: una
+    tabla (id de un nodo DATOS) pasa a ser el nombre de su archivo, copiado al sandbox.
+    Devuelve (para el script, para mostrar, datos a copiar)."""
+    spec = (ficha or {}).get("parametros") or {}
+    if not spec:
+        return {}, {}, []
+    parametros = parametros or {}
+    tablas = {t["node_id"]: t for t in await _tablas_disponibles(db)} if any(
+        p["tipo"] in ("tabla", "columna", "columnas") for p in spec.values()) else {}
+    al_script, mostrados, archivos = {}, {}, []
+    for nombre, p in spec.items():
+        valor = parametros.get(nombre)
+        if p["tipo"] == "tabla":
+            if not valor:
+                if p["opcional"]:
+                    continue
+                raise HTTPException(400, f"Falta «{nombre}»: la tabla sobre la que corre. Pedile esta "
+                                         "herramienta al agente con un nodo de datos seleccionado.")
+            t = tablas.get(valor)
+            if not t:
+                raise HTTPException(400, f"«{nombre}» tiene que ser un nodo de datos con una tabla (CSV o Excel).")
+            al_script[nombre], mostrados[nombre] = t["archivo"], t["label"]
+            archivos.append({"node_id": t["node_id"], "label": t["label"], "archivo": t["archivo"], "ruta": t["ruta"]})
+        elif p["tipo"] in ("columna", "columnas"):
+            valores = valor if isinstance(valor, list) else ([valor] if valor not in (None, "") else [])
+            if not valores:
+                if not p["opcional"]:
+                    raise HTTPException(400, f"Falta «{nombre}»: una columna de la tabla.")
+                continue
+            tabla = tablas.get(parametros.get(p.get("de") or "datos"))
+            nombres = {c["nombre"] for c in tabla["columnas"]} if tabla else set()
+            ajenas = [str(v) for v in valores if nombres and v not in nombres]
+            if ajenas:
+                raise HTTPException(400, f"«{nombre}»: la tabla no tiene la columna «{ajenas[0]}».")
+            al_script[nombre] = [str(v) for v in valores] if p["tipo"] == "columnas" else str(valores[0])
+            mostrados[nombre] = ", ".join(str(v) for v in valores)
+        elif valor not in (None, ""):
+            if p["tipo"] == "numero":
+                try:
+                    valor = float(valor)
+                    valor = int(valor) if valor.is_integer() else valor
+                except (TypeError, ValueError):
+                    raise HTTPException(400, f"«{nombre}» tiene que ser un número.")
+            elif p["tipo"] == "opcion" and p.get("opciones") and valor not in p["opciones"]:
+                raise HTTPException(400, f"«{nombre}» tiene que ser una de: {', '.join(p['opciones'])}.")
+            al_script[nombre] = valor
+            mostrados[nombre] = valor
+        elif "defecto" in p and p["defecto"] is not None:
+            al_script[nombre] = p["defecto"]
+    return al_script, mostrados, archivos
+
+
+async def _contexto_jev(db: AsyncSession, contexto_id: str | None) -> dict | None:
+    if not contexto_id:
+        return None
+    n = (await db.execute(select(Node).where(Node.id == contexto_id))).scalar_one_or_none()
+    return {"id": n.id, "type": n.type, "label": n.label} if n else None
+
+
+def _pct(p) -> str:
+    return f"{round(100 * (p or 0))} %"
+
+
+async def _proponer_accion(db: AsyncSession, texto: str, seccion: str, contexto_id: str | None,
+                           forzado: dict | None = None) -> tuple[dict | None, dict | None]:
+    """JEV. Devuelve (respuesta, decisión). Respuesta None = seguir por la biblioteca.
+
+    Orden: si el mensaje nombra un script («corré limpieza.py») manda el nombre; si no,
+    decide el camino. `forzado` = {herramienta, parametros} que la persona eligió
+    tocando una opción de una pregunta anterior."""
+    import jev
+    forzado = forzado or {}
+    herramientas = await _herramientas_disponibles(db)
+    elegida = forzado.get("herramienta")
+    if not elegida:
+        # Pedido explícito por nombre: entre todos los scripts, tengan ficha o no.
+        filas = (await db.execute(select(Node).where(
+            Node.type == wb.TIPO_SCRIPT, Node.fuente_path.isnot(None)))).scalars().all()
+        scripts = [{"id": n.id, "label": n.label, "archivo": Path(n.fuente_path.replace("\\", "/")).name}
+                   for n in filas]
+        pedido = wb.detectar_pedido_ejecucion(texto, scripts, contexto_id) if scripts else None
+        if pedido and pedido.get("ambiguo"):
+            por_id = {n.id: n for n in filas}
+            return {"reply": "Encontré varios scripts que coinciden. ¿Cuál querés correr?",
+                    "conducta": "pedir_aclaracion", "motivo": "varios scripts coinciden", "accion": None,
+                    "node_ids": pedido["ambiguo"],
+                    "opciones": [{"etiqueta": por_id[i].label, "jev": {"herramienta": i}}
+                                 for i in pedido["ambiguo"] if i in por_id]}, None
+        if pedido:
+            elegida = pedido["node_id"]
+            if not any(h["node_id"] == elegida for h in herramientas):
+                # Un script sin ficha: se propone tal cual, sin parámetros.
+                node = await _nodo_o_404(db, elegida)
+                return await _propuesta(db, node, {}, texto, None), None
+
+    contexto = await _contexto_jev(db, contexto_id)
+    tablas = await _tablas_disponibles(db)
+    d = await asyncio.to_thread(jev.proponer, texto, contexto, herramientas, tablas,
+                                herramienta=elegida, fijados=forzado.get("parametros"))
+    camino = d["eleccion_camino"]
+    if camino == jev.GRAFO:
+        return await _responder_grafo(db, texto, seccion, contexto), d
+    if camino != jev.HERRAMIENTA:
+        return None, d
+    herramienta = d.get("herramienta") or {}
+    if not d.get("node_id"):
+        opciones = [o for o in herramienta.get("opciones") or [] if o["probabilidad"] >= 0.05]
+        if not herramientas or herramienta.get("motivo") == "ninguna opción se parece lo suficiente" or not opciones:
+            return None, d          # nada de la navaja sirve: responde la biblioteca
+        return {"reply": "Para esto me sirven varias herramientas y no hay una clara. ¿Cuál usamos?",
+                "conducta": "pedir_aclaracion", "motivo": "dos o más herramientas quedan parejas",
+                "accion": None, "node_ids": [o["clave"] for o in opciones],
+                "opciones": [{"etiqueta": o["etiqueta"], "probabilidad": o["probabilidad"],
+                              "jev": {"herramienta": o["clave"], "pedido": texto}} for o in opciones[:4]],
+                "jev": d}, d
+    if d["faltan"]:
+        falta = d["faltan"][0]
+        fijados = dict(forzado.get("parametros") or {})
+        return {"reply": falta["pregunta"], "conducta": "pedir_aclaracion",
+                "motivo": f"falta «{falta['nombre']}» para «{d['label']}»", "accion": None,
+                "node_ids": [d["node_id"]],
+                "opciones": [{"etiqueta": o["etiqueta"], "probabilidad": o.get("probabilidad"),
+                              "jev": {"herramienta": d["node_id"], "pedido": texto,
+                                      "parametros": {**fijados, falta["nombre"]: o["valor"]}}}
+                             for o in falta.get("opciones") or []],
+                "jev": d}, d
+    node = await _nodo_o_404(db, d["node_id"])
+    return await _propuesta(db, node, d["parametros"], texto, d), d
+
+
+async def _propuesta(db: AsyncSession, node: Node, parametros: dict, pedido: str, d: dict | None) -> dict:
+    """La propuesta de correr con su recibo. No corre nada: la UI pide confirmar."""
+    try:
+        p = await _plan_de_corrida(db, node, parametros)
+    except HTTPException as e:
+        return {"reply": f"Podría usar «{node.label}», pero no puedo armar la corrida: {e.detail}",
+                "conducta": "abstenerse", "motivo": "la corrida no se puede armar", "accion": None,
+                "node_ids": [node.id]}
+    partes = [f"Para esto usaría **{node.label}**"]
+    if d and d.get("herramienta", {}).get("opciones"):
+        prob = d["herramienta"]["opciones"][0]["probabilidad"]
+        if d["herramienta"].get("motivo") != "la pediste vos":
+            partes[0] += f" ({_pct(prob)})"
+    detalle = (d or {}).get("parametros_detalle") or []
+    if detalle:
+        partes.append("con " + ", ".join(f"{x['nombre']} = **{x['valor']}** ({x['por']})" for x in detalle))
+    texto = " ".join(partes) + ". Revisá el plan: no corre nada hasta que lo confirmes."
     return {
-        "reply": (f"Puedo correr «{node.label}» en el sandbox. Revisá el plan: no corre nada "
-                  "hasta que lo confirmes."),
-        "conducta": "proponer_accion",
-        "motivo": None,
+        "reply": texto, "conducta": "proponer_accion", "motivo": None,
         "accion": {"tipo": "ejecutar", "node_id": node.id, "label": node.label,
-                   "version": p["plan"]["version"], "plan": p["plan"]},
-        "node_ids": [node.id],
+                   "version": p["plan"]["version"], "plan": p["plan"],
+                   "parametros": parametros or {}, "pedido": pedido,
+                   "recibo": {"camino": (d or {}).get("camino"), "herramienta": (d or {}).get("herramienta"),
+                              "parametros": detalle, "efectos": (d or {}).get("efectos") or []} if d else None},
+        "node_ids": [node.id] + [x["node_id"] for x in p["plan"]["datos"]],
     }
+
+
+def _temas_con_nombre(docs) -> list[tuple[str, int]]:
+    """[(nombre, cantidad)] de los temas de una sección, del más grande al más chico.
+    El nombre es el `tema` puesto a mano o por el LLM; si no hay, los dos conceptos más
+    distintivos del grupo (frecuentes adentro, raros en la sección), la misma regla que
+    usa la interfaz (frontend/src/lib/temas.js)."""
+    def norm(c):
+        return unicodedata.normalize("NFKD", str(c)).encode("ascii", "ignore").decode().lower().strip()
+    grupos: dict = {}
+    df = Counter()
+    for cluster, tema, conceptos in docs:
+        claves = {norm(c) for c in (conceptos or []) if len(norm(c)) >= 2}
+        df.update(claves)
+        real = tema and norm(tema) != "sin clasificar"
+        if real or (cluster is not None and cluster >= 0):
+            grupos.setdefault(("t", tema.strip()) if real else ("c", cluster), []).append((conceptos or [], claves))
+    salida = []
+    for (tipo, clave), miembros in grupos.items():
+        if tipo == "t":
+            salida.append((clave, len(miembros)))
+            continue
+        cnt, formas = Counter(), {}
+        for conceptos, claves in miembros:
+            cnt.update(claves)
+            for c in conceptos:
+                formas.setdefault(norm(c), c)
+        minimo = 2 if len(miembros) >= 6 else 1
+        candidatos = sorted(((n / len(miembros)) * math.log(1 + len(docs) / df[k]), k)
+                            for k, n in cnt.items() if n >= minimo)
+        elegidos = []
+        for _, k in reversed(candidatos):
+            if any(k in e or e in k for e in elegidos):
+                continue
+            elegidos.append(k)
+            if len(elegidos) == 2:
+                break
+        nombre = " · ".join(formas[k] for k in elegidos) if elegidos else f"Grupo {clave}"
+        salida.append((nombre, len(miembros)))
+    return sorted(salida, key=lambda x: -x[1])
+
+
+_ETIQUETA_RELACION = {
+    "COMPLEMENTA_A": "complementa a", "PROFUNDIZA_EN": "profundiza en",
+    "RELACIONADO_CON": "relacionado con", "COMPARTE_CONCEPTOS_CON": "comparte conceptos con",
+    "SEMANTICAMENTE_SIMILAR_A": "parecido a", wb.REL_LEE_DATOS: "lee los datos de", wb.REL_IMPORTA: "importa",
+}
+
+
+async def _responder_grafo(db: AsyncSession, texto: str, seccion: str, contexto: dict | None) -> dict:
+    """Preguntas sobre la biblioteca misma, respondidas con el grafo (sin LLM): con qué se
+    relaciona un documento, o cuántos documentos y temas tiene la sección."""
+    import jev
+    t = jev.plano(texto)
+    if re.search(r"\b(cuantos|cuantas|temas?)\b", t) and not contexto:
+        docs = (await db.execute(select(Node.cluster, Node.tema, Node.conceptos).where(
+            func.coalesce(Node.dominio, "personal") == seccion,
+            Node.is_centroid == False, Node.is_issue == False))).all()
+        temas = _temas_con_nombre(docs)
+        lineas = [f"La sección «{seccion}» tiene **{len(docs)}** documentos"
+                  + (f" en **{len(temas)}** temas:" if temas else " (todavía sin temas).")]
+        lineas += [f"- {nombre} ({n})" for nombre, n in temas[:20]]
+        sin_tema = len(docs) - sum(n for _, n in temas)
+        if temas and sin_tema:
+            lineas.append(f"- *sin tema:* {sin_tema}")
+        return {"reply": "\n".join(lineas), "conducta": "responder", "motivo": "respondido con el grafo",
+                "accion": None, "node_ids": []}
+    if contexto:
+        nodo_id, label, por = contexto["id"], contexto["label"], "el documento que estás mirando"
+    else:
+        ids = await _nodos_relevantes(texto, max_n=1, db=db)
+        if not ids:
+            return {"reply": "No encontré a qué documento te referís. Seleccioná uno y volvé a preguntar.",
+                    "conducta": "pedir_aclaracion", "motivo": "no sé de qué documento hablás",
+                    "accion": None, "node_ids": []}
+        nodo = await _nodo_o_404(db, ids[0])
+        nodo_id, label, por = nodo.id, nodo.label, "el documento más parecido a tu pregunta"
+    aristas = (await db.execute(select(Edge).where(
+        (Edge.source == nodo_id) | (Edge.target == nodo_id)).order_by(Edge.score.desc()))).scalars().all()
+    otros = {(e.target if e.source == nodo_id else e.source): e for e in aristas}
+    nodos = {n.id: n for n in (await db.execute(select(Node).where(Node.id.in_(list(otros))))).scalars().all()}
+    if not otros:
+        return {"reply": f"«{label}» ({por}) todavía no tiene relaciones.", "conducta": "responder",
+                "motivo": "respondido con el grafo", "accion": None, "node_ids": [nodo_id]}
+    lineas = [f"«{label}» ({por}) se relaciona con **{len(otros)}** documentos:"]
+    for oid, e in list(otros.items())[:12]:
+        n = nodos.get(oid)
+        if not n:
+            continue
+        rel = _ETIQUETA_RELACION.get(e.label, (e.label or "relacionado con").lower().replace("_", " "))
+        fuera = f" · en *{n.dominio}*" if (n.dominio or "personal") != seccion else ""
+        lineas.append(f"- **{n.label}** — {rel} ({round(float(e.score or 0), 2)}){fuera}")
+    return {"reply": "\n".join(lineas), "conducta": "responder", "motivo": "respondido con el grafo",
+            "accion": None, "node_ids": [nodo_id] + [o for o in otros if o in nodos][:12]}
+
+
+# ── La navaja suiza de data science ───────────────────────────────────────────
+HERRAMIENTAS_DIR = BASE / "herramientas"
+SECCION_HERRAMIENTAS = "herramientas"
+
+
+def _instalar_herramientas(seccion: str, con_ejemplos: bool) -> dict:
+    """Copia los scripts de herramientas/data_science a uploads/scripts y los indexa como
+    nodos SCRIPT (con su ficha como descripción). Reinstalar actualiza los mismos nodos.
+    Con ejemplos, suma la tabla de prueba clientes_demo.csv (datos inventados)."""
+    import shutil
+    from processor import asociar_chunks, crear_chunks, nodo_de_tabla
+    instaladas = []
+    for origen in sorted((HERRAMIENTAS_DIR / "data_science").glob("*.py")):
+        codigo = wb.normalizar_codigo(origen.read_text(encoding="utf-8"))
+        ficha = wb.leer_ficha(codigo)
+        if not ficha:
+            continue
+        destino = SCRIPTS_DIR / origen.name
+        if not destino.exists() or destino.read_text(encoding="utf-8") != codigo:
+            destino.write_text(codigo, encoding="utf-8")
+        node_id = _indexar_script_nuevo(destino, codigo, ficha["titulo"] or origen.stem, seccion)
+        instaladas.append({"node_id": node_id, "label": ficha["titulo"]})
+    datos = None
+    origen = HERRAMIENTAS_DIR / "ejemplos" / "clientes_demo.csv"
+    if con_ejemplos and origen.exists():
+        destino = UPLOADS / origen.name
+        shutil.copy2(origen, destino)
+        t = _leer_tabla(destino, None, 1)
+        nodo, texto = nodo_de_tabla(f"uploads/{destino.name}", t["columnas"], t["total_filas"],
+                                    descripcion="Datos INVENTADOS de clientes de un servicio por "
+                                                "suscripción, para probar las herramientas de data science.")
+        nodo["dominio"] = seccion
+        nodo.update(_ubicacion_por_vecinos(nodo.get("embedding"), seccion))
+        _save_node_sync(nodo, asociar_chunks(crear_chunks(texto), nodo["id"]))
+        datos = {"node_id": nodo["id"], "label": nodo["label"]}
+    # Ubica en el mapa los nodos nuevos (proyección incremental: no mueve a los demás).
+    import embeddings_engine
+    embeddings_engine.main()
+    return {"herramientas": instaladas, "datos": datos, "seccion": seccion}
+
+
+@app.post("/api/herramientas/instalar")
+async def instalar_herramientas(request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Instala (o actualiza) la navaja suiza de data science como nodos SCRIPT."""
+    body = await _read_body(request)
+    try:
+        seccion = _nombre_seccion(body.get("seccion") or SECCION_HERRAMIENTAS)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    resultado = await asyncio.to_thread(_instalar_herramientas, seccion, bool(body.get("ejemplos", True)))
+    await _asegurar_seccion(db, seccion)
+    await db.commit()
+    return {"ok": True, **resultado}
+
+
+@app.get("/api/herramientas")
+async def listar_herramientas(db: AsyncSession = Depends(get_async_session)):
+    """La navaja: cada herramienta con su ficha (para qué sirve, qué pide, qué toca)."""
+    return {"herramientas": [{"node_id": h["node_id"], "label": h["label"], "seccion": h["seccion"],
+                              "ficha": h["ficha"]} for h in await _herramientas_disponibles(db)]}
 
 
 @app.post("/api/taxonomy")
@@ -3199,18 +3563,32 @@ async def agent_endpoint(
     messages = body.get("messages", [])
     ultima = messages[-1]["content"] if messages else ""
 
-    # Pedidos de acción ("corré limpieza.py"): el agente propone con el plan y la UI pide
-    # confirmar. Nunca ejecuta por su cuenta, y no gasta una llamada al LLM en esto.
+    # JEV: antes de buscar en la biblioteca decide el camino. Un pedido de análisis se
+    # propone con una herramienta (y su recibo) y la UI pide confirmar; una pregunta sobre
+    # el grafo se responde con el grafo. Nunca ejecuta por su cuenta y no gasta LLM en esto.
     seccion_agente = body.get("seccion")
+    forzado = body.get("jev") if isinstance(body.get("jev"), dict) else None
+    if forzado and forzado.get("pedido"):
+        ultima = str(forzado["pedido"])          # la opción tocada responde al pedido original
+    decision_jev = None
     if ultima and seccion_agente:
-        propuesta = await _proponer_accion(db, ultima, seccion_agente, body.get("contexto_id"))
+        try:
+            propuesta, decision_jev = await _proponer_accion(
+                db, ultima, seccion_agente, body.get("contexto_id"), forzado)
+        except Exception as e:                   # JEV nunca deja al agente sin responder
+            print(f"[jev] {e}")
+            await db.rollback()
+            propuesta = None
         if propuesta:
-            db.add(AuditLog(query=ultima, agent_mode="PROPUESTA_ACCION",
+            modo = {"proponer_accion": "PROPUESTA_ACCION", "pedir_aclaracion": "JEV_ACLARACION"}.get(
+                propuesta["conducta"], "JEV_GRAFO")
+            db.add(AuditLog(query=ultima, agent_mode=modo,
                             node_ids_consulted=propuesta["node_ids"], response=propuesta["reply"][:2000]))
             await db.commit()
             return {
                 "conducta": propuesta["conducta"], "motivo": propuesta["motivo"],
                 "reply": propuesta["reply"], "accion": propuesta["accion"],
+                "opciones": propuesta.get("opciones") or [], "jev": decision_jev,
                 "nodos_relevantes": propuesta["node_ids"], "fundamentos": [], "citations": [],
                 "veto": False, "general_knowledge": False, "evidence_mode": None,
                 "max_sim": None, "umbral": AGENT_CITA_UMBRAL,
@@ -3319,6 +3697,7 @@ async def agent_endpoint(
         "evidence_mode": ("chunks" if citations else
                           "summaries" if evidence_sufficient else "general"),
         "max_sim": round(max_sim, 2),
+        "jev": decision_jev,
     }
 
 

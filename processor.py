@@ -73,9 +73,14 @@ def embed_pasajes(textos: list, batch_size: int = 32):
 
 def embed_consulta(texto: str) -> list:
     """Vector (normalizado) de una pregunta o búsqueda."""
+    return embed_consultas([texto])[0].tolist()
+
+
+def embed_consultas(textos: list, batch_size: int = 32):
+    """Vectores (normalizados) de varias preguntas o pedidos."""
     pre = _prefijos()[0]
-    return get_embed_model().encode([f"{pre}{texto}"], normalize_embeddings=True,
-                                    show_progress_bar=False)[0].tolist()
+    return get_embed_model().encode([f"{pre}{t}" for t in textos], batch_size=batch_size,
+                                    normalize_embeddings=True, show_progress_bar=False)
 
 
 def texto_de_fragmento(titulo: str | None, contenido: str) -> str:
@@ -967,6 +972,28 @@ def procesar_sqlite(ruta: str):
     generar_embedding(nodo)
     chunks = asociar_chunks(crear_chunks("\n".join(lineas)), nodo["id"])
     return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
+
+
+def nodo_de_tabla(ruta: str, columnas: list[str], total_filas: int, *,
+                  descripcion: str = "") -> tuple[dict, str]:
+    """Una tabla (CSV o Excel) como nodo DATOS descripto por su esquema, sin LLM.
+    Devuelve el nodo y el texto a indexar."""
+    import workbench as wb
+    p = Path(ruta)
+    cols = ", ".join(str(c) for c in columnas[:40])
+    nodo = {
+        "id": id_por_ruta("datos", ruta),
+        "label": p.name,
+        "type": wb.TIPO_DATOS,
+        "fuente": "csv" if p.suffix.lower() == ".csv" else "excel",
+        "fuente_path": str(p).replace("\\", "/"),
+        "fuente_label": p.stem,
+        "desc": f"{descripcion} Tabla de {total_filas} filas y {len(columnas)} columnas: {cols}.".strip(),
+        "fragmento": cols,
+        "conceptos": [str(c) for c in columnas[:10]],
+    }
+    generar_embedding(nodo)
+    return nodo, nodo["desc"]
 
 
 def nodo_de_postgres(conexion: dict, esquema: list[dict], seccion: str) -> tuple[dict, str]:

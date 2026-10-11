@@ -108,11 +108,13 @@ export async function fetchTabla(nodeId, { hoja, limite = 200, stats = false } =
  * qué versión, con qué datos y límites). Con `confirm` corre la `version` propuesta; si
  * el código cambió desde la propuesta, el backend responde 409 y no corre nada.
  */
-export async function ejecutarArchivo(nodeId, confirm = false, { version, origen = 'ui' } = {}) {
+export async function ejecutarArchivo(nodeId, confirm = false, {
+  version, origen = 'ui', parametros, pedido, decision,
+} = {}) {
   return fetch(`/api/node/${encodeURIComponent(nodeId)}/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirm, version, origen }),
+    body: JSON.stringify({ confirm, version, origen, parametros, pedido, decision }),
   }).then(jsonOError);
 }
 
@@ -252,11 +254,30 @@ export async function searchSemantic(q, max = 24) {
  * puede reconocer un pedido de acción ("corré limpieza.py") y devolver una propuesta
  * con plan en `accion`, que la UI muestra para confirmar: el agente nunca ejecuta solo.
  */
-export async function askAgent({ system, messages, seccion, contextoId }) {
+/**
+ * `jev`: lo que la persona eligió tocando una opción de una pregunta anterior del agente
+ * ({ herramienta, parametros, pedido }); el agente no lo vuelve a decidir.
+ */
+export async function askAgent({ system, messages, seccion, contextoId, jev }) {
   return fetch('/api/agent', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ system, messages, seccion, contexto_id: contextoId }),
+    body: JSON.stringify({ system, messages, seccion, contexto_id: contextoId, jev }),
+  }).then(jsonOrThrow);
+}
+
+/** La navaja suiza: herramientas con su ficha. */
+export async function fetchHerramientas() {
+  const d = await fetch('/api/herramientas').then(jsonOrThrow);
+  return d.herramientas || [];
+}
+
+/** Instala (o actualiza) la navaja de data science en la sección «herramientas». */
+export async function instalarHerramientas({ seccion = 'herramientas', ejemplos = true } = {}) {
+  return fetch('/api/herramientas/instalar', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seccion, ejemplos }),
   }).then(jsonOrThrow);
 }
 

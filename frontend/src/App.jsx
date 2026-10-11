@@ -12,7 +12,7 @@ import CommandPalette from '@/app/CommandPalette';
 import JobsPanel, { useJobs, JobsBadge } from '@/app/JobsPanel';
 import {
   fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota, crearScript, agregarConexion, normalizeGraph,
-  reagruparTemas, recalcularRelaciones,
+  reagruparTemas, recalcularRelaciones, instalarHerramientas,
   fetchPapelera,
 } from '@/lib/api';
 import { AGRUPADORES, MODOS_COLOR, indexarRelaciones } from '@/lib/nodes';
@@ -227,6 +227,17 @@ export default function App() {
     try { await recalcularRelaciones(); recargar(); }
     catch (e) { window.alert(`No se pudieron recalcular las relaciones: ${e.message}`); }
   }, [recargar]);
+  // La navaja suiza de JEV: scripts de data science con ficha, en la sección «herramientas».
+  const instalarNavaja = useCallback(async () => {
+    try {
+      const r = await instalarHerramientas();
+      await loadSections();
+      recargar();
+      window.alert(`Navaja lista: ${r.herramientas.length} herramientas en «${r.seccion}»`
+        + (r.datos ? ` y la tabla de prueba ${r.datos.label}.` : '.')
+        + ' Seleccioná un nodo de datos y pedile al agente lo que necesitás.');
+    } catch (e) { window.alert(`No se pudo instalar la navaja: ${e.message}`); }
+  }, [recargar, loadSections]);
 
   // ── Jobs en background ─────────────────────────────────────────────
   const onJobDone = useCallback((job) => {
@@ -965,6 +976,7 @@ export default function App() {
             if (a === 'rail') setRailAbierto((v) => !v);
             if (a === 'reagrupar') reagrupar();
             if (a === 'recalcular-relaciones') recalcular();
+            if (a === 'navaja') instalarNavaja();
             if (VISTAS.includes(a)) setVista(a);
           }}
         />

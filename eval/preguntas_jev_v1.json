@@ -1,0 +1,356 @@
+{
+  "nota": "Pedidos para medir a JEV (eval/evaluar_jev.py): camino, herramienta y parámetros esperados, sobre la tabla de prueba herramientas/ejemplos/clientes_demo.csv. Los escribió Claude, igual que los ejemplos de las fichas: el resultado es optimista hasta que Lucas sume pedidos suyos. contexto: 'datos' = con la tabla seleccionada, 'documento' = con un documento seleccionado, null = sin nada. herramienta null = ninguna de la navaja sirve: está bien que no elija ninguna (o que responda la biblioteca).",
+  "pedidos": [
+    {
+      "id": "b01",
+      "pedido": "¿Qué diferencia hay entre correlación y causalidad?",
+      "contexto": "datos",
+      "camino": "biblioteca"
+    },
+    {
+      "id": "b02",
+      "pedido": "Explicame qué es el sobreajuste",
+      "contexto": null,
+      "camino": "biblioteca"
+    },
+    {
+      "id": "b03",
+      "pedido": "¿Cómo funciona un bosque aleatorio?",
+      "contexto": null,
+      "camino": "biblioteca"
+    },
+    {
+      "id": "b04",
+      "pedido": "¿Qué es la prueba de Kruskal-Wallis?",
+      "contexto": null,
+      "camino": "biblioteca"
+    },
+    {
+      "id": "b05",
+      "pedido": "¿Para qué sirve el coeficiente silhouette?",
+      "contexto": "datos",
+      "camino": "biblioteca"
+    },
+    {
+      "id": "b06",
+      "pedido": "¿Qué dice la biblioteca sobre los agentes de IA?",
+      "contexto": null,
+      "camino": "biblioteca"
+    },
+    {
+      "id": "b07",
+      "pedido": "¿Cuándo conviene usar una red neuronal en vez de un árbol?",
+      "contexto": null,
+      "camino": "biblioteca"
+    },
+    {
+      "id": "b08",
+      "pedido": "¿Qué es el teorema de Bayes?",
+      "contexto": null,
+      "camino": "biblioteca"
+    },
+    {
+      "id": "b09",
+      "pedido": "Contame cómo se calcula el R cuadrado ajustado",
+      "contexto": null,
+      "camino": "biblioteca"
+    },
+    {
+      "id": "b10",
+      "pedido": "¿Qué es la estacionalidad en una serie de tiempo?",
+      "contexto": null,
+      "camino": "biblioteca"
+    },
+    {
+      "id": "g01",
+      "pedido": "¿Qué documentos están vinculados con el de ANOVA?",
+      "contexto": null,
+      "camino": "grafo"
+    },
+    {
+      "id": "g02",
+      "pedido": "Mostrame qué se conecta con este documento",
+      "contexto": "documento",
+      "camino": "grafo"
+    },
+    {
+      "id": "g03",
+      "pedido": "¿Qué otros apuntes se parecen al de redes neuronales?",
+      "contexto": null,
+      "camino": "grafo"
+    },
+    {
+      "id": "g04",
+      "pedido": "¿Cuántos documentos tengo en esta sección?",
+      "contexto": null,
+      "camino": "grafo"
+    },
+    {
+      "id": "g05",
+      "pedido": "¿Qué temas hay en la biblioteca?",
+      "contexto": null,
+      "camino": "grafo"
+    },
+    {
+      "id": "g06",
+      "pedido": "¿Con qué se relaciona el libro de finanzas?",
+      "contexto": null,
+      "camino": "grafo"
+    },
+    {
+      "id": "h01",
+      "pedido": "¿Por qué se van los clientes? Quiero saber qué variables pesan más",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "importancia_variables",
+      "parametros": {
+        "objetivo": "abandono"
+      }
+    },
+    {
+      "id": "h02",
+      "pedido": "Armame un modelo que prediga quién abandona",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "clasificacion_base",
+      "parametros": {
+        "objetivo": "abandono"
+      }
+    },
+    {
+      "id": "h03",
+      "pedido": "¿Los clientes Premium gastan más que los Básicos?",
+      "contexto": null,
+      "camino": "herramienta",
+      "herramienta": "comparar_grupos",
+      "parametros": {
+        "grupo": "plan",
+        "valor": "gasto_mensual"
+      }
+    },
+    {
+      "id": "h04",
+      "pedido": "¿Cambia la edad según la región?",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "comparar_grupos",
+      "parametros": {
+        "grupo": "region",
+        "valor": "edad"
+      }
+    },
+    {
+      "id": "h05",
+      "pedido": "Revisá si hay valores extremos en los ingresos",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "outliers",
+      "parametros": {
+        "columna": "ingresos_mensuales"
+      }
+    },
+    {
+      "id": "h06",
+      "pedido": "¿Hay números raros en la tabla?",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "outliers",
+      "parametros": {}
+    },
+    {
+      "id": "h07",
+      "pedido": "¿Qué columnas están correlacionadas con el uso mensual?",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "correlaciones",
+      "parametros": {
+        "objetivo": "uso_mensual_gb"
+      }
+    },
+    {
+      "id": "h08",
+      "pedido": "Mostrame la matriz de correlaciones",
+      "contexto": null,
+      "camino": "herramienta",
+      "herramienta": "correlaciones",
+      "parametros": {}
+    },
+    {
+      "id": "h09",
+      "pedido": "¿Cuánto aumenta el gasto por cada GB de uso? Ajustá un modelo lineal",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "regresion_lineal",
+      "parametros": {
+        "objetivo": "gasto_mensual"
+      }
+    },
+    {
+      "id": "h10",
+      "pedido": "Explicá los ingresos con una regresión",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "regresion_lineal",
+      "parametros": {
+        "objetivo": "ingresos_mensuales"
+      }
+    },
+    {
+      "id": "h11",
+      "pedido": "Dividí a los clientes en perfiles parecidos",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "segmentacion_kmeans",
+      "parametros": {}
+    },
+    {
+      "id": "h12",
+      "pedido": "Hacé 5 clusters de clientes",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "segmentacion_kmeans",
+      "parametros": {
+        "k": 5
+      }
+    },
+    {
+      "id": "h13",
+      "pedido": "¿Cómo vienen las altas semana a semana?",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "serie_temporal",
+      "parametros": {
+        "fecha": "fecha_alta",
+        "periodo": "semana"
+      }
+    },
+    {
+      "id": "h14",
+      "pedido": "¿En qué meses entran más clientes?",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "serie_temporal",
+      "parametros": {
+        "fecha": "fecha_alta"
+      }
+    },
+    {
+      "id": "h15",
+      "pedido": "Dame un pantallazo general de la tabla",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "perfil_dataset",
+      "parametros": {}
+    },
+    {
+      "id": "h16",
+      "pedido": "¿Cuántas filas y columnas tiene esto?",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "perfil_dataset",
+      "parametros": {}
+    },
+    {
+      "id": "h17",
+      "pedido": "¿Está sucia la base? Fijate duplicados y espacios",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "limpieza_basica",
+      "parametros": {}
+    },
+    {
+      "id": "h18",
+      "pedido": "Antes de modelar, chequeá la calidad de los datos",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "limpieza_basica",
+      "parametros": {}
+    },
+    {
+      "id": "h19",
+      "pedido": "¿Qué influye más en la satisfacción?",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "importancia_variables",
+      "parametros": {
+        "objetivo": "satisfaccion"
+      }
+    },
+    {
+      "id": "h20",
+      "pedido": "¿La satisfacción es distinta entre los que abandonan y los que no?",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "comparar_grupos",
+      "parametros": {
+        "grupo": "abandono",
+        "valor": "satisfaccion"
+      }
+    },
+    {
+      "id": "h21",
+      "pedido": "Predecí el abandono con una regresión logística",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "clasificacion_base",
+      "parametros": {
+        "objetivo": "abandono"
+      }
+    },
+    {
+      "id": "h22",
+      "pedido": "Evolución mensual del gasto",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "serie_temporal",
+      "parametros": {
+        "fecha": "fecha_alta",
+        "valor": "gasto_mensual"
+      }
+    },
+    {
+      "id": "h23",
+      "pedido": "¿Hay outliers en la antigüedad?",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "outliers",
+      "parametros": {
+        "columna": "antiguedad_meses"
+      }
+    },
+    {
+      "id": "h24",
+      "pedido": "Segmentá a los clientes según uso y gasto",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": "segmentacion_kmeans",
+      "parametros": {
+        "variables": [
+          "uso_mensual_gb",
+          "gasto_mensual"
+        ]
+      }
+    },
+    {
+      "id": "n01",
+      "pedido": "Calculá el valor actual neto de este proyecto con una tasa del 12 %",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": null
+    },
+    {
+      "id": "n02",
+      "pedido": "Traducí los nombres de las columnas al inglés",
+      "contexto": "datos",
+      "camino": "herramienta",
+      "herramienta": null
+    },
+    {
+      "id": "n03",
+      "pedido": "Mandale un resumen por mail al equipo",
+      "contexto": null,
+      "camino": "herramienta",
+      "herramienta": null
+    }
+  ]
+}

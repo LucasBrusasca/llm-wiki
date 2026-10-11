@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import decimal
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -164,8 +165,150 @@ def _sin_repetidos(res: dict) -> dict:
     return res
 
 
+# ── Ficha de herramienta ──────────────────────────────────────────────────────
+# Para que JEV (y una persona) elija bien entre scripts parecidos, cada herramienta
+# declara en su docstring para qué sirve, qué necesita, qué entrega y qué toca, y en un
+# literal PARAMETROS qué recibe. Se lee del AST: no se ejecuta nada.
+#
+#   """Perfil del dataset.
+#
+#   Sirve para: ver de un vistazo cómo es una tabla.
+#   Necesita: una tabla (CSV o Excel).
+#   Entrega: un resumen por columna.
+#   Toca: nada, sólo lee.
+#   Pedidos típicos:
+#   - ¿cómo son estos datos?
+#   """
+#   PARAMETROS = {"datos": {"tipo": "tabla"}}
+#
+# El script recibe los valores en la variable de entorno ALGEDI_PARAMS (JSON); una
+# tabla llega como el nombre del archivo, copiado a su carpeta.
+
+CAMPOS_FICHA = {"sirve para": "sirve_para", "necesita": "necesita", "entrega": "entrega",
+                "toca": "toca", "pedidos tipicos": "ejemplos"}
+TIPOS_PARAMETRO = ("tabla", "columna", "columnas", "numero", "texto", "opcion")
+CLASES_COLUMNA = ("numerica", "categorica", "binaria", "fecha")
+VARIABLE_PARAMETROS = "ALGEDI_PARAMS"
+
+_RED = {"requests", "urllib", "urllib3", "http", "httpx", "aiohttp", "socket", "smtplib", "ftplib"}
+_ESCRIBE = {"to_csv", "to_excel", "to_parquet", "to_json", "to_sql", "write_text", "write_bytes",
+            "savefig", "dump"}
+_BORRA = {"remove", "unlink", "rmtree", "rmdir"}
+
+
+def _clave_ficha(texto: str) -> str:
+    plano = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().lower()
+    return " ".join(plano.split())
+
+
+def _parametros_validos(valor) -> dict:
+    """PARAMETROS normalizado: sólo nombres válidos y tipos conocidos."""
+    if not isinstance(valor, dict):
+        return {}
+    salida = {}
+    for nombre, spec in valor.items():
+        if not (isinstance(nombre, str) and nombre.isidentifier() and isinstance(spec, dict)):
+            continue
+        tipo = str(spec.get("tipo") or "").lower()
+        if tipo not in TIPOS_PARAMETRO:
+            continue
+        p = {"tipo": tipo, "opcional": bool(spec.get("opcional", False)),
+             "desc": str(spec.get("desc") or "")}
+        if tipo in ("columna", "columnas"):
+            p["de"] = str(spec.get("de") or "datos")
+            clase = _clave_ficha(str(spec.get("clase") or ""))
+            p["clase"] = clase if clase in CLASES_COLUMNA else None
+        if tipo == "opcion":
+            p["opciones"] = [str(o) for o in spec.get("opciones") or []]
+        if "defecto" in spec:
+            p["defecto"] = spec["defecto"]
+        salida[nombre] = p
+    return salida
+
+
+def efectos_del_codigo(arbol: ast.AST) -> list[str]:
+    """Lo que el código hace afuera de calcular: escribir o borrar archivos, usar la red.
+    Es una lectura del AST (puede haber falsos positivos); sirve para avisar antes."""
+    efectos = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            if any(a.name.split(".")[0] in _RED for a in nodo.names):
+                efectos.add("usa la red")
+        elif isinstance(nodo, ast.ImportFrom) and nodo.module:
+            if nodo.module.split(".")[0] in _RED:
+                efectos.add("usa la red")
+        elif isinstance(nodo, ast.Call):
+            f = nodo.func
+            nombre = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+            if nombre in _ESCRIBE:
+                efectos.add("escribe archivos")
+            elif nombre in _BORRA:
+                efectos.add("borra archivos")
+            elif nombre == "open":
+                modo = nodo.args[1] if len(nodo.args) > 1 else next(
+                    (k.value for k in nodo.keywords if k.arg == "mode"), None)
+                if isinstance(modo, ast.Constant) and isinstance(modo.value, str) and set(modo.value) & set("wax+"):
+                    efectos.add("escribe archivos")
+    return sorted(efectos)
+
+
+def leer_ficha(codigo: str) -> dict | None:
+    """La ficha de una herramienta, o None si el script no declara ninguna."""
+    try:
+        arbol = ast.parse(codigo or "")
+    except SyntaxError:
+        return None
+    lineas = (ast.get_docstring(arbol) or "").splitlines()
+    ficha = {"titulo": lineas[0].strip().rstrip(".") if lineas else "", "sirve_para": "",
+             "necesita": "", "entrega": "", "toca": "", "ejemplos": [], "parametros": {}}
+    campo = None
+    for linea in lineas[1:]:
+        s = linea.strip()
+        m = re.match(r"^([^:]{3,24}):\s*(.*)$", s)
+        clave = CAMPOS_FICHA.get(_clave_ficha(m.group(1))) if m else None
+        if clave:
+            campo = clave
+            resto = m.group(2).strip()
+            if clave == "ejemplos":
+                if resto:
+                    ficha["ejemplos"].append(resto.lstrip("-•* ").strip())
+            else:
+                ficha[clave] = resto
+        elif not s:
+            campo = None
+        elif campo == "ejemplos":
+            ficha["ejemplos"].append(s.lstrip("-•* ").strip())
+        elif campo:
+            ficha[campo] = f"{ficha[campo]} {s}".strip()
+    for nodo in arbol.body:
+        if isinstance(nodo, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "PARAMETROS" for t in nodo.targets):
+            try:
+                ficha["parametros"] = _parametros_validos(ast.literal_eval(nodo.value))
+            except (ValueError, SyntaxError):
+                ficha["parametros"] = {}
+    if not (ficha["sirve_para"] or ficha["parametros"]):
+        return None
+    ficha["ejemplos"] = [e for e in ficha["ejemplos"] if e]
+    ficha["efectos"] = efectos_del_codigo(arbol)
+    return ficha
+
+
 def resumir_script(nombre: str, analisis: dict, codigo: str = "") -> dict:
-    """desc, fragmento y conceptos de un nodo SCRIPT, sin LLM: lo que el código dice."""
+    """desc, fragmento y conceptos de un nodo SCRIPT, sin LLM: lo que el código dice.
+    Si el script trae ficha de herramienta, la descripción es su ficha: así queda cerca
+    de los documentos que explican el mismo método."""
+    ficha = leer_ficha(codigo)
+    if ficha:
+        librerias = [i["modulo"] for i in analisis.get("imports") or [] if i["modulo"] not in _TRIVIALES]
+        partes = [ficha["titulo"]] + [f"{rotulo}: {ficha[c]}" for rotulo, c in (
+            ("Sirve para", "sirve_para"), ("Necesita", "necesita"), ("Entrega", "entrega"))
+            if ficha[c]]
+        return {
+            "desc": "\n".join(p for p in partes if p),
+            "fragmento": "\n".join(f"- {e}" for e in ficha["ejemplos"])[:600],
+            "conceptos": (["herramienta"] + librerias)[:8],
+        }
     partes = []
     doc = (analisis.get("docstring") or "").strip()
     if doc:
@@ -256,28 +399,34 @@ def aristas_codigo_ajenas(aristas: list[dict], node_id: str) -> list[dict]:
 
 # ── Plan y ejecución ──────────────────────────────────────────────────────────
 
-def plan_ejecucion(archivo: str, version: str, datos: list[dict], timeout_s: int) -> dict:
+def plan_ejecucion(archivo: str, version: str, datos: list[dict], timeout_s: int,
+                   parametros: dict | None = None) -> dict:
     """Lo que se muestra ANTES de correr. Corto y concreto: qué, con qué, qué límites y
     dónde queda registrado."""
     pasos = [f"Correr {archivo} (versión {version}) con Python, en un proceso aparte."]
     if datos:
         nombres = ", ".join(d["archivo"] for d in datos)
         pasos.append(f"Copiar al sandbox los datos que el script lee: {nombres} (una copia; los originales no se tocan).")
+    if parametros:
+        valores = ", ".join(f"{k} = {v}" for k, v in parametros.items() if v not in (None, "", []))
+        if valores:
+            pasos.append(f"Con estos parámetros: {valores}.")
     pasos.append("Carpeta temporal propia y sin las variables de entorno del servidor (ni claves ni base).")
     pasos.append(f"Se corta a los {timeout_s} s. Lo que el script escriba queda en esa carpeta y se descarta al terminar.")
     pasos.append("Estado, salida y horas quedan registrados en Corridas.")
     return {
         "archivo": archivo, "version": version, "datos": datos, "timeout_s": timeout_s,
-        "pasos": pasos,
+        "parametros": parametros or {}, "pasos": pasos,
         "advertencia": "Corre con los permisos del servidor: ejecutá sólo código que entendés.",
     }
 
 
 def ejecutar_en_sandbox(ruta: Path, *, datos: list[Path] = (), timeout_s: int = 25,
-                        salida_max: int = 20_000) -> dict:
+                        salida_max: int = 20_000, parametros: dict | None = None) -> dict:
     """Corre un .py en un proceso aparte: sin variables de entorno del servidor (ni
     claves ni DATABASE_URL), en un directorio temporal, con límite de tiempo y con copias
-    de los datos que el script lee. Devuelve salida, código, horas y lo que generó."""
+    de los datos que el script lee. Los parámetros de la herramienta viajan en
+    ALGEDI_PARAMS (JSON). Devuelve salida, código, horas y lo que generó."""
     entorno = {
         "PATH": os.getenv("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": "/tmp",
@@ -285,6 +434,8 @@ def ejecutar_en_sandbox(ruta: Path, *, datos: list[Path] = (), timeout_s: int = 
         "PYTHONDONTWRITEBYTECODE": "1",
         "ALGEDI_RUN": "1",
     }
+    if parametros:
+        entorno[VARIABLE_PARAMETROS] = json.dumps(parametros, ensure_ascii=False)
     with tempfile.TemporaryDirectory(prefix="algedi_run_") as tmp:
         carpeta = Path(tmp)
         copiados = set()
@@ -733,9 +884,13 @@ def detectar_pedido_ejecucion(texto: str, scripts: list[dict], contexto_id: str 
         elif stem and len(stem) >= 3 and stem in tokens:
             puntos = 2
         else:
+            # Por el nombre visible: cuenta qué parte de sus palabras aparece, así
+            # «corré la segmentación con k-means en 3 grupos» elige la segmentación
+            # (todas sus palabras) y no «Comparar grupos» (la mitad).
             palabras = [w for w in _plano(s.get("label")).split() if len(w) >= 3]
-            if palabras and sum(w in tokens for w in palabras) >= max(1, round(len(palabras) * 0.6)):
-                puntos = 1
+            presentes = sum(w in tokens for w in palabras)
+            if palabras and presentes >= max(1, round(len(palabras) * 0.6)):
+                puntos = 1 + 0.9 * presentes / len(palabras)   # siempre debajo de un nombre de archivo
         if puntos:
             puntajes.append((puntos, s["id"]))
     if puntajes:

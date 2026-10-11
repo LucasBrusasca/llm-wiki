@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MessageSquare, X, ArrowUp, Plus, Quote, ShieldAlert, FileText, Crosshair, HelpCircle } from 'lucide-react';
+import { MessageSquare, X, ArrowUp, Plus, Quote, ShieldAlert, FileText, Crosshair, HelpCircle, Wrench } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Hint } from '@/components/ui/tooltip';
 import { askAgent, ejecutarArchivo } from '@/lib/api';
@@ -76,10 +76,80 @@ function Pasaje({ c, nodesById, onSelect }) {
   );
 }
 
+/** Una barra fina con la probabilidad: el "por qué" de JEV, a la vista. */
+function Prob({ etiqueta, p, fuerte }) {
+  return (
+    <li className="flex items-center gap-2 text-[11px]">
+      <span className={cn('min-w-0 flex-1 truncate', fuerte ? 'text-ink' : 'text-ink-dim')}>{etiqueta}</span>
+      <span className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-surface-3">
+        <span className={cn('block h-full rounded-full', fuerte ? 'bg-accent' : 'bg-ink-dim/60')} style={{ width: `${Math.round((p || 0) * 100)}%` }} />
+      </span>
+      <span className="w-8 shrink-0 text-right tabular-nums text-ink-dim">{pct(p)}</span>
+    </li>
+  );
+}
+
 /**
- * Propuesta de acción del agente ("corré limpieza.py"): el agente no ejecuta nada por su
- * cuenta. Muestra el plan y la persona confirma o cancela; lo confirmado corre en el
- * sandbox y queda en Corridas como propuesto por el agente.
+ * Recibo de JEV: por qué esta herramienta (y cuáles más consideró), cómo eligió cada
+ * parámetro y qué toca el script además de calcular.
+ */
+function Recibo({ recibo }) {
+  if (!recibo) return null;
+  const opciones = recibo.herramienta?.opciones || [];
+  const elegida = recibo.herramienta?.eleccion;
+  return (
+    <details className="rounded-sm border border-hair bg-surface-2/60 px-2 py-1.5" open={false}>
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] text-ink-dim hover:text-ink">
+        <Wrench className="size-3" /> Por qué esta herramienta ▸
+      </summary>
+      {opciones.length > 1 && (
+        <ul className="mt-1.5 flex flex-col gap-1">
+          {opciones.map((o) => <Prob key={o.clave} etiqueta={o.etiqueta} p={o.probabilidad} fuerte={o.clave === elegida} />)}
+        </ul>
+      )}
+      {recibo.parametros?.length > 0 && (
+        <ul className="mt-1.5 flex flex-col gap-0.5 text-[11px] text-ink-muted">
+          {recibo.parametros.map((x) => (
+            <li key={x.nombre}><span className="text-ink-dim">{x.nombre}</span> = <b className="font-medium text-ink">{String(x.valor)}</b> <span className="text-ink-dim">· {x.por}</span></li>
+          ))}
+        </ul>
+      )}
+      {recibo.efectos?.length > 0 && (
+        <p className="mt-1.5 text-[11px] text-warn">Además de calcular: {recibo.efectos.join(', ')}.</p>
+      )}
+    </details>
+  );
+}
+
+/**
+ * Opciones de una pregunta del agente (qué herramienta, qué columna, qué tabla). Se
+ * eligen tocando: la respuesta es siempre una de las opciones válidas.
+ */
+function Opciones({ opciones, onElegir, deshabilitado }) {
+  if (!opciones?.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {opciones.map((o, i) => (
+        <button
+          key={`${o.etiqueta}-${i}`}
+          type="button"
+          disabled={deshabilitado}
+          onClick={() => onElegir(o)}
+          className="flex items-center gap-1.5 rounded-sm border border-hair-strong bg-surface-2 px-2 py-1 text-[11.5px] text-ink hover:border-accent/60 hover:bg-accent/[0.08] disabled:opacity-50"
+        >
+          {o.etiqueta}
+          {o.probabilidad != null && <span className="text-[10.5px] tabular-nums text-ink-dim">{pct(o.probabilidad)}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Propuesta de acción del agente ("corré limpieza.py", o una necesidad para la que JEV
+ * eligió una herramienta): el agente no ejecuta nada por su cuenta. Muestra el plan y el
+ * recibo; la persona confirma o cancela. Lo confirmado corre en el sandbox y queda en
+ * Corridas con el pedido y la decisión (la experiencia con la que JEV va a aprender).
  */
 function PropuestaAccion({ accion, onCambio, onSelect }) {
   const [ocupado, setOcupado] = useState(false);
@@ -88,7 +158,17 @@ function PropuestaAccion({ accion, onCambio, onSelect }) {
   async function confirmar() {
     setOcupado(true); setError(null);
     try {
-      const r = await ejecutarArchivo(accion.node_id, true, { version: accion.version, origen: 'agente' });
+      const r = await ejecutarArchivo(accion.node_id, true, {
+        version: accion.version,
+        origen: 'agente',
+        parametros: accion.parametros,
+        pedido: accion.pedido,
+        decision: accion.recibo ? {
+          camino: accion.recibo.camino?.opciones,
+          herramienta: accion.recibo.herramienta?.opciones,
+          parametros: accion.recibo.parametros,
+        } : undefined,
+      });
       onCambio({ estado: 'ejecutada', resultado: r });
     } catch (e) {
       setError(e.message);
@@ -112,6 +192,7 @@ function PropuestaAccion({ accion, onCambio, onSelect }) {
   }
   return (
     <div className="flex flex-col gap-1.5">
+      <Recibo recibo={accion.recibo} />
       <PlanCorrida
         propuesta={{ plan: accion.plan, archivo: accion.plan?.archivo }}
         titulo={<>¿Correr <b>{accion.label}</b>?</>}
@@ -124,7 +205,7 @@ function PropuestaAccion({ accion, onCambio, onSelect }) {
   );
 }
 
-function Respuesta({ m, nodesById, onSelect, onHighlight, onAccion }) {
+function Respuesta({ m, nodesById, onSelect, onHighlight, onAccion, onOpcion, busy }) {
   const html = useMemo(() => renderMarkdown(m.text), [m.text]);
   const usados = citados(m);
   const usadosSet = new Set(usados.map((c) => c.marker));
@@ -137,6 +218,7 @@ function Respuesta({ m, nodesById, onSelect, onHighlight, onAccion }) {
         dangerouslySetInnerHTML={{ __html: html }}
       />
       {m.accion && <PropuestaAccion accion={m.accion} onCambio={onAccion} onSelect={onSelect} />}
+      {!m.elegida && <Opciones opciones={m.opciones} onElegir={onOpcion} deshabilitado={busy} />}
       {usados.length > 0 && (
         <ol className="flex flex-col gap-1">
           {usados.map((c) => <Pasaje key={c.chunk_id || c.marker} c={c} nodesById={nodesById} onSelect={onSelect} />)}
@@ -208,7 +290,17 @@ export default function AgentFab({
     const texto = input.trim();
     if (!texto || busy) return;
     setInput('');
-    const historial = [...msgs, { role: 'user', text: texto }];
+    await preguntar([...msgs, { role: 'user', text: texto }]);
+  }
+
+  /** Tocar una opción de una pregunta del agente: la elección viaja tipada (`jev`). */
+  async function elegirOpcion(i, opcion) {
+    if (busy) return;
+    const marcados = msgs.map((x, j) => (j === i ? { ...x, elegida: opcion.etiqueta } : x));
+    await preguntar([...marcados, { role: 'user', text: `→ ${opcion.etiqueta}` }], opcion.jev);
+  }
+
+  async function preguntar(historial, jev) {
     setMsgs(historial);
     setBusy(true);
 
@@ -225,11 +317,13 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
         messages: historial.map((m) => ({ role: m.role, content: m.text })),
         seccion,
         contextoId: context?.id,
+        jev,
       });
       setMsgs((prev) => [...prev, {
         role: 'assistant',
         text: d.reply || 'Sin respuesta.',
         accion: d.accion ? { ...d.accion, estado: 'pendiente' } : null,
+        opciones: d.opciones || [],
         citations: d.citations || [],
         fundamentos: d.fundamentos || [],
         evidenceMode: d.evidence_mode || (d.general_knowledge ? 'general' : null),
@@ -285,6 +379,9 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
                 <p className="mx-auto mt-1 max-w-[300px] text-[12px] text-ink-dim">
                   Responde citando pasajes de tus documentos. Si no hay evidencia suficiente, lo dice en vez de inventar.
                 </p>
+                <p className="mx-auto mt-2 max-w-[300px] text-[12px] text-ink-dim">
+                  Con un dato seleccionado, pedile un análisis («¿qué explica el abandono?»): elige la herramienta y te la propone antes de correrla.
+                </p>
               </div>
             )}
             <div className="flex flex-col gap-4">
@@ -298,6 +395,8 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
                     onSelect={onSelect}
                     onHighlight={onHighlight}
                     onAccion={(cambios) => setMsgs((prev) => prev.map((x, j) => (j === i ? { ...x, accion: { ...x.accion, ...cambios } } : x)))}
+                    onOpcion={(o) => elegirOpcion(i, o)}
+                    busy={busy}
                   />
                 </div>
               )))}
