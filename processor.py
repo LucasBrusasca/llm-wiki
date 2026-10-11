@@ -1255,7 +1255,7 @@ def _describir_relacion(source: str, target: str, sim: float, shared: list,
 
 
 def relaciones_incrementales(nodo: dict, vecinos: list, piso: float | None = None,
-                             genericas=frozenset()) -> list:
+                             genericas=frozenset(), genericas_de: dict | None = None) -> list:
     """Aristas de UN nodo contra un conjunto de vecinos ya preseleccionado.
 
     Es el camino de la ingesta. `vecinos` viene de una consulta kNN por pgvector (índice
@@ -1280,13 +1280,16 @@ def relaciones_incrementales(nodo: dict, vecinos: list, piso: float | None = Non
 
     candidatos = []
     for vecino in vecinos:
-        # Secciones = grafos independientes (mismo criterio que el global).
-        if (vecino.get("dominio") or "personal") != dominio:
-            continue
         if vecino.get("id") == nodo.get("id"):
             continue
+        # Las secciones están vinculadas (mismo criterio que el global): con un vecino de
+        # otra sección tampoco cuenta el vocabulario de fondo de la suya.
+        fondo = genericas
+        dom_v = vecino.get("dominio") or "personal"
+        if dom_v != dominio and genericas_de:
+            fondo = fondo | frozenset(genericas_de.get(dom_v) or ())
         toks_b = [_tokens_concepto(c) for c in (vecino.get("conceptos") or [])]
-        shared = _conceptos_compartidos(nombres_a, toks_a, toks_b, genericas)
+        shared = _conceptos_compartidos(nombres_a, toks_a, toks_b, fondo)
         sim = vecino.get("sim")
         if sim is None:
             sim = calcular_similitud_coseno(nodo.get("embedding"), vecino.get("embedding"))
@@ -1342,17 +1345,20 @@ def _auto_relaciones(nodos, stats: dict | None = None):
     genericas = {sec: palabras_genericas(cs) for sec, cs in por_seccion.items()}
 
     # 1. Candidatos: similitud coseno + conceptos compartidos (palabra completa) por par.
+    #    Las secciones están vinculadas entre sí: un libro de Finanzas sobre machine
+    #    learning se relaciona con los de Data Science con el mismo criterio que adentro
+    #    de una sección. Entre dos secciones no cuenta el vocabulario de fondo de NINGUNA.
     cand = []
     for i, a in enumerate(docs):
         ta_list = toks[a["id"]]
+        sec_a = a.get("dominio") or "personal"
         for b in docs[i + 1:]:
-            # Secciones = grafos independientes: no conectar nodos de distinta sección.
-            if (a.get("dominio") or "personal") != (b.get("dominio") or "personal"):
-                continue
             tb_list = toks[b["id"]]
-            seccion = a.get("dominio") or "personal"
-            shared = _conceptos_compartidos(names[a["id"]], ta_list, tb_list,
-                                            genericas.get(seccion, frozenset()))
+            sec_b = b.get("dominio") or "personal"
+            fondo = genericas.get(sec_a, frozenset())
+            if sec_b != sec_a:
+                fondo = fondo | genericas.get(sec_b, frozenset())
+            shared = _conceptos_compartidos(names[a["id"]], ta_list, tb_list, fondo)
 
             sim = calcular_similitud_coseno(a.get("embedding"), b.get("embedding"))
             sim = round(sim, 2) if sim else 0.0

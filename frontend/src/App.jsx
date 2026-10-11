@@ -12,6 +12,7 @@ import CommandPalette from '@/app/CommandPalette';
 import JobsPanel, { useJobs, JobsBadge } from '@/app/JobsPanel';
 import {
   fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota, crearScript, agregarConexion, normalizeGraph,
+  reagruparTemas, recalcularRelaciones,
   fetchPapelera,
 } from '@/lib/api';
 import { AGRUPADORES, MODOS_COLOR, indexarRelaciones } from '@/lib/nodes';
@@ -214,6 +215,19 @@ export default function App() {
     loadSections();
   }, [loadSections]);
 
+  // «Reagrupar» temas y recalcular relaciones: trabajos largos que se piden a mano.
+  const [reagrupando, setReagrupando] = useState(false);
+  const reagrupar = useCallback(async () => {
+    setReagrupando(true);
+    try { await reagruparTemas(); recargar(); }
+    catch (e) { window.alert(`No se pudieron reagrupar los temas: ${e.message}`); }
+    finally { setReagrupando(false); }
+  }, [recargar]);
+  const recalcular = useCallback(async () => {
+    try { await recalcularRelaciones(); recargar(); }
+    catch (e) { window.alert(`No se pudieron recalcular las relaciones: ${e.message}`); }
+  }, [recargar]);
+
   // ── Jobs en background ─────────────────────────────────────────────
   const onJobDone = useCallback((job) => {
     if (job?.seccion === seccion || job?.node_id) {
@@ -279,6 +293,8 @@ export default function App() {
 
   // ── Índices derivados ──────────────────────────────────────────────
   const nodesById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph.nodes]);
+  // Documentos de otras secciones con los que ésta está relacionada (sólo para el panel).
+  const externosById = useMemo(() => new Map((graph.externos || []).map((n) => [n.id, n])), [graph.externos]);
   const relIndex = useMemo(() => indexarRelaciones(graph.edges), [graph.edges]);
   const temas = useMemo(() => construirTemas(graph.nodes), [graph.nodes]);
 
@@ -403,10 +419,19 @@ export default function App() {
     setSelectedId(id);
   }, [autoAbrir]);
 
-  // 4D: un documento de otra sección cambia de sección y se abre apenas llega su grafo.
+  // Un documento de otra sección (desde la 4D o desde una relación que cruza): primero se
+  // abre su sección y se elige apenas llega el grafo.
+  const pendiente4D = useRef(null);
   // Seguir un vínculo: el documento actual pasa al camino y la arista usada queda fijada.
   const abrirVinculo = useCallback((id, edge) => {
     if (!id || id === selectedId) return;
+    const externo = externosById.get(id);
+    if (externo) {
+      setInspectorAbierto(true);
+      pendiente4D.current = id;
+      cambiarSeccion(externo.dominio);
+      return;
+    }
     if (ego) {
       if (ego.ids.has(id)) { setSelectedId(id); return; }
       setEgo(null);
@@ -414,7 +439,7 @@ export default function App() {
     if (selectedId) setCamino((c) => [...c, selectedId]);
     pinAlLlegar.current = edge ? { source: edge.source, target: edge.target, label: edge.label } : null;
     setSelectedId(id);
-  }, [selectedId, ego]);
+  }, [selectedId, ego, externosById, cambiarSeccion]);
 
   // Volver a un punto del camino (0 = origen). Lo que venía después se descarta.
   const volverA = useCallback((i) => {
@@ -436,7 +461,6 @@ export default function App() {
 
   // En la 4D se ven todas las secciones: un documento de otra sección primero la abre
   // y lo elige cuando llega su grafo. En la misma sección, igual que en el grafo.
-  const pendiente4D = useRef(null);
   const elegirEn4D = useCallback((id, dominio) => {
     setInspectorAbierto(true);
     if (dominio && dominio !== seccion) {
@@ -708,6 +732,8 @@ export default function App() {
             temasSel={temasSel}
             onToggleTema={toggleIn(setTemasSel)}
             onNombrarTemas={() => setTaxonomiaOpen(true)}
+            onReagrupar={reagrupar}
+            reagrupando={reagrupando}
             onIngest={() => setIngestOpen(true)}
             onScripts={() => setWorkbenchOpen(true)}
             onPapelera={() => setPapeleraOpen(true)}
@@ -803,6 +829,7 @@ export default function App() {
               ancho={anchoInsp}
               node={selected}
               nodesById={nodesById}
+              externos={externosById}
               relIndex={relIndex}
               seccion={seccion}
               seccionCount={graph.nodes.length}
@@ -936,6 +963,8 @@ export default function App() {
             if (a === 'inspector') setInspectorAbierto((v) => !v);
             if (a === 'auto-inspector') setAutoAbrir((v) => !v);
             if (a === 'rail') setRailAbierto((v) => !v);
+            if (a === 'reagrupar') reagrupar();
+            if (a === 'recalcular-relaciones') recalcular();
             if (VISTAS.includes(a)) setVista(a);
           }}
         />

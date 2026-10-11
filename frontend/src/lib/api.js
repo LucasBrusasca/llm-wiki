@@ -61,7 +61,10 @@ export function normalizeGraph(data) {
     is_manual: !!r.is_manual,
     revision: r.revision || null,
   }));
-  return { nodes, edges };
+  // Documentos de OTRAS secciones relacionados con esta: no son parte del grafo de la
+  // sección (no se dibujan), sólo se nombran en el panel y se abren cambiando de sección.
+  const externos = (data?.externos || []).map((n) => ({ ...n, externo: true, conceptos: [], tags: [] }));
+  return { nodes, edges, externos };
 }
 
 /** Renombrar / eliminar sección. Devuelve el Response para que el llamador vea el 403. */
@@ -293,6 +296,12 @@ export const vaciarPapelera = (password) => postJson('/api/papelera/vaciar', { p
 
 /** El espacio 4D: todas las secciones con sus documentos y relaciones (liviano). */
 export const fetchDimensiones = () => fetch('/api/dimensiones').then(jsonOError);
+
+/** «Reagrupar»: rehace los temas de cada sección. Devuelve { temas_por_seccion }. */
+export const reagruparTemas = () => fetch('/api/recompute-layout', { method: 'POST' }).then(jsonOError);
+
+/** Recalcula todas las relaciones (también entre secciones); conserva las decisiones a mano. */
+export const recalcularRelaciones = () => fetch('/api/recompute-relations', { method: 'POST' }).then(jsonOError);
 
 /** El mismo tema para varios documentos (vacío = sin tema). */
 export const temaNodos = (ids, tema) => postJson('/api/nodes/tema', { ids, tema });

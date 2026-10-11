@@ -13,6 +13,8 @@ const ACCIONES = [
   { id: 'nuevo-script', label: 'Nuevo script', icon: FileCode2 },
   { id: 'agent', label: 'Preguntar al agente', icon: MessageSquare },
   { id: 'papelera', label: 'Papelera: restaurar o eliminar definitivamente', icon: Trash2 },
+  { id: 'reagrupar', label: 'Reagrupar los temas de cada sección', icon: Layers },
+  { id: 'recalcular-relaciones', label: 'Recalcular las relaciones (también entre secciones)', icon: Share2 },
   { id: 'lista', label: 'Vista: Lista', icon: List },
   { id: 'split', label: 'Vista: Split', icon: Columns2 },
   { id: 'grafo', label: 'Vista: Grafo', icon: Share2 },

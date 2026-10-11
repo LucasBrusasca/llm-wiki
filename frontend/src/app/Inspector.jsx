@@ -110,13 +110,21 @@ function Relacion({ item, other, onAbrir, onConcepto, fijada, onPin }) {
         {other ? <Thumb node={other} className="h-[30px] w-[26px]" /> : null}
         <span className="min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-ink">
           {other?.label || item.otherId}
+          {other?.externo && (
+            // Relación que cruza de sección: dice a cuál va.
+            <span className="ml-1.5 inline-block rounded-xs border border-hair px-1 align-middle text-[10.5px] font-normal capitalize leading-4 text-ink-muted">
+              en {other.dominio}
+            </span>
+          )}
         </span>
         {other && (
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onAbrir(other.id, edge); }}
             className="flex shrink-0 items-center gap-1 rounded-xs border border-hair px-1.5 py-0.5 text-[11px] text-ink-muted opacity-70 transition hover:border-hair-strong hover:text-ink group-hover:opacity-100"
-            title="Ir a este documento siguiendo el vínculo (queda en el camino para volver)"
+            title={other.externo
+              ? `Ir a la sección «${other.dominio}» y abrir este documento`
+              : 'Ir a este documento siguiendo el vínculo (queda en el camino para volver)'}
           >
             Abrir <ArrowRight className="size-3" />
           </button>
@@ -167,7 +175,7 @@ function Relaciones({ node, rels, nodesById, onAbrir, onConcepto, pinnedEdge, on
   if (!rels.length) {
     return (
       <div className="px-4 py-10 text-center text-[12px] text-ink-dim">
-        Sin relaciones. Ningún otro documento de la sección supera el piso de similitud o comparte conceptos suficientes.
+        Sin relaciones. Ningún otro documento, de ninguna sección, supera el piso de similitud o comparte conceptos suficientes.
       </div>
     );
   }
@@ -400,7 +408,7 @@ function Panorama({ seccionCount, edgesCount, relIndex, nodesById, onSelect }) {
 }
 
 export default function Inspector({
-  node, nodesById, relIndex, seccion, seccionCount, edgesCount,
+  node, nodesById, externos, relIndex, seccion, seccionCount, edgesCount,
   onSelect, onClose, onAsk, onConcepto, onVerEnGrafo, vista, pinnedEdge, onPin, onClearPin,
   onAbrir, camino = [], onVolver, temas, onTema, ego, onFijar, ancho = 420, onGuardar, onMover,
   onPapelera, pedidoEditar, onPedidoAtendido, onCollapse, onScriptGuardado, onCorrida,
@@ -410,6 +418,11 @@ export default function Inspector({
   const [copiado, setCopiado] = useState(false);
   const [editando, setEditando] = useState(false);
   const rels = useMemo(() => (node ? relIndex.get(node.id) || [] : []), [node, relIndex]);
+  // Las relaciones también llegan a documentos de otras secciones: se nombran igual.
+  const conExternos = useMemo(
+    () => (externos?.size ? new Map([...externos, ...nodesById]) : nodesById),
+    [externos, nodesById],
+  );
 
   useEffect(() => {
     setCopiado(false);
@@ -682,7 +695,7 @@ export default function Inspector({
             >
               <ul className="-mx-1.5">
                 {rels.slice(0, 4).map((r) => {
-                  const o = nodesById.get(r.otherId);
+                  const o = conExternos.get(r.otherId);
                   const fija = mismaArista(r.edge, pinnedEdge);
                   return (
                     <li key={`${r.edge.source}-${r.edge.target}`}>
@@ -698,7 +711,10 @@ export default function Inspector({
                         {o ? <Thumb node={o} className="h-[26px] w-[22px]" iconClass="size-3" /> : null}
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-[12.5px] text-ink">{o?.label || r.otherId}</span>
-                          <span className="block truncate text-[11px] text-ink-dim">{relacionLabel(r.edge.label)} · {pct(r.edge.score)}</span>
+                          <span className="block truncate text-[11px] text-ink-dim">
+                            {relacionLabel(r.edge.label)} · {pct(r.edge.score)}
+                            {o?.externo && <> · en <span className="capitalize text-ink-muted">{o.dominio}</span></>}
+                          </span>
                         </span>
                         {fija && <Link2 className="size-3 shrink-0 text-accent" />}
                       </button>
@@ -714,7 +730,7 @@ export default function Inspector({
           <Relaciones
             node={node}
             rels={rels}
-            nodesById={nodesById}
+            nodesById={conExternos}
             onAbrir={onAbrir}
             onConcepto={onConcepto}
             pinnedEdge={pinnedEdge}

@@ -538,11 +538,11 @@ def _vecinos_candidatos(session, node_id: str, embedding, dominio: str,
     if not embedding:
         return []
     vec = str(list(embedding))
+    # Las secciones están vinculadas entre sí: los vecinos se buscan en todas.
     filtro = """
           AND id != :nid
           AND NOT COALESCE(is_centroid, false)
           AND NOT COALESCE(is_issue, false)
-          AND COALESCE(dominio, 'personal') = :dominio
           AND embedding IS NOT NULL
     """
     encontrados = {}
@@ -554,7 +554,7 @@ def _vecinos_candidatos(session, node_id: str, embedding, dominio: str,
         WHERE true {filtro}
         ORDER BY embedding <=> CAST(:vec AS vector)
         LIMIT :lim
-    """), {"vec": vec, "nid": node_id, "dominio": dominio,
+    """), {"vec": vec, "nid": node_id,
            "lim": VECINOS_CANDIDATOS}).all()
     for fila in filas:
         encontrados[fila.id] = {"id": fila.id, "label": fila.label,
@@ -570,7 +570,7 @@ def _vecinos_candidatos(session, node_id: str, embedding, dominio: str,
                 WHERE jsonb_exists_any(conceptos::jsonb, CAST(:conceptos AS text[]))
                       {filtro}
                 LIMIT :lim
-            """), {"vec": vec, "nid": node_id, "dominio": dominio,
+            """), {"vec": vec, "nid": node_id,
                    "conceptos": list(conceptos)[:20],
                    "lim": VECINOS_CANDIDATOS}).all()
             for fila in filas:
@@ -744,6 +744,8 @@ def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
             vecinos,
             piso=_leer_piso_similitud(session),
             genericas=_leer_genericas(session, dominio),
+            genericas_de={d: _leer_genericas(session, d)
+                          for d in {v.get("dominio") or "personal" for v in vecinos} - {dominio}},
         )
 
         # Sólo se reemplazan las aristas de ESTE nodo. Las del resto del grafo quedan
@@ -848,7 +850,7 @@ def _recompute_edges_background():
 @app.get("/api/sections")
 async def get_sections(db: AsyncSession = Depends(get_async_session)):
     """Lista las secciones (dominios) existentes con su cantidad de documentos.
-    Cada sección es un grafo de conocimiento independiente."""
+    Cada sección tiene su grafo, y las relaciones también cruzan de una a otra."""
     rows = (await db.execute(
         select(Node.dominio, func.count()).where(
             Node.is_centroid == False, Node.is_issue == False
@@ -1034,7 +1036,8 @@ async def _vigencia_por_nodo(db: AsyncSession, node_ids: set[str]) -> dict:
 
 @app.get("/api/graph")
 async def get_graph(seccion: str = None, db: AsyncSession = Depends(get_async_session)):
-    # Filtro por sección: cada sección es un grafo independiente. Los issues NO se filtran
+    # Filtro por sección: cada sección tiene su grafo (vinculado a las demás por las
+    # relaciones que cruzan, ver abajo). Los issues NO se filtran
     # (viven en su módulo, fuera del grafo). Sin 'seccion' → todo (compat / vista global).
     stmt = select(Node)
     if seccion:
@@ -1062,10 +1065,31 @@ async def get_graph(seccion: str = None, db: AsyncSession = Depends(get_async_se
     for nd in nodes_list:
         nd["vigencia"] = vigencias.get(nd["id"])
 
-    # Solo aristas cuyos DOS extremos están en la sección visible.
-    relaciones = [edge_to_dict(e) for e in edges_rows
-                  if e.source in node_ids and e.target in node_ids]
-    return {"nodos": nodes_list, "relaciones": relaciones}
+    # Las de adentro de la sección y también las que van a OTRA sección (están vinculadas
+    # entre sí). Del otro extremo viaja lo mínimo para nombrarlo y abrirlo en el panel; el
+    # grafo de la sección sólo dibuja las de adentro.
+    relaciones = []
+    externos_ids = set()
+    for e in edges_rows:
+        s_adentro, t_adentro = e.source in node_ids, e.target in node_ids
+        if s_adentro and t_adentro:
+            relaciones.append(edge_to_dict(e))
+        elif seccion and (s_adentro or t_adentro):
+            relaciones.append(edge_to_dict(e))
+            externos_ids.add(e.target if s_adentro else e.source)
+    externos = []
+    if externos_ids:
+        filas = (await db.execute(
+            select(Node.id, Node.label, Node.dominio, Node.type, Node.fuente, Node.fuente_path,
+                   Node.fuente_url, Node.autor, Node.fecha_doc)
+            .where(Node.id.in_(externos_ids))
+        )).all()
+        externos = [{
+            "id": f.id, "label": f.label, "dominio": f.dominio or "personal", "type": f.type,
+            "fuente": f.fuente, "fuente_path": f.fuente_path, "fuente_url": f.fuente_url,
+            "autor": f.autor, "fecha_doc": f.fecha_doc,
+        } for f in filas]
+    return {"nodos": nodes_list, "relaciones": relaciones, "externos": externos}
 
 
 # ── File serving ──────────────────────────────────────────────────────
@@ -2027,13 +2051,12 @@ async def borrar_review_vigencia(source_id: str,
 
 @app.post("/api/recompute-layout")
 async def recompute_layout():
-    """Re-corre el clustering (UMAP intermedia + HDBSCAN) sobre todos los nodos y
-    persiste posiciones/clusters. Sirve para aplicar ajustes de clustering al grafo
-    existente, sin necesidad de re-subir documentos."""
+    """«Reagrupar»: rehace los temas de cada sección desde cero (las ingestas sólo ubican
+    los documentos nuevos en los temas que ya existen) y persiste posiciones y temas."""
     import asyncio
     import embeddings_engine
-    await asyncio.to_thread(embeddings_engine.main)
-    return {"ok": True}
+    resumen = await asyncio.to_thread(embeddings_engine.main, True)
+    return {"ok": True, "temas_por_seccion": resumen or {}}
 
 
 # ── Notas, tablas y ejecución de archivos ─────────────────────────────

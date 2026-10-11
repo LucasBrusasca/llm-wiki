@@ -64,23 +64,29 @@ from vigencia import (
 from vault_watcher import VaultWatcher
 
 
-class RelationIsolationTests(unittest.TestCase):
-    def _node(self, node_id, dominio):
+class RelationAcrossSectionsTests(unittest.TestCase):
+    """Las secciones están vinculadas: el mismo criterio vale adentro y entre secciones."""
+    def _node(self, node_id, dominio, embedding=(1.0, 0.0, 0.0)):
         return {
             "id": node_id,
             "label": node_id,
             "dominio": dominio,
             "conceptos": ["modelo predictivo", "validación cruzada"],
-            "embedding": [1.0, 0.0, 0.0],
+            "embedding": list(embedding),
             "is_centroid": False,
         }
 
-    def test_different_sections_are_not_connected(self):
+    def test_different_sections_are_connected(self):
         rels = _auto_relaciones([
             self._node("a", "personal"),
             self._node("b", "investigacion"),
         ])
-        self.assertEqual(rels, [])
+        self.assertEqual(len(rels), 1)
+
+    def test_unrelated_documents_of_different_sections_stay_apart(self):
+        a = {**self._node("a", "personal"), "conceptos": ["balance contable"]}
+        b = {**self._node("b", "investigacion", (0.0, 1.0, 0.0)), "conceptos": ["redes neuronales"]}
+        self.assertEqual(_auto_relaciones([a, b]), [])
 
     def test_same_section_can_be_connected(self):
         rels = _auto_relaciones([
@@ -391,12 +397,23 @@ class RelacionesIncrementalesTests(unittest.TestCase):
                 sorted(rel["shared_concepts"]), sorted(equivalente["shared_concepts"])
             )
 
-    def test_secciones_distintas_no_se_conectan_en_la_ingesta(self):
+    def test_secciones_distintas_se_conectan_en_la_ingesta(self):
         nodos = self._corpus()
         nodo = nodos[0]
         vecinos = [{**otro, "dominio": "investigacion", "sim": 0.99}
                    for otro in nodos if otro["id"] != nodo["id"]]
-        self.assertEqual(relaciones_incrementales(nodo, vecinos, piso=0.0), [])
+        self.assertTrue(relaciones_incrementales(nodo, vecinos, piso=0.0))
+
+    def test_entre_secciones_no_cuenta_el_vocabulario_de_fondo_de_la_otra(self):
+        nodos = self._corpus()
+        # n0 y n1 comparten «recuperacion densa» y «grafo semantico»: con el coseno un poco
+        # por debajo del piso, los dos conceptos compartidos son los que admiten el vínculo.
+        otro = {**nodos[1], "dominio": "investigacion", "sim": 0.88}
+        sin_fondo = relaciones_incrementales(nodos[0], [otro], piso=0.95)
+        fondo = {"investigacion": {"recuperacion", "densa", "grafo", "semantico"}}
+        con_fondo = relaciones_incrementales(nodos[0], [otro], piso=0.95, genericas_de=fondo)
+        self.assertEqual(len(sin_fondo), 1)
+        self.assertEqual(con_fondo, [])
 
     def test_sin_embedding_no_hay_aristas(self):
         nodos = self._corpus()

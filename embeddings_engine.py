@@ -6,6 +6,113 @@ from pathlib import Path
 BASE = Path(__file__).parent.resolve()
 UMAP_MODEL_PATH = BASE / "umap_model.pkl"
 
+# ── Temas (clusters) POR SECCIÓN ──────────────────────────────────────────────
+# Configuración elegida midiendo, no a ojo (2026-10-06, sección de 221 documentos): de
+# 144 combinaciones de UMAP intermedia × HDBSCAN, la que mejor combinó coherencia
+# (silueta coseno en el espacio ORIGINAL de los embeddings), estabilidad entre semillas
+# (ARI ≈ 0,79) y poco ruido dio 17 temas con 12 % sin tema. Antes se agrupaban todas las
+# secciones juntas con grupos de ≥10 % del corpus: 2 temas para 221 documentos.
+TEMAS_VERSION = 2
+MIN_DOCS_TEMAS = 12       # con menos documentos, la sección todavía no arma temas
+UMAP_TEMAS = dict(n_neighbors=10, min_dist=0.0, metric="cosine", random_state=42)
+
+
+def _min_tema(n: int) -> int:
+    """Tamaño mínimo de un tema: 4 documentos en una sección chica, crece con la sección."""
+    return max(4, n // 50)
+
+
+def _unitarios(emb) -> np.ndarray:
+    m = np.asarray(emb, dtype=np.float32)
+    normas = np.linalg.norm(m, axis=1, keepdims=True)
+    return m / np.where(normas > 0, normas, 1.0)
+
+
+def _centroides(emb_u: np.ndarray, labels) -> dict:
+    """Por tema: su centroide y el umbral para pertenecer: lo que se parece al centroide el`n    10 % menos típico de sus miembros (un documento nuevo tan parecido como ellos entra)."""
+    salida = {}
+    for t in set(int(x) for x in labels if x >= 0):
+        miembros = emb_u[np.asarray(labels) == t]
+        c = miembros.mean(axis=0)
+        c /= (np.linalg.norm(c) or 1.0)
+        salida[t] = (c, float(np.percentile(miembros @ c, 10)))
+    return salida
+
+
+def _tema_mas_cercano(vec_u: np.ndarray, centroides: dict) -> int:
+    """El tema al que un documento se parece DE VERDAD (tanto como sus miembros típicos);
+    si no hay ninguno, queda sin tema."""
+    mejor, sim_mejor = -1, -1.0
+    for t, (c, umbral) in centroides.items():
+        s = float(vec_u @ c)
+        if s >= umbral and s > sim_mejor:
+            mejor, sim_mejor = t, s
+    return mejor
+
+
+def agrupar_seccion(emb) -> np.ndarray:
+    """Temas de UNA sección: UMAP intermedia (~10-D, coseno) + HDBSCAN «eom». Los que
+    HDBSCAN deja como ruido pero se parecen de verdad a un tema se suman a ese tema."""
+    import hdbscan
+    import umap
+    emb_u = _unitarios(emb)
+    n = len(emb_u)
+    coords = umap.UMAP(n_components=min(10, n - 2), **{**UMAP_TEMAS, "n_neighbors": min(10, n - 1)}
+                       ).fit_transform(emb_u)
+    labels = hdbscan.HDBSCAN(
+        min_cluster_size=_min_tema(n), min_samples=min(3, max(1, n // 20)),
+        metric="euclidean", cluster_selection_method="eom",
+    ).fit_predict(coords).astype(int)
+    centroides = _centroides(emb_u, labels)
+    for i in np.where(labels < 0)[0]:
+        labels[i] = _tema_mas_cercano(emb_u[i], centroides)
+    return labels
+
+
+def _tiene_tema(n: dict) -> bool:
+    return n.get("cluster") is not None and n["cluster"] >= 0
+
+
+def calcular_temas(nodos: list, reagrupar: bool, ids_nuevos: set) -> dict:
+    """Asigna `cluster` (id global, único entre secciones) a cada nodo y devuelve
+    {sección: cantidad de temas}.
+
+    - Reagrupar (o la primera vez de una sección): se agrupa la sección entera.
+    - Si no: cada documento NUEVO se suma al tema más cercano de su sección y los demás
+      no se tocan, así los temas no cambian cada vez que se ingiere algo.
+    """
+    por_seccion = {}
+    for n in nodos:
+        por_seccion.setdefault(n.get("dominio") or "personal", []).append(n)
+    if reagrupar:
+        siguiente = 0
+    else:
+        siguiente = 1 + max((n["cluster"] for n in nodos if _tiene_tema(n)), default=-1)
+    resumen = {}
+    for seccion in sorted(por_seccion):
+        grupo = por_seccion[seccion]
+        if len(grupo) < MIN_DOCS_TEMAS:
+            for n in grupo:
+                n["cluster"] = -1
+            resumen[seccion] = 0
+            continue
+        con_tema = [n for n in grupo if _tiene_tema(n) and n["id"] not in ids_nuevos]
+        if reagrupar or not con_tema:
+            labels = agrupar_seccion([n["embedding"] for n in grupo])
+            locales = sorted(set(int(x) for x in labels if x >= 0))
+            mapa = {t: siguiente + k for k, t in enumerate(locales)}
+            siguiente += len(locales)
+            for n, t in zip(grupo, labels):
+                n["cluster"] = mapa.get(int(t), -1)
+        else:
+            emb_u = _unitarios([n["embedding"] for n in con_tema])
+            centroides = _centroides(emb_u, [n["cluster"] for n in con_tema])
+            for n in grupo:
+                if n["id"] in ids_nuevos:
+                    n["cluster"] = _tema_mas_cercano(_unitarios([n["embedding"]])[0], centroides)
+        resumen[seccion] = len(set(n["cluster"] for n in grupo if n["cluster"] >= 0))
+    return resumen
+
 
 def _normalization_for(coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Parámetros que llevan cada eje UMAP al rango [-1, 1]."""
@@ -22,7 +129,29 @@ def _apply_normalization(coords: np.ndarray, mins, ranges) -> np.ndarray:
     return (coords - mins) / ranges * 2 - 1
 
 
-def main():
+def _version_temas(session) -> int | None:
+    from database.models import GraphStat
+    fila = session.query(GraphStat).filter(GraphStat.key == "temas").one_or_none()
+    return (fila.value or {}).get("version") if fila and isinstance(fila.value, dict) else None
+
+
+def _guardar_version_temas(session, resumen: dict, reagrupado: bool):
+    from datetime import datetime, timezone
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from database.models import GraphStat
+    valor = {"version": TEMAS_VERSION, "temas_por_seccion": resumen,
+             "reagrupado": reagrupado, "medido_en": datetime.now(timezone.utc).isoformat()}
+    session.execute(pg_insert(GraphStat).values(key="temas", value=valor)
+                    .on_conflict_do_update(index_elements=["key"], set_={"value": valor}))
+
+
+def main(reagrupar: bool = False):
+    """Posiciones 3D (UMAP de dibujo + PCA) y temas por sección.
+
+    `reagrupar=True` rehace los temas de todas las secciones (botón «Reagrupar»); si no,
+    sólo se ubican los documentos nuevos. La primera vez con esta versión de los temas
+    se reagrupa solo.
+    """
     from database.connection import get_sync_session
     from database.models import Node as NodeModel
 
@@ -47,12 +176,15 @@ def main():
             nodos.append({
                 "id":      n.id,
                 "label":   n.label,
+                "dominio": n.dominio or "personal",
                 "embedding": emb,
                 "cluster": n.cluster if n.cluster is not None else -1,
                 "x3d":     n.x3d,
                 "y3d":     n.y3d,
                 "z3d":     n.z3d,
             })
+        if _version_temas(session) != TEMAS_VERSION:
+            reagrupar = True
 
     nodos_con_emb = [n for n in nodos if n.get("embedding")]
 
@@ -76,6 +208,7 @@ def main():
     # ── Pipeline UMAP/HDBSCAN existente — SIN CAMBIOS ──
     nodos_nuevos     = [n for n in nodos_con_emb if n.get("x3d") is None]
     nodos_existentes = [n for n in nodos_con_emb if n.get("x3d") is not None]
+    ids_nuevos = {n["id"] for n in nodos_nuevos}
 
     import umap
     import hdbscan
@@ -120,15 +253,11 @@ def main():
             nodo["y3d"] = round(float(coord[1]), 4)
             nodo["z3d"] = round(float(coord[2]), 4)
 
-        nodos_para_hdbscan = nodos_con_emb
-        coords_hdbscan = coords
 
     else:
         # Ejecuciones siguientes: proyectar solo los nodos nuevos
         if not nodos_nuevos:
-            print("No hay nodos nuevos para proyectar. Re-ejecutando HDBSCAN sobre todo.")
-            nodos_para_hdbscan = nodos_con_emb
-            coords_hdbscan = np.array([[n["x3d"], n["y3d"], n["z3d"]] for n in nodos_con_emb])
+            print("No hay nodos nuevos para proyectar.")
         else:
             print(f"Cargando modelo UMAP existente...")
             reducer = saved_bundle["reducer"]
@@ -149,46 +278,13 @@ def main():
                 nodo["y3d"] = round(float(coord[1]), 4)
                 nodo["z3d"] = round(float(coord[2]), 4)
 
-            nodos_para_hdbscan = nodos_con_emb
-            coords_hdbscan = np.array([[n["x3d"], n["y3d"], n["z3d"]] for n in nodos_para_hdbscan])
 
-    # Re-calcular clusters con HDBSCAN.
-    # CLAVE: clusterizamos sobre una proyección de MAYOR dimensión derivada de los
-    # embeddings — NO sobre las 3D de display. Aplastar 384-D → 3-D destruye la
-    # separación semántica y mezcla temas distintos en un mismo cluster (p.ej. un doc
-    # de "tratamiento de outliers" caía dentro de un grupo de texto-a-imagen). Las 3D
-    # quedan sólo para dibujar; los clusters salen de un espacio que preserva la
-    # estructura real del embedding.
-    print(f"Calculando clusters HDBSCAN sobre {len(nodos_para_hdbscan)} nodos...")
-    emb_cluster = np.array([n["embedding"] for n in nodos_para_hdbscan], dtype=np.float32)
-    n_nodos = len(nodos_para_hdbscan)
-
-    if n_nodos >= 8:
-        # UMAP intermedia (~10-D) con vecindad coseno: separa bien los temas sin la
-        # pérdida brutal de las 3 dimensiones del dibujo.
-        reducer_cl = umap.UMAP(
-            n_components=min(10, n_nodos - 2),
-            n_neighbors=min(15, n_nodos - 1),
-            min_dist=0.0, metric="cosine", random_state=42,
-        )
-        coords_cl = reducer_cl.fit_transform(emb_cluster)
-    else:
-        # Muy pocos nodos: clusterizar directo sobre el embedding.
-        coords_cl = emb_cluster
-
-    # Params honestos: dejamos que los outliers REALES caigan como ruido (cluster -1,
-    # gris, sin etiqueta) en vez de pegarlos al grupo más cercano. min_samples alto =
-    # más conservador (antes era 1, que forzaba a todo a tener cluster).
-    min_cs = max(3, n_nodos // 10)
-    min_samp = min(5, max(2, n_nodos // 12))
-    clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=min_cs, min_samples=min_samp,
-        metric="euclidean", cluster_selection_method="eom",
-    )
-    labels = clusterer.fit_predict(coords_cl)
-
-    for nodo, label in zip(nodos_para_hdbscan, labels):
-        nodo["cluster"] = int(label)
+    # Temas por sección. CLAVE: se agrupa sobre una proyección de MAYOR dimensión de los
+    # embeddings (UMAP ~10-D, coseno), NO sobre las 3D del dibujo: aplastar 384-D → 3-D
+    # mezcla temas distintos. Las 3D quedan sólo para dibujar.
+    print("Reagrupando los temas de cada sección..." if reagrupar
+          else "Ubicando los documentos nuevos en sus temas...")
+    resumen_temas = calcular_temas(nodos_con_emb, reagrupar, ids_nuevos)
 
     # ── Calcular PCA 3D ──
     embeddings_array = np.array([
@@ -237,12 +333,13 @@ def main():
                 "z_pca":   n.get("z_pca"),
                 "cluster": n.get("cluster", -1),
             })
+        _guardar_version_temas(session, resumen_temas, reagrupar)
         session.commit()
 
-    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-    n_ruido = sum(1 for l in labels if l == -1)
+    n_ruido = sum(1 for n in nodos_con_emb if not _tiene_tema(n))
     print(f"✓ Coordenadas UMAP y PCA actualizadas para {len(nodos)} nodos")
-    print(f"✓ {n_clusters} clusters, {n_ruido} nodos sin cluster")
+    print(f"✓ Temas por sección: {resumen_temas} · {n_ruido} documentos sin tema")
+    return resumen_temas
 
 
 if __name__ == "__main__":

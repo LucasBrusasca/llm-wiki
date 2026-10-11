@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
-import { Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2, Sparkles, StickyNote } from 'lucide-react';
+import {
+  Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2, Sparkles, StickyNote, RefreshCw, Loader2,
+} from 'lucide-react';
 import { hayNombresAutomaticos } from '@/lib/temas';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
@@ -78,7 +80,7 @@ export default function Rail({
   sections, seccion, onSeccion, onNuevaSeccion,
   facetas, tipos, onToggleTipo, fuentes, onToggleFuente,
   topConceptos, conceptos, onToggleConcepto,
-  temas, temasSel, onToggleTema, onNombrarTemas,
+  temas, temasSel, onToggleTema, onNombrarTemas, onReagrupar, reagrupando = false,
   onIngest, onScripts, onPapelera, papeleraCount = 0, onNuevaNota, onSeccionesCambiadas, onSeccionEliminada, ancho = 272,
   onCollapse,
 }) {
@@ -192,15 +194,30 @@ export default function Rail({
           <Grupo
             titulo="Temas"
             plegable
-            accion={hayNombresAutomaticos(temas) && (
-              <button
-                type="button"
-                onClick={onNombrarTemas}
-                title="Los nombres automáticos salen de los conceptos de cada cluster. Podés pedirle al LLM una taxonomía legible."
-                className="flex items-center gap-1 rounded-xs px-1 text-[10.5px] text-ink-dim hover:bg-surface-2 hover:text-accent"
-              >
-                <Sparkles className="size-3" /> Nombrar con IA
-              </button>
+            accion={(
+              <span className="flex items-center gap-0.5">
+                {onReagrupar && (
+                  <button
+                    type="button"
+                    onClick={onReagrupar}
+                    disabled={reagrupando}
+                    title="Rehacer los temas de cada sección desde cero. Las ingestas sólo suman lo nuevo al tema más cercano, para que los temas no cambien a cada rato."
+                    className="flex items-center gap-1 rounded-xs px-1 text-[10.5px] text-ink-dim hover:bg-surface-2 hover:text-accent disabled:opacity-60"
+                  >
+                    {reagrupando ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />} Reagrupar
+                  </button>
+                )}
+                {hayNombresAutomaticos(temas) && (
+                  <button
+                    type="button"
+                    onClick={onNombrarTemas}
+                    title="Los nombres automáticos salen de los conceptos de cada cluster. Podés pedirle al LLM una taxonomía legible."
+                    className="flex items-center gap-1 rounded-xs px-1 text-[10.5px] text-ink-dim hover:bg-surface-2 hover:text-accent"
+                  >
+                    <Sparkles className="size-3" /> Nombrar con IA
+                  </button>
+                )}
+              </span>
             )}
           >
             {[...temas.values()].sort((a, b) => (a.key === 'sin-tema') - (b.key === 'sin-tema') || b.count - a.count).map((t) => (
