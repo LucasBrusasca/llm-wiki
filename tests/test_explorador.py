@@ -130,3 +130,74 @@ class PivotReglasTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RelacionesSugeridasTests(unittest.TestCase):
+    """Sin claves foráneas, los nombres delatan las relaciones (como Power BI)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ruta = Path(self.tmp.name) / "sin_fk.sqlite"
+        conn = sqlite3.connect(self.ruta)
+        conn.executescript("""
+            CREATE TABLE clientes (id INTEGER PRIMARY KEY, provincia TEXT);
+            CREATE TABLE proveedores (codigo INTEGER PRIMARY KEY, nombre TEXT);
+            CREATE TABLE categorias (id INTEGER, nombre TEXT);
+            CREATE TABLE ventas (id INTEGER PRIMARY KEY, cliente_id INTEGER, proveedor_id INTEGER,
+                id_categoria INTEGER, vendedor_id INTEGER, cantidad INTEGER);
+            CREATE TABLE notas (id INTEGER PRIMARY KEY, nota_id INTEGER);
+            INSERT INTO clientes VALUES (1, 'Salta'), (2, 'Jujuy');
+            INSERT INTO ventas VALUES (1, 1, NULL, NULL, NULL, 3), (2, 2, NULL, NULL, NULL, 5), (3, 2, NULL, NULL, NULL, 1);
+        """)
+        conn.commit()
+        conn.close()
+        self.modelo = wb.modelo_sqlite(self.ruta)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_sugiere_por_nombre_singular_plural_y_clave(self):
+        sugeridas = {(r["desde"]["tabla"], r["desde"]["columna"], r["hacia"]["tabla"], r["hacia"]["columna"])
+                     for r in ex.sugerir_relaciones(self.modelo)}
+        self.assertEqual(sugeridas, {
+            ("ventas", "cliente_id", "clientes", "id"),
+            ("ventas", "proveedor_id", "proveedores", "codigo"),      # su pk, aunque no se llame id
+            ("ventas", "id_categoria", "categorias", "id"),           # sin pk: la columna «id»
+        })                                                            # vendedor_id: no hay tabla; nota_id: misma tabla
+        self.assertTrue(all(r["origen"] == "sugerida" for r in ex.sugerir_relaciones(self.modelo)))
+
+    def test_no_sugiere_lo_que_la_base_ya_declara(self):
+        with tempfile.TemporaryDirectory() as d:
+            base_demo(Path(d) / "demo.sqlite")
+            self.assertEqual(ex.sugerir_relaciones(wb.modelo_sqlite(Path(d) / "demo.sqlite")), [])
+
+    def test_aceptar_la_sugerencia_habilita_la_union(self):
+        spec = {"filas": [{"tabla": "clientes", "columna": "provincia"}],
+                "valores": [{"tabla": "ventas", "columna": "cantidad", "agregacion": "suma"}]}
+        with self.assertRaises(ex.PivotInvalido):
+            ex.armar_pivot(self.modelo, spec, "sqlite")
+        cliente = next(r for r in ex.sugerir_relaciones(self.modelo) if r["desde"]["columna"] == "cliente_id")
+        con = ex.con_relaciones(self.modelo, [cliente])
+        self.assertEqual([r["origen"] for r in con["relaciones"]], ["manual"])
+        self.assertNotIn(("ventas", "cliente_id"), {(r["desde"]["tabla"], r["desde"]["columna"])
+                                                   for r in ex.sugerir_relaciones(con)})
+        res = wb.consultar_sqlite(self.ruta, ex.armar_pivot(con, spec, "sqlite")["sql"])
+        self.assertEqual(sorted(map(tuple, res["filas"])), [("Jujuy", 6), ("Salta", 3)])
+
+
+class ReporteSpecTests(unittest.TestCase):
+    SPEC = {"filas": [{"tabla": "ventas", "columna": "fecha", "fecha": "mes"}],
+            "valores": [{"tabla": "ventas", "columna": "cantidad", "agregacion": "suma"}]}
+
+    def test_spec_completo_trae_los_cuatro_pozos(self):
+        completo = ex.spec_completo({**self.SPEC, "limite": 200, "otra": "cosa"})
+        self.assertEqual(set(completo), {"filas", "columnas", "valores", "filtros", "limite"})
+        self.assertEqual(completo["columnas"], [])
+        self.assertEqual(ex.spec_completo(None), {"filas": [], "columnas": [], "valores": [], "filtros": []})
+
+    def test_la_huella_ignora_pozos_vacios(self):
+        self.assertEqual(ex.huella_reporte("d1", self.SPEC), ex.huella_reporte("d1", ex.spec_completo(self.SPEC)))
+        self.assertEqual(len(ex.huella_reporte("d1", self.SPEC)), 6)
+        self.assertNotEqual(ex.huella_reporte("d1", self.SPEC), ex.huella_reporte("d2", self.SPEC))
+        otro = {**self.SPEC, "columnas": [{"tabla": "productos", "columna": "categoria"}]}
+        self.assertNotEqual(ex.huella_reporte("d1", self.SPEC), ex.huella_reporte("d1", otro))

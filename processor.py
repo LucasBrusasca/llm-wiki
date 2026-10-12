@@ -53,7 +53,12 @@ def get_embed_model():
             if _embed_model is None:
                 from sentence_transformers import SentenceTransformer
                 print(f"Cargando modelo de embeddings ({EMBED_MODEL_NAME})...")
-                modelo = SentenceTransformer(EMBED_MODEL_NAME)
+                # Primero desde el disco, sin red: con el modelo ya bajado, preguntarle a
+                # Hugging Face si hay versión nueva demoraba minutos (o colgaba sin red).
+                try:
+                    modelo = SentenceTransformer(EMBED_MODEL_NAME, local_files_only=True)
+                except Exception:
+                    modelo = SentenceTransformer(EMBED_MODEL_NAME)
                 modelo.max_seq_length = min(EMBED_MAX_TOKENS, modelo.max_seq_length or EMBED_MAX_TOKENS)
                 _embed_model = modelo
                 print("✓ Modelo listo")

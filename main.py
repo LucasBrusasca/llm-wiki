@@ -2935,11 +2935,61 @@ async def _modelo_de_nodo(db: AsyncSession, node: Node, fresco: bool = False) ->
 
 @app.get("/api/node/{node_id}/modelo")
 async def modelo_de_datos(node_id: str, fresco: bool = False, db: AsyncSession = Depends(get_async_session)):
-    """Tablas, campos (tipo, clave, a qué apunta) y relaciones de una fuente de datos."""
+    """Tablas, campos (tipo, clave, a qué apunta) y relaciones de una fuente de datos,
+    más las relaciones que los nombres sugieren y todavía no están (para aceptarlas)."""
+    import explorador
     node = await _nodo_o_404(db, node_id)
     if node.type != wb.TIPO_DATOS:
         raise HTTPException(400, "Sólo los nodos de datos tienen modelo.")
-    return {"node_id": node.id, "label": node.label, **(await _modelo_de_nodo(db, node, fresco))}
+    modelo = await _modelo_de_nodo(db, node, fresco)
+    return {"node_id": node.id, "label": node.label, **modelo,
+            "sugeridas": explorador.sugerir_relaciones(modelo)}
+
+
+async def _guardar_relaciones_manuales(db: AsyncSession, node_id: str, relaciones: list[dict]):
+    clave = _clave_modelo(node_id)
+    valor = {"relaciones": relaciones}
+    await db.execute(pg_insert(GraphStat).values(key=clave, value=valor)
+                     .on_conflict_do_update(index_elements=["key"], set_={"value": valor}))
+    await db.commit()
+
+
+def _relacion_del_cuerpo(body: dict) -> dict:
+    d, h = body.get("desde") or {}, body.get("hacia") or {}
+    if not (d.get("tabla") and d.get("columna") and h.get("tabla") and h.get("columna")):
+        raise HTTPException(400, "Una relación va de «tabla.campo» a «tabla.campo».")
+    return {"desde": {"tabla": d["tabla"], "columna": d["columna"]},
+            "hacia": {"tabla": h["tabla"], "columna": h["columna"]}}
+
+
+@app.post("/api/node/{node_id}/modelo/relaciones")
+async def agregar_relacion_modelo(node_id: str, request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Marca a mano una relación entre dos campos (la base no la declara). Sirve para
+    que la tabla dinámica pueda unir esas tablas."""
+    node = await _nodo_o_404(db, node_id)
+    nueva = _relacion_del_cuerpo(await _read_body(request))
+    modelo = await _modelo_de_nodo(db, node)
+    campos = {(t["clave"], c["nombre"]) for t in modelo["tablas"] for c in t["campos"]}
+    for lado in ("desde", "hacia"):
+        if (nueva[lado]["tabla"], nueva[lado]["columna"]) not in campos:
+            raise HTTPException(400, f"«{nueva[lado]['tabla']}.{nueva[lado]['columna']}» no existe en el modelo.")
+    if nueva["desde"]["tabla"] == nueva["hacia"]["tabla"]:
+        raise HTTPException(400, "Una relación une dos tablas distintas.")
+    manuales = await _relaciones_manuales(db, node_id)
+    if nueva not in manuales:
+        manuales.append(nueva)
+        await _guardar_relaciones_manuales(db, node_id, manuales)
+    return await modelo_de_datos(node_id, db=db)
+
+
+@app.delete("/api/node/{node_id}/modelo/relaciones")
+async def quitar_relacion_modelo(node_id: str, request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Saca una relación marcada a mano (las de la base no se tocan)."""
+    await _nodo_o_404(db, node_id)
+    vieja = _relacion_del_cuerpo(await _read_body(request))
+    manuales = [r for r in await _relaciones_manuales(db, node_id) if r != vieja]
+    await _guardar_relaciones_manuales(db, node_id, manuales)
+    return await modelo_de_datos(node_id, db=db)
 
 
 @app.post("/api/node/{node_id}/pivot")
@@ -2948,15 +2998,21 @@ async def pivot_de_datos(node_id: str, request: Request, db: AsyncSession = Depe
     lectura), las dimensiones, las medidas y las filas en formato largo: la interfaz
     la cruza en filas × columnas y la grafica. No se anota en Corridas: es explorar
     (cada campo que se mueve es una consulta); un reporte guardado sí."""
-    import explorador
     body = await _read_body(request)
     node = await _nodo_o_404(db, node_id)
     if node.type != wb.TIPO_DATOS:
         raise HTTPException(400, "La tabla dinámica es sobre un nodo de datos.")
+    return await _correr_pivot(db, node, body.get("spec") or {})
+
+
+async def _correr_pivot(db: AsyncSession, node: Node, spec: dict) -> dict:
+    """Arma el SQL de la tabla dinámica sobre el modelo de la fuente y lo corre en
+    sólo lectura. Lo comparten el explorador y los reportes."""
+    import explorador
     modelo = await _modelo_de_nodo(db, node)
     dialecto = "postgres" if modelo["motor"] == "postgres" else "sqlite"
     try:
-        armado = explorador.armar_pivot(modelo, body.get("spec") or {}, dialecto)
+        armado = explorador.armar_pivot(modelo, spec, dialecto)
     except explorador.PivotInvalido as e:
         raise HTTPException(400, str(e))
     inicio = time.time()
@@ -2976,6 +3032,105 @@ async def pivot_de_datos(node_id: str, request: Request, db: AsyncSession = Depe
         raise HTTPException(400, f"{e}\n\n{armado['sql']}")
     return {**armado, "filas": res["filas"], "truncado": res.get("truncado", False),
             "duracion_ms": int((time.time() - inicio) * 1000)}
+
+
+# ── Reportes: una tabla dinámica guardada es un nodo ──────────────────────────
+# El nodo REPORTE vive en la sección de su fuente, vinculado a ella («lee los datos
+# de»), con una descripción en palabras («Suma de cantidad por provincia…») que lo
+# relaciona con los documentos que hablan de lo mismo. La definición (campos, vista,
+# gráfico) se guarda aparte; abrirlo vuelve a correrla con los datos de hoy.
+
+TIPO_REPORTE = "REPORTE"
+
+
+def _clave_reporte(node_id: str) -> str:
+    return f"reporte:{node_id}"
+
+
+async def _anotar_corrida_reporte(db: AsyncSession, datos: Node, titulo: str, res: dict):
+    """Cada vez que corre un reporte queda en Corridas, como una consulta más."""
+    ahora = datetime.now(timezone.utc)
+    db.add(ScriptRun(
+        script_id=f"consulta:{datos.id}",
+        inputs={"sql": res["sql"], "label": f"Reporte · {titulo}", "archivo": datos.label,
+                "motor": "pivot", "origen": "reporte"},
+        outputs={"stdout": f"{len(res['filas'])} filas{' (recortado)' if res.get('truncado') else ''}",
+                 "returncode": 0},
+        status="completed", node_id=datos.id, context_nodes=[datos.id],
+        duration_ms=res.get("duracion_ms"), started_at=ahora, finished_at=ahora,
+    ))
+    await db.commit()
+
+
+def _indexar_reporte(nodo: dict, datos_id: str):
+    """Guarda el nodo (embedding, ubicación, relaciones) y su vínculo con la fuente."""
+    from processor import generar_embedding
+    generar_embedding(nodo)
+    nodo.update(_ubicacion_por_vecinos(nodo.get("embedding"), nodo["dominio"]))
+    _save_node_sync(nodo)
+    with get_sync_session() as s:
+        # El vínculo con su fuente lo dice la definición, no la similitud: reemplaza a la
+        # arista de coseno que pudiera haber entre los dos (en cualquier sentido).
+        par = ((Edge.source == nodo["id"]) & (Edge.target == datos_id)) | (
+            (Edge.source == datos_id) & (Edge.target == nodo["id"]))
+        s.execute(sql_delete(Edge).where(par))
+        s.execute(pg_insert(Edge).values(**wb._arista_codigo(
+            nodo["id"], datos_id, wb.REL_LEE_DATOS, "El reporte se calcula con estos datos.",
+            {"reporte": nodo["id"]})))
+        s.commit()
+
+
+@app.post("/api/reportes")
+async def crear_reporte(request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Guarda una tabla dinámica como nodo REPORTE: {datos, titulo, spec, vista, tipo}."""
+    import explorador
+    body = await _read_body(request)
+    datos = await _nodo_o_404(db, str(body.get("datos") or ""))
+    if datos.type != wb.TIPO_DATOS:
+        raise HTTPException(400, "Un reporte sale de un nodo de datos.")
+    spec = explorador.spec_completo(body.get("spec"))
+    res = await _correr_pivot(db, datos, spec)          # valida y prueba antes de guardar
+    descripcion = explorador.describir_pivot(spec)
+    titulo = " ".join(str(body.get("titulo") or descripcion).split())[:160]
+    node_id = f"reporte_{wb.slug_archivo(titulo, ext='')[:40]}_{explorador.huella_reporte(datos.id, spec)}"
+    campos = list(dict.fromkeys(x["columna"] for x in spec.get("filas", []) + spec.get("columnas", [])
+                                + spec.get("valores", []) if x.get("columna") != "*"))
+    nodo = {
+        "id": node_id, "label": titulo, "type": TIPO_REPORTE, "fuente": "reporte",
+        "fuente_label": datos.label, "dominio": datos.dominio or "personal",
+        "desc": f"{descripcion}. Reporte sobre «{datos.label}».",
+        "fragmento": res["sql"][:600], "conceptos": campos[:10],
+    }
+    await asyncio.to_thread(_indexar_reporte, nodo, datos.id)
+    definicion = {"datos": datos.id, "spec": spec, "vista": body.get("vista") or "tabla",
+                  "tipo": body.get("tipo"), "creado": datetime.now(timezone.utc).isoformat()}
+    await db.execute(pg_insert(GraphStat).values(key=_clave_reporte(node_id), value=definicion)
+                     .on_conflict_do_update(index_elements=["key"], set_={"value": definicion}))
+    await db.commit()
+    await _anotar_corrida_reporte(db, datos, titulo, res)
+    nuevo = await _nodo_o_404(db, node_id)
+    nd = node_to_dict(nuevo, con_embedding=False)
+    nd.pop("embedding", None)
+    return {"ok": True, "node": nd}
+
+
+@app.get("/api/reportes/{node_id}")
+async def ver_reporte(node_id: str, actualizar: bool = False, db: AsyncSession = Depends(get_async_session)):
+    """Un reporte corrido con los datos de hoy: su definición y el resultado. Mirarlo
+    no se anota en Corridas (sería una por clic); actualizarlo a pedido, sí."""
+    node = await _nodo_o_404(db, node_id)
+    fila = (await db.execute(select(GraphStat).where(GraphStat.key == _clave_reporte(node_id)))).scalar_one_or_none()
+    if node.type != TIPO_REPORTE or not fila:
+        raise HTTPException(404, "No es un reporte (o se perdió su definición).")
+    definicion = fila.value or {}
+    datos = (await db.execute(select(Node).where(Node.id == definicion.get("datos")))).scalar_one_or_none()
+    if not datos:
+        raise HTTPException(404, "La fuente de datos del reporte ya no está en la biblioteca.")
+    res = await _correr_pivot(db, datos, definicion.get("spec") or {})
+    if actualizar:
+        await _anotar_corrida_reporte(db, datos, node.label, res)
+    return {"reporte": {"id": node.id, "titulo": node.label, "desc": node.desc, **definicion},
+            "datos": {"id": datos.id, "label": datos.label}, "resultado": res}
 
 
 @app.get("/api/fuentes-datos")

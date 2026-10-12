@@ -200,7 +200,7 @@ export default function ConsultaDatos({ node }) {
               onClick={() => {
                 const esc = (v) => (v == null ? '' : /[",\n;]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
                 const csv = [res.columnas, ...res.filas].map((f) => f.map(esc).join(',')).join('\n');
-                descargar(`${(node.label || 'consulta').replace(/[^\w.-]+/g, '_')}.csv`, csv);
+                descargar(`${(node.label || 'consulta').replace(/[^\p{L}\p{N}.-]+/gu, '_')}.csv`, csv);
               }}
             >
               <Download className="size-3" /> Exportar CSV

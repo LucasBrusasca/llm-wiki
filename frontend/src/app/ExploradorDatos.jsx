@@ -1,17 +1,20 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Hash, Calendar, Type, ToggleLeft, KeyRound, Link2, ChevronRight, Table2, Eye, X, Loader2, RotateCw,
-  Download, Image as ImageIcon, BarChart3, Rows3, Columns3, Sigma, Filter, Database, Save,
+  Download, Image as ImageIcon, BarChart3, Rows3, Columns3, Sigma, Filter, Database, Save, Network, Check,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
-import { fetchModelo, pivotDatos } from '@/lib/api';
+import { fetchModelo, pivotDatos, agregarRelacionModelo, quitarRelacionModelo } from '@/lib/api';
 import { cruzar, aCSV, descargar, graficoSugerido } from '@/lib/pivot';
 import Grafico, { TIPOS_GRAFICO, motivoNoDisponible } from '@/app/Grafico';
 import { cn } from '@/lib/utils';
+
+// El diagrama (React Flow) sólo se baja si se abre la vista Modelo.
+const ModeloDatos = lazy(() => import('@/app/ModeloDatos'));
 
 const ICONO_CLASE = { numerica: Hash, fecha: Calendar, texto: Type, booleano: ToggleLeft };
 const AGREGACIONES = [
@@ -134,7 +137,56 @@ function Ficha({ pozo, x, campo, onCambio, onQuitar }) {
   );
 }
 
-function TablaCruzada({ cruce }) {
+const textoRel = (r) => `${r.desde.tabla}.${r.desde.columna} → ${r.hacia.tabla}.${r.hacia.columna}`;
+
+/** Las relaciones del modelo: las de la base, las marcadas a mano (se pueden sacar) y
+ *  las que sugieren los nombres de los campos (se aceptan con un clic). */
+function PanelRelaciones({ modelo, onAceptar, onQuitar, onVerModelo }) {
+  const sugeridas = modelo.sugeridas || [];
+  if (modelo.tablas.length < 2) return null;
+  return (
+    <div className="mt-3 px-1.5">
+      <p className="flex items-center text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">
+        Relaciones
+        <button type="button" onClick={onVerModelo} className="ml-auto flex items-center gap-1 normal-case tracking-normal hover:text-ink">
+          <Network className="size-3" /> ver modelo
+        </button>
+      </p>
+      <ul className="mt-1 flex flex-col gap-0.5 text-[11px]">
+        {modelo.relaciones.map((r) => (
+          <li key={textoRel(r)} className="group flex items-center gap-1 text-ink-dim"
+            title={r.origen === 'manual' ? 'Marcada a mano' : 'Clave foránea de la base'}>
+            <Link2 className={cn('size-3 shrink-0', r.origen === 'manual' && 'text-accent')} />
+            <span className="min-w-0 flex-1 truncate">{textoRel(r)}</span>
+            {r.origen === 'manual' && (
+              <button type="button" onClick={() => onQuitar(r)} aria-label="Sacar la relación"
+                className="invisible grid size-4 place-items-center rounded-xs hover:bg-surface-3 hover:text-ink group-hover:visible">
+                <X className="size-3" />
+              </button>
+            )}
+          </li>
+        ))}
+        {sugeridas.map((r) => (
+          <li key={`s-${textoRel(r)}`} className="flex items-center gap-1 text-warn/90" title="Los nombres sugieren esta relación">
+            <Link2 className="size-3 shrink-0 opacity-60" />
+            <span className="min-w-0 flex-1 truncate">{textoRel(r)}</span>
+            <button type="button" onClick={() => onAceptar(r)}
+              className="flex shrink-0 items-center gap-0.5 rounded-xs px-1 text-[10.5px] hover:bg-surface-3 hover:text-ink">
+              <Check className="size-3" /> unir
+            </button>
+          </li>
+        ))}
+      </ul>
+      {!modelo.relaciones.length && !sugeridas.length && (
+        <p className="mt-1 text-[11px] leading-snug text-ink-dim">
+          Ninguna todavía. En <button type="button" onClick={onVerModelo} className="underline hover:text-ink">Modelo</button> arrastrá de un campo a otro para unir dos tablas.
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function TablaCruzada({ cruce }) {
   const { dimsFilas, medidas, filas, columnas, totales } = cruce;
   const sumables = medidas.every((m) => /^(Suma|Cantidad)/.test(m.etiqueta));
   const unaMedida = medidas.length === 1;
@@ -208,7 +260,7 @@ export default function ExploradorDatos({ open, onOpenChange, nodo, tablaInicial
   useEffect(() => {
     if (!open) return;
     setModelo(null); setRes(null); setTipo(null); setVista(specInicial?.vista || 'tabla');
-    setSpec(specInicial?.spec || VACIO);
+    setSpec({ ...VACIO, ...specInicial?.spec });   // un reporte viejo puede no traer todos los pozos
     if (specInicial?.tipo) setTipo(specInicial.tipo);
     setAbiertas(new Set(tablaInicial ? [tablaInicial] : []));
     cargarModelo();
@@ -256,14 +308,23 @@ export default function ExploradorDatos({ open, onOpenChange, nodo, tablaInicial
     } catch { /* no era un campo */ }
   }
 
-  const nombreArchivo = `${(nodo?.label || 'datos').replace(/[^\w.-]+/g, '_')}_tabla_dinamica`;
+  // Marcar o sacar una relación devuelve el modelo nuevo: la tabla dinámica se recalcula
+  // sola (ahora puede unir tablas que antes no).
+  const relacionar = useCallback(async (accion, rel) => {
+    try {
+      setModelo(await accion(nodo.id, { desde: rel.desde, hacia: rel.hacia }));
+      setError(null);
+    } catch (e) { setError(e.message); }
+  }, [nodo]);
+
+  const nombreArchivo = `${(nodo?.label || 'datos').replace(/[^\p{L}\p{N}.-]+/gu, '_')}_tabla_dinamica`;
 
   async function guardar() {
     if (!onGuardarReporte || !res) return;
     setGuardando(true);
     try {
       await onGuardarReporte({ spec: { ...spec, filtros: spec.filtros.filter((f) => String(f.valor ?? '').trim() !== '') },
-        vista, tipo: tipoGrafico });
+        vista: vista === 'modelo' ? 'tabla' : vista, tipo: tipoGrafico });
     } catch (e) { setError(e.message); }
     finally { setGuardando(false); }
   }
@@ -292,17 +353,9 @@ export default function ExploradorDatos({ open, onOpenChange, nodo, tablaInicial
                 <ArbolCampos modelo={modelo} abiertas={abiertas} onAgregar={agregar}
                   onAlternar={(k) => setAbiertas((a) => { const n = new Set(a); n.has(k) ? n.delete(k) : n.add(k); return n; })} />
               )}
-              {modelo?.relaciones.length > 0 && (
-                <div className="mt-3 px-1.5">
-                  <p className="text-[10.5px] uppercase tracking-[0.08em] text-ink-dim">Relaciones</p>
-                  <ul className="mt-1 flex flex-col gap-0.5 text-[11px] text-ink-dim">
-                    {modelo.relaciones.map((r) => (
-                      <li key={`${r.desde.tabla}.${r.desde.columna}-${r.hacia.tabla}`} className="truncate" title={r.origen === 'fk' ? 'clave foránea' : 'marcada a mano'}>
-                        {r.desde.tabla}.{r.desde.columna} → {r.hacia.tabla}.{r.hacia.columna}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+              {modelo && (
+                <PanelRelaciones modelo={modelo} onAceptar={(r) => relacionar(agregarRelacionModelo, r)}
+                  onQuitar={(r) => relacionar(quitarRelacionModelo, r)} onVerModelo={() => setVista('modelo')} />
               )}
             </div>
           </aside>
@@ -340,7 +393,7 @@ export default function ExploradorDatos({ open, onOpenChange, nodo, tablaInicial
 
             <div className="flex shrink-0 flex-wrap items-center gap-2 px-2.5 py-1.5 text-[11.5px] text-ink-dim">
               <div className="flex rounded-sm border border-hair p-0.5">
-                {[['tabla', 'Tabla', Table2], ['grafico', 'Gráfico', BarChart3]].map(([id, l, I]) => (
+                {[['tabla', 'Tabla', Table2], ['grafico', 'Gráfico', BarChart3], ['modelo', 'Modelo', Network]].map(([id, l, I]) => (
                   <button key={id} type="button" onClick={() => setVista(id)}
                     className={cn('flex items-center gap-1 rounded-xs px-2 py-0.5', vista === id ? 'bg-surface-3 text-ink' : 'hover:text-ink')}>
                     <I className="size-3" /> {l}
@@ -382,13 +435,19 @@ export default function ExploradorDatos({ open, onOpenChange, nodo, tablaInicial
 
             <div className="min-h-0 flex-1 overflow-hidden px-2.5 pb-2.5">
               {error && <pre className="mb-2 whitespace-pre-wrap rounded-sm border border-danger/30 bg-danger/[0.06] p-2 text-[11.5px] text-danger">{error}</pre>}
-              {!listo && !error && (
+              {!listo && !error && vista !== 'modelo' && (
                 <div className="grid h-full place-items-center text-center text-[12.5px] text-ink-dim">
                   <p>Elegí qué querés ver: por ejemplo, una fecha en Filas, una categoría en Columnas y un importe en Valores.</p>
                 </div>
               )}
               {cruce && vista === 'tabla' && <TablaCruzada cruce={cruce} />}
               {cruce && vista === 'grafico' && <Grafico ref={grafico} tipo={tipoGrafico} cruce={cruce} alto="100%" />}
+              {vista === 'modelo' && modelo && (
+                <Suspense fallback={<p className="flex items-center gap-1.5 p-2 text-[12px] text-ink-dim"><Loader2 className="size-3.5 animate-spin" /> Armando el diagrama…</p>}>
+                  <ModeloDatos modelo={modelo} onAgregar={(r) => relacionar(agregarRelacionModelo, r)}
+                    onQuitar={(r) => relacionar(quitarRelacionModelo, r)} />
+                </Suspense>
+              )}
             </div>
 
             {res?.sql && (

@@ -136,6 +136,33 @@ export async function pivotDatos(nodeId, spec) {
   }).then(jsonOError);
 }
 
+/** Relación marcada a mano entre dos campos ({desde: {tabla, columna}, hacia: …}). */
+export async function agregarRelacionModelo(nodeId, rel) {
+  return fetch(`/api/node/${encodeURIComponent(nodeId)}/modelo/relaciones`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rel),
+  }).then(jsonOError);
+}
+
+export async function quitarRelacionModelo(nodeId, rel) {
+  return fetch(`/api/node/${encodeURIComponent(nodeId)}/modelo/relaciones`, {
+    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rel),
+  }).then(jsonOError);
+}
+
+/** Guarda una tabla dinámica como nodo REPORTE. */
+export async function crearReporte({ datos, titulo, spec, vista, tipo }) {
+  return fetch('/api/reportes', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ datos, titulo, spec, vista, tipo }),
+  }).then(jsonOError);
+}
+
+/** Un reporte corrido con los datos de hoy: { reporte, datos, resultado }. Con
+ *  `actualizar` la corrida queda anotada en Corridas. */
+export async function fetchReporte(id, { actualizar = false } = {}) {
+  return fetch(`/api/reportes/${encodeURIComponent(id)}${actualizar ? '?actualizar=true' : ''}`).then(jsonOError);
+}
+
 /** Nodos de datos de todas las secciones. */
 export async function fetchFuentesDatos() {
   const d = await fetch('/api/fuentes-datos').then(jsonOError);

@@ -1,6 +1,6 @@
 import {
   FileText, Presentation, FileType2, Globe, CirclePlay, Table2, Image as ImageIcon,
-  CircleAlert, FolderOpen, Terminal, StickyNote, AlignLeft, Search, Boxes, Database,
+  CircleAlert, FolderOpen, Terminal, StickyNote, AlignLeft, Search, Boxes, Database, BarChart3,
 } from 'lucide-react';
 
 /**
@@ -14,6 +14,7 @@ export const TIPOS = {
   SCRIPT:     { label: 'Script',     plural: 'Scripts',     icon: Terminal },
   DATOS:      { label: 'Datos',      plural: 'Datos',       icon: Database },
   QUERY:      { label: 'Consulta',   plural: 'Consultas',   icon: Search },
+  REPORTE:    { label: 'Reporte',    plural: 'Reportes',    icon: BarChart3 },
   ISSUE:      { label: 'Issue',      plural: 'Issues',      icon: CircleAlert },
   EXPEDIENTE: { label: 'Expediente', plural: 'Expedientes', icon: FolderOpen },
 };
@@ -47,7 +48,7 @@ export function fuenteLabel(node) {
     pdf: 'PDF', ppt: 'PPT', pptx: 'PPT', pptm: 'PPT', word: 'Word', docx: 'Word',
     excel: 'Excel', xlsx: 'Excel', youtube: 'YouTube', url: 'Web', web: 'Web', html: 'HTML',
     script: 'Python', issue: 'Issue', architect: 'Architect', imagen: 'Imagen',
-    csv: 'CSV', sqlite: 'SQLite', postgres: 'Postgres',
+    csv: 'CSV', sqlite: 'SQLite', postgres: 'Postgres', reporte: 'Dinámica',
   };
   return nombres[f] || (f ? f.toUpperCase() : null);
 }
@@ -60,7 +61,7 @@ const FUENTE_A_CLAVE = {
   pdf: 'pdf',
   ppt: 'ppt', pptx: 'ppt', pptm: 'ppt',
   word: 'word', docx: 'word', doc: 'word',
-  excel: 'excel', xlsx: 'excel', xls: 'excel', csv: 'excel', sqlite: 'excel', postgres: 'excel',
+  excel: 'excel', xlsx: 'excel', xls: 'excel', csv: 'excel', sqlite: 'excel', postgres: 'excel', reporte: 'excel',
   youtube: 'video', video: 'video', audio: 'video', mp3: 'video', wav: 'video',
   url: 'web', web: 'web', html: 'web', htm: 'web',
   imagen: 'imagen', image: 'imagen', png: 'imagen', jpg: 'imagen', jpeg: 'imagen',

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import {
   X, ExternalLink, MessageSquare, Share2, ArrowUpRight, ArrowDownLeft, ArrowRight, Copy, Check,
   Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight, Pencil, FolderInput, Loader2, Trash2,
@@ -23,6 +23,9 @@ import ConsultaDatos from '@/app/ConsultaDatos';
 import { abrirExplorador } from '@/lib/eventos';
 import NotaEditor from '@/app/NotaEditor';
 import { cn, fechaCorta, pct, normalizar } from '@/lib/utils';
+
+// Un reporte trae ECharts: se baja recién al abrir uno.
+const ReporteVista = lazy(() => import('@/app/ReporteVista'));
 
 function urlFuente(node) {
   if (node.fuente === 'postgres') return null;   // una base, no un archivo para abrir
@@ -253,6 +256,13 @@ function tienePreview(node) {
 function Preview({ node, onGuardar, onScriptGuardado, onCorrida }) {
   const tipo = tipoMedia(node);
   if (tipo === 'nota') return <NotaEditor node={node} onGuardar={onGuardar} />;
+  if (tipo === 'reporte') {
+    return (
+      <Suspense fallback={<p className="p-4 text-[12px] text-ink-dim">Cargando…</p>}>
+        <ReporteVista node={node} />
+      </Suspense>
+    );
+  }
   if (tipo === 'script') {
     return (
       <div className="flex flex-col gap-1 pb-6">

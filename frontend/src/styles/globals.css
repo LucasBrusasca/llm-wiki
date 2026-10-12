@@ -73,6 +73,7 @@
   --tipo-SCRIPT:     #a78bfa;
   --tipo-DATOS:      #34d399;
   --tipo-QUERY:      #2dd4bf;
+  --tipo-REPORTE:    #f59e0b;
   --tipo-ISSUE:      #fb7185;
   --tipo-EXPEDIENTE: #c084fc;
   --tipo-otro:       #94a3b8;
@@ -194,6 +195,19 @@ body {
   vector-effect: non-scaling-stroke;
   transition: stroke-opacity 120ms, stroke 120ms;
 }
+
+/* Vista de modelo del explorador de datos: tablas que se arrastran, campos con puntos
+   para unir, controles del zoom en el tema oscuro. */
+.modelo-flow .react-flow__node { cursor: grab; }
+.modelo-flow .react-flow__node.dragging { cursor: grabbing; }
+.modelo-flow .react-flow__handle { cursor: crosshair; }
+.modelo-flow .react-flow__edge-path { vector-effect: non-scaling-stroke; }
+.modelo-flow .react-flow__controls { border: 1px solid var(--color-hair-strong); border-radius: 6px; overflow: hidden; box-shadow: none; }
+.modelo-flow .react-flow__controls-button {
+  background: var(--color-surface-2); border-bottom: 1px solid var(--color-hair); color: var(--color-ink-muted);
+}
+.modelo-flow .react-flow__controls-button:hover { background: var(--color-surface-3); color: var(--color-ink); }
+.modelo-flow .react-flow__controls-button svg { fill: currentColor; }
 
 /* Grafo 2D con el lenguaje del 3D. React Flow escala todo con el zoom; GraphCanvas
    fija en el contenedor --inv (1/zoom) y --escala (px por unidad, como el 3D) en

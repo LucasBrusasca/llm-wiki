@@ -13,6 +13,8 @@ workbench.py leen las bases y corren el SQL, siempre en sólo lectura.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import deque
 
 CLASES = ("numerica", "fecha", "booleano", "texto")
@@ -117,6 +119,35 @@ def con_relaciones(modelo: dict, extra: list[dict]) -> dict:
                            "origen": "manual"})
             ya.add(k)
     return {**modelo, "relaciones": modelo["relaciones"] + nuevas}
+
+
+def sugerir_relaciones(modelo: dict) -> list[dict]:
+    """Relaciones que el modelo no declara pero los nombres delatan, como hace Power BI:
+    `ventas.cliente_id` → `clientes.id`. Son sugerencias: se aceptan a mano."""
+    ya = {(r["desde"]["tabla"], r["desde"]["columna"]) for r in modelo["relaciones"]}
+    por_nombre = {}
+    for t in modelo["tablas"]:
+        nombre = t["tabla"].lower()
+        for variante in (nombre, nombre.rstrip("s"), nombre[:-2] if nombre.endswith("es") else None):
+            if variante:
+                por_nombre.setdefault(variante, t)
+    salida = []
+    for t in modelo["tablas"]:
+        for c in t["campos"]:
+            n = c["nombre"].lower()
+            if c["pk"] or (t["clave"], c["nombre"]) in ya:
+                continue
+            base = n[:-3] if n.endswith("_id") else (n[3:].lstrip("_") if n.startswith("id_") else None)
+            destino = por_nombre.get(base) if base else None
+            if not destino or destino["clave"] == t["clave"]:
+                continue
+            clave = next((x for x in destino["campos"] if x["pk"]), None) or next(
+                (x for x in destino["campos"] if x["nombre"].lower() == "id"), None)
+            if clave:
+                salida.append({"desde": {"tabla": t["clave"], "columna": c["nombre"]},
+                               "hacia": {"tabla": destino["clave"], "columna": clave["nombre"]},
+                               "origen": "sugerida"})
+    return salida
 
 
 # ── Uniones ───────────────────────────────────────────────────────────────────
@@ -298,6 +329,24 @@ def _tabla_sql(t: dict, dialecto: str) -> str:
     if dialecto == "postgres" and t.get("esquema"):
         return f"{_id(t['esquema'])}.{_id(t['tabla'])}"
     return _id(t["tabla"])
+
+
+POZOS = ("filas", "columnas", "valores", "filtros")
+
+
+def spec_completo(spec: dict | None) -> dict:
+    """La definición de una tabla dinámica con los cuatro pozos siempre presentes (más
+    límite y orden si vinieron). Así se guarda un reporte y así lo reabre el explorador."""
+    spec = spec or {}
+    return {**{k: spec[k] for k in ("limite", "orden") if spec.get(k) is not None},
+            **{p: list(spec.get(p) or []) for p in POZOS}}
+
+
+def huella_reporte(datos_id: str, spec: dict | None) -> str:
+    """Seis caracteres que identifican «esta tabla dinámica sobre estos datos». Ignora
+    los pozos vacíos: guardar dos veces lo mismo pisa el mismo nodo."""
+    canonica = {k: v for k, v in spec_completo(spec).items() if v}
+    return hashlib.sha256(json.dumps([datos_id, canonica], sort_keys=True).encode()).hexdigest()[:6]
 
 
 def describir_pivot(spec: dict) -> str:

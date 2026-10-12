@@ -7,13 +7,12 @@ import Inspector from '@/app/Inspector';
 import AgentFab from '@/app/AgentFab';
 import IngestDialog from '@/app/IngestDialog';
 import Corridas from '@/app/Corridas';
-import ExploradorDatos from '@/app/ExploradorDatos';
 import { alPedirExplorar } from '@/lib/eventos';
 import CommandPalette from '@/app/CommandPalette';
 import JobsPanel, { useJobs, JobsBadge } from '@/app/JobsPanel';
 import {
   fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota, crearScript, agregarConexion, normalizeGraph,
-  reagruparTemas, recalcularRelaciones, instalarHerramientas,
+  reagruparTemas, recalcularRelaciones, instalarHerramientas, crearReporte,
   fetchPapelera,
 } from '@/lib/api';
 import { AGRUPADORES, MODOS_COLOR, TIPOS, TODAS, nombreSeccion, indexarRelaciones } from '@/lib/nodes';
@@ -33,6 +32,8 @@ const GraphCanvas = lazy(() => import('@/app/GraphCanvas'));
 const Graph3DView = lazy(() => import('@/app/Graph3DView'));
 // 4D: el espacio de las secciones (teseractos con su grafo adentro). También a demanda.
 const Vista4D = lazy(() => import('@/app/Vista4D'));
+// El explorador de datos trae ECharts: también se baja recién cuando se abre.
+const ExploradorDatos = lazy(() => import('@/app/ExploradorDatos'));
 
 const LS = {
   get(k, def) { try { const v = localStorage.getItem(k); return v == null ? def : v; } catch { return def; } },
@@ -646,6 +647,16 @@ export default function App() {
     return mostrarNodoNuevo(r.node);
   }, [seccionReal, mostrarNodoNuevo]);
 
+  // Tabla dinámica del explorador → nodo «Reporte» unido a su fuente; el inspector
+  // se abre en él. Sin nombre, el backend lo describe («Suma de importe por mes»).
+  const guardarReporte = useCallback(async ({ spec, vista, tipo }) => {
+    const titulo = window.prompt('Nombre del reporte (vacío: se describe solo):', '');
+    if (titulo === null || !explorar) return;
+    const r = await crearReporte({ datos: explorar.nodo.id, titulo: titulo.trim(), spec, vista, tipo });
+    setExplorar(null);
+    mostrarNodoNuevo(r.node);
+  }, [explorar, mostrarNodoNuevo]);
+
   const preguntarSobre = useCallback((node) => {
     setAgentContext(node || null);
     setAgentOpen(true);
@@ -1001,12 +1012,18 @@ export default function App() {
           onRefresh={refreshJobs}
           onSelectNode={(id) => { seleccionar(id); setJobsOpen(false); }}
         />
-        <ExploradorDatos
-          open={!!explorar}
-          onOpenChange={(o) => { if (!o) setExplorar(null); }}
-          nodo={explorar?.nodo}
-          tablaInicial={explorar?.tabla}
-        />
+        {explorar && (
+          <Suspense fallback={null}>
+            <ExploradorDatos
+              open
+              onOpenChange={(o) => { if (!o) setExplorar(null); }}
+              nodo={explorar.nodo}
+              tablaInicial={explorar.tabla}
+              specInicial={explorar.inicial}
+              onGuardarReporte={guardarReporte}
+            />
+          </Suspense>
+        )}
         <Corridas
           open={corridasOpen}
           onOpenChange={setCorridasOpen}

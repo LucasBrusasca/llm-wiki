@@ -51,6 +51,9 @@ services:
     volumes:
       - .:/app
       - uploads_data:/app/uploads
+      # Modelos bajados de Hugging Face (embeddings, ~470 MB): que sobrevivan a recrear
+      # el contenedor, si no se vuelven a bajar en cada rebuild.
+      - hf_cache:/root/.cache/huggingface
     depends_on:
       db:
         condition: service_healthy
@@ -93,3 +96,4 @@ services:
 volumes:
   postgres_data:
   uploads_data:
+  hf_cache:

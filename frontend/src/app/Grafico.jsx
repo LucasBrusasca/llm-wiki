@@ -44,8 +44,10 @@ export function motivoNoDisponible(tipo, cruce) {
   return null;
 }
 
-function opcion(tipo, cruce) {
-  const t = tema();
+// Para imprimir o exportar a HTML: fondo blanco, texto oscuro, la misma paleta.
+const CLARO = { ink: '#111827', muted: '#4b5563', dim: '#6b7280', hair: '#e5e7eb', surface: '#ffffff', accent: '#0e7490' };
+
+function opcion(tipo, cruce, t = tema()) {
   const ejes = { axisLine: { lineStyle: { color: t.hair } }, axisLabel: { color: t.muted, fontSize: 11 },
     splitLine: { lineStyle: { color: t.hair } } };
   const base = {
@@ -132,6 +134,20 @@ function opcion(tipo, cruce) {
       barMaxWidth: 36,
     })),
   };
+}
+
+/** El gráfico en claro como PNG (data URL), dibujado fuera de pantalla: para reportes
+ *  en HTML o PDF. Sin barra de zoom: en papel van todas las categorías. */
+export function pngClaro(tipo, cruce, { ancho = 960, alto = 440 } = {}) {
+  if (!cruce || motivoNoDisponible(tipo, cruce)) return null;
+  const chart = echarts.init(document.createElement('div'), null, { renderer: 'canvas', width: ancho, height: alto });
+  try {
+    const o = opcion(tipo, cruce, { ...tema(), ...CLARO });
+    chart.setOption({ ...o, animation: false, dataZoom: [], grid: o.grid && { ...o.grid, bottom: tipo === 'calor' ? 56 : 8 } });
+    return chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' });
+  } finally {
+    chart.dispose();
+  }
 }
 
 /** Gráfico de una tabla dinámica ya cruzada (lib/pivot.cruzar). `ref.png()` lo exporta. */

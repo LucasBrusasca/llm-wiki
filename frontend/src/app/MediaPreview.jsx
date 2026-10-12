@@ -10,6 +10,7 @@ export function tipoMedia(node) {
   const ext = (node.fuente_path || '').split('.').pop()?.toLowerCase() || '';
   const f = (node.fuente || '').toLowerCase();
   if (node.type === 'NOTA') return 'nota';
+  if (node.type === 'REPORTE') return 'reporte';
   // Scripts y datos como nodos: el script se ve y se edita como código; una base SQLite
   // o Postgres se consulta. (Un SCRIPT sin archivo cae al Resumen.)
   if (f === 'postgres') return 'postgres';

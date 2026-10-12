@@ -4,9 +4,10 @@
  */
 const EXPLORAR = 'algedi:explorar';
 
-/** Abrir el explorador sobre un nodo de datos (opcional: la tabla a desplegar). */
-export function abrirExplorador(nodo, tabla) {
-  window.dispatchEvent(new CustomEvent(EXPLORAR, { detail: { nodo: { id: nodo.id, label: nodo.label }, tabla } }));
+/** Abrir el explorador sobre un nodo de datos (opcional: la tabla a desplegar, o la
+ *  definición de un reporte para seguir trabajándolo). */
+export function abrirExplorador(nodo, tabla, inicial) {
+  window.dispatchEvent(new CustomEvent(EXPLORAR, { detail: { nodo: { id: nodo.id, label: nodo.label }, tabla, inicial } }));
 }
 
 export function alPedirExplorar(fn) {
