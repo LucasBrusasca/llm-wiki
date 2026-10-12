@@ -648,6 +648,38 @@ def esquema_sqlite(ruta: Path) -> list[dict]:
         conn.close()
 
 
+def modelo_sqlite(ruta: Path) -> dict:
+    """Modelo de una base SQLite (tablas, campos con tipo, claves y relaciones), en
+    sólo lectura. Ver explorador.armar_modelo."""
+    import explorador
+    conn = sqlite3.connect(f"file:{Path(ruta).as_posix()}?mode=ro", uri=True)
+    try:
+        objetos = conn.execute(
+            "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 60").fetchall()
+        columnas, claves, meta = [], [], {}
+        for nombre, tipo in objetos:
+            q = nombre.replace('"', '""')
+            filas = None
+            if tipo == "table":
+                try:
+                    filas = conn.execute(f'SELECT count(*) FROM "{q}"').fetchone()[0]
+                except sqlite3.Error:
+                    pass
+            meta[(None, nombre)] = {"vista": tipo == "view", "filas_aprox": filas}
+            for cid, col, ctipo, notnull, _, pk in conn.execute(f'PRAGMA table_info("{q}")'):
+                columnas.append({"esquema": None, "tabla": nombre, "columna": col, "tipo": ctipo,
+                                 "nulos": not notnull})
+                if pk:
+                    claves.append({"esquema": None, "tabla": nombre, "columna": col, "tipo": "p"})
+            for fk in conn.execute(f'PRAGMA foreign_key_list("{q}")'):
+                claves.append({"esquema": None, "tabla": nombre, "columna": fk[3], "tipo": "f",
+                               "ref_esquema": None, "ref_tabla": fk[2], "ref_columna": fk[4]})
+        return explorador.armar_modelo("sqlite", columnas, claves, meta)
+    finally:
+        conn.close()
+
+
 def consultar_sqlite(ruta: Path, sql: str, *, limite: int = 500, timeout_s: float = 5.0) -> dict:
     """SQL de sólo lectura sobre una base SQLite real: se abre en modo `ro` y además con
     el autorizador, así ni un ATTACH ni un PRAGMA que escriba pasan."""
@@ -855,6 +887,55 @@ async def esquema_postgres(conexion: dict, *, timeout_s: float = 5.0) -> list[di
         "filas_aprox": (int(f["filas"]) if f["tipo"] in ("r", "p", "m")
                         and f["filas"] is not None and f["filas"] >= 0 else None),
     } for f in filas]
+
+
+async def modelo_postgres(conexion: dict, *, timeout_s: float = 5.0) -> dict:
+    """Modelo de una base Postgres: tablas y vistas legibles, campos con su tipo, claves
+    primarias y foráneas (las relaciones). Sólo lee el catálogo."""
+    import explorador
+    conn = await _conectar_pg(conexion, timeout_s)
+    fuera = "('pg_catalog', 'information_schema')"
+    try:
+        columnas = await conn.fetch(
+            "SELECT table_schema AS esquema, table_name AS tabla, column_name::text AS columna,"
+            "       data_type AS tipo, is_nullable = 'YES' AS nulos"
+            "  FROM information_schema.columns"
+            f" WHERE table_schema NOT IN {fuera} AND table_schema !~ '^pg_'"
+            " ORDER BY (table_schema <> 'public'), table_schema, table_name, ordinal_position")
+        claves = await conn.fetch(
+            "SELECT n1.nspname AS esquema, r1.relname AS tabla, a1.attname::text AS columna,"
+            "       c.contype::text AS tipo, n2.nspname AS ref_esquema, r2.relname AS ref_tabla,"
+            "       a2.attname::text AS ref_columna"
+            "  FROM pg_constraint c"
+            "  JOIN pg_class r1 ON r1.oid = c.conrelid"
+            "  JOIN pg_namespace n1 ON n1.oid = r1.relnamespace"
+            "  CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(attnum, i)"
+            "  JOIN pg_attribute a1 ON a1.attrelid = c.conrelid AND a1.attnum = k.attnum"
+            "  LEFT JOIN pg_class r2 ON r2.oid = c.confrelid"
+            "  LEFT JOIN pg_namespace n2 ON n2.oid = r2.relnamespace"
+            "  LEFT JOIN LATERAL (SELECT f.attnum FROM unnest(c.confkey) WITH ORDINALITY AS f(attnum, i)"
+            "                      WHERE f.i = k.i) fk ON true"
+            "  LEFT JOIN pg_attribute a2 ON a2.attrelid = c.confrelid AND a2.attnum = fk.attnum"
+            f" WHERE c.contype IN ('p', 'f') AND n1.nspname NOT IN {fuera}")
+        tablas = await conn.fetch(
+            "SELECT n.nspname AS esquema, c.relname AS tabla, c.relkind::text AS tipo, c.reltuples::bigint AS filas"
+            "  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+            f" WHERE c.relkind IN ('r', 'v', 'm', 'p') AND n.nspname NOT IN {fuera} AND n.nspname !~ '^pg_'")
+    except Exception as e:
+        raise ConsultaInvalida(f"No se pudo leer el modelo: {e}") from None
+    finally:
+        await conn.close()
+    meta = {(t["esquema"], t["tabla"]): {
+        "vista": t["tipo"] == "v",
+        "filas_aprox": int(t["filas"]) if t["tipo"] in ("r", "p", "m") and t["filas"] is not None
+        and t["filas"] >= 0 else None,
+    } for t in tablas}
+    visibles = [dict(c) for c in columnas]
+    nombres = list(dict.fromkeys((c["esquema"], c["tabla"]) for c in visibles))[:60]
+    permitidas = set(nombres)
+    return explorador.armar_modelo(
+        "postgres", [c for c in visibles if (c["esquema"], c["tabla"]) in permitidas],
+        [dict(c) for c in claves if (c["esquema"], c["tabla"]) in permitidas], meta)
 
 
 async def consultar_postgres(conexion: dict, sql: str, *, limite: int = 500,

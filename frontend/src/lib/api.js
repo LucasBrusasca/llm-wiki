@@ -118,6 +118,28 @@ export async function ejecutarArchivo(nodeId, confirm = false, {
   }).then(jsonOError);
 }
 
+// ── Explorador de datos ───────────────────────────────────────────────
+
+/** Modelo de una fuente de datos: tablas, campos (tipo, clave, a qué apuntan) y relaciones. */
+export async function fetchModelo(nodeId, { fresco = false } = {}) {
+  return fetch(`/api/node/${encodeURIComponent(nodeId)}/modelo${fresco ? '?fresco=true' : ''}`).then(jsonOError);
+}
+
+/** Tabla dinámica (formato largo + el SQL que se corrió). */
+export async function pivotDatos(nodeId, spec) {
+  return fetch(`/api/node/${encodeURIComponent(nodeId)}/pivot`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ spec }),
+  }).then(jsonOError);
+}
+
+/** Nodos de datos de todas las secciones. */
+export async function fetchFuentesDatos() {
+  const d = await fetch('/api/fuentes-datos').then(jsonOError);
+  return d.fuentes || [];
+}
+
 /** Parámetros de una herramienta (de su ficha) y los valores válidos: tablas y columnas. */
 export async function fetchParametros(nodeId) {
   return fetch(`/api/node/${encodeURIComponent(nodeId)}/parametros`).then(jsonOError);

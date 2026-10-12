@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   X, ExternalLink, MessageSquare, Share2, ArrowUpRight, ArrowDownLeft, ArrowRight, Copy, Check,
   Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight, Pencil, FolderInput, Loader2, Trash2,
+  BarChart3,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -19,6 +20,7 @@ import TablaPreview from '@/app/TablaPreview';
 import EjecutarArchivo from '@/app/EjecutarArchivo';
 import CodigoScript from '@/app/CodigoScript';
 import ConsultaDatos from '@/app/ConsultaDatos';
+import { abrirExplorador } from '@/lib/eventos';
 import NotaEditor from '@/app/NotaEditor';
 import { cn, fechaCorta, pct, normalizar } from '@/lib/utils';
 
@@ -266,7 +268,13 @@ function Preview({ node, onGuardar, onScriptGuardado, onCorrida }) {
   if (tipo === 'tabla' || tipo === 'sqlite' || tipo === 'postgres') {
     return (
       <div className="flex flex-col gap-1 pb-6">
-        {tipo === 'tabla' && <div className="px-4 pt-4"><TablaPreview node={node} /></div>}
+        <div className="flex flex-wrap items-center gap-2 px-4 pt-4">
+          <Button variant="default" size="sm" onClick={() => abrirExplorador(node)}>
+            <BarChart3 /> Explorar: tabla dinámica y gráficos
+          </Button>
+          <span className="text-[11px] text-ink-dim">como Power BI, en sólo lectura</span>
+        </div>
+        {tipo === 'tabla' && <div className="px-4 pt-3"><TablaPreview node={node} /></div>}
         <Seccion titulo="Consulta">
           <ConsultaDatos node={node} />
         </Seccion>

@@ -2885,6 +2885,108 @@ async def consultar_datos(node_id: str, request: Request, db: AsyncSession = Dep
     return {**res, "motor": motor, "plan": plan}
 
 
+# ── Explorador de datos (explorador.py): modelo y tabla dinámica ──────────────
+# Una fuente de datos (Postgres, SQLite, CSV o Excel) se ve como en DBeaver —tablas,
+# campos con su tipo, claves y relaciones— y se analiza como en Power BI: filas,
+# columnas, valores y filtros, uniendo las tablas por sus relaciones. Todo en sólo
+# lectura y con el SQL a la vista.
+
+_MODELOS: dict[str, tuple[float, str, dict]] = {}   # node_id → (cuándo, huella, modelo)
+_MODELO_TTL = 60.0
+
+
+def _clave_modelo(node_id: str) -> str:
+    return f"modelo:{node_id}"
+
+
+async def _relaciones_manuales(db: AsyncSession, node_id: str) -> list[dict]:
+    fila = (await db.execute(select(GraphStat).where(GraphStat.key == _clave_modelo(node_id)))).scalar_one_or_none()
+    return list(((fila.value or {}) if fila else {}).get("relaciones") or [])
+
+
+async def _modelo_de_nodo(db: AsyncSession, node: Node, fresco: bool = False) -> dict:
+    """Modelo de una fuente de datos (cacheado un minuto; un archivo, hasta que cambie)."""
+    import explorador
+    import jev
+    if _es_postgres(node):
+        huella = node.fuente_path or ""
+    else:
+        ruta = _archivo_de_datos(node)
+        huella = f"{ruta}:{ruta.stat().st_mtime}"
+    cache = _MODELOS.get(node.id)
+    if not fresco and cache and cache[1] == huella and time.time() - cache[0] < _MODELO_TTL:
+        base = cache[2]
+    else:
+        if _es_postgres(node):
+            try:
+                base = await wb.modelo_postgres(_conexion_de_nodo(node))
+            except wb.ConexionFallida as e:
+                raise _error_de_conexion(e)
+            except wb.ConsultaInvalida as e:
+                raise HTTPException(400, str(e))
+        elif ruta.suffix.lower() in wb.EXT_SQLITE:
+            base = await asyncio.to_thread(wb.modelo_sqlite, ruta)
+        else:
+            t = await asyncio.to_thread(_leer_tabla, ruta, None, 500)
+            base = explorador.modelo_de_tabla(jev.describir_tabla(t["columnas"], t["filas"]), t["total_filas"])
+        _MODELOS[node.id] = (time.time(), huella, base)
+    return explorador.con_relaciones(base, await _relaciones_manuales(db, node.id))
+
+
+@app.get("/api/node/{node_id}/modelo")
+async def modelo_de_datos(node_id: str, fresco: bool = False, db: AsyncSession = Depends(get_async_session)):
+    """Tablas, campos (tipo, clave, a qué apunta) y relaciones de una fuente de datos."""
+    node = await _nodo_o_404(db, node_id)
+    if node.type != wb.TIPO_DATOS:
+        raise HTTPException(400, "Sólo los nodos de datos tienen modelo.")
+    return {"node_id": node.id, "label": node.label, **(await _modelo_de_nodo(db, node, fresco))}
+
+
+@app.post("/api/node/{node_id}/pivot")
+async def pivot_de_datos(node_id: str, request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Tabla dinámica sobre una fuente de datos. Devuelve el SQL que se corrió (sólo
+    lectura), las dimensiones, las medidas y las filas en formato largo: la interfaz
+    la cruza en filas × columnas y la grafica. No se anota en Corridas: es explorar
+    (cada campo que se mueve es una consulta); un reporte guardado sí."""
+    import explorador
+    body = await _read_body(request)
+    node = await _nodo_o_404(db, node_id)
+    if node.type != wb.TIPO_DATOS:
+        raise HTTPException(400, "La tabla dinámica es sobre un nodo de datos.")
+    modelo = await _modelo_de_nodo(db, node)
+    dialecto = "postgres" if modelo["motor"] == "postgres" else "sqlite"
+    try:
+        armado = explorador.armar_pivot(modelo, body.get("spec") or {}, dialecto)
+    except explorador.PivotInvalido as e:
+        raise HTTPException(400, str(e))
+    inicio = time.time()
+    try:
+        if modelo["motor"] == "postgres":
+            res = await wb.consultar_postgres(_conexion_de_nodo(node), armado["sql"], limite=armado["limite"])
+        elif modelo["motor"] == "sqlite":
+            res = await asyncio.to_thread(wb.consultar_sqlite, _archivo_de_datos(node), armado["sql"],
+                                          limite=armado["limite"])
+        else:
+            tabla = await asyncio.to_thread(_leer_tabla, _archivo_de_datos(node), None, 50_000)
+            res = await asyncio.to_thread(wb.consultar_tabla, tabla["columnas"], tabla["filas"], armado["sql"],
+                                          limite=armado["limite"])
+    except wb.ConexionFallida as e:
+        raise _error_de_conexion(e)
+    except wb.ConsultaInvalida as e:
+        raise HTTPException(400, f"{e}\n\n{armado['sql']}")
+    return {**armado, "filas": res["filas"], "truncado": res.get("truncado", False),
+            "duracion_ms": int((time.time() - inicio) * 1000)}
+
+
+@app.get("/api/fuentes-datos")
+async def fuentes_de_datos(db: AsyncSession = Depends(get_async_session)):
+    """Los nodos de datos de todas las secciones (para el árbol del panel izquierdo)."""
+    filas = (await db.execute(select(Node.id, Node.label, Node.fuente, Node.dominio, Node.fuente_path).where(
+        Node.type == wb.TIPO_DATOS, Node.is_issue == False).order_by(Node.label))).all()
+    return {"fuentes": [{"id": f.id, "label": f.label, "fuente": f.fuente, "seccion": f.dominio or "personal"}
+                        for f in filas]}
+
+
 # ── JEV: de una necesidad a la herramienta justa (jev.py) ──────────────────────
 # El agente decide primero el CAMINO (biblioteca, herramienta o grafo), después qué
 # herramienta y con qué parámetros, todo con decisiones tipadas y sin LLM. Nunca

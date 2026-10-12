@@ -7,6 +7,8 @@ import Inspector from '@/app/Inspector';
 import AgentFab from '@/app/AgentFab';
 import IngestDialog from '@/app/IngestDialog';
 import Corridas from '@/app/Corridas';
+import ExploradorDatos from '@/app/ExploradorDatos';
+import { alPedirExplorar } from '@/lib/eventos';
 import CommandPalette from '@/app/CommandPalette';
 import JobsPanel, { useJobs, JobsBadge } from '@/app/JobsPanel';
 import {
@@ -117,6 +119,8 @@ export default function App() {
   // ── Diálogos ───────────────────────────────────────────────────────
   const [ingestOpen, setIngestOpen] = useState(false);
   const [corridasOpen, setCorridasOpen] = useState(false);
+  const [explorar, setExplorar] = useState(null);   // { nodo, tabla } del explorador de datos
+  useEffect(() => alPedirExplorar(setExplorar), []);
   const [corridasKey, setCorridasKey] = useState(0);           // sube con cada corrida: refresca el log
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [jobsOpen, setJobsOpen] = useState(false);
@@ -987,6 +991,12 @@ export default function App() {
           recent={recentJobs}
           onRefresh={refreshJobs}
           onSelectNode={(id) => { seleccionar(id); setJobsOpen(false); }}
+        />
+        <ExploradorDatos
+          open={!!explorar}
+          onOpenChange={(o) => { if (!o) setExplorar(null); }}
+          nodo={explorar?.nodo}
+          tablaInicial={explorar?.tabla}
         />
         <Corridas
           open={corridasOpen}
