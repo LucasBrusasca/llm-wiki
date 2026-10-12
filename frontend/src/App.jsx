@@ -358,6 +358,21 @@ export default function App() {
     return true;
   }, [temasSel, tipos, fuentes, conceptos]);
 
+  // El mismo filtro, como función sobre CUALQUIER nodo: la 4D muestra todas las
+  // secciones y el filtro tiene que valer para todas (null = no se filtra nada).
+  const filtroNodo = useMemo(() => {
+    const terms = normalizar(query.trim()).split(/\s+/).filter(Boolean);
+    if (!terms.length && !tipos.size && !fuentes.size && !conceptos.size && !temasSel.size) return null;
+    return (n) => {
+      if (!pasaFacetas(n)) return false;
+      if (!terms.length) return true;
+      const h = haystack.get(n.id) ?? normalizar([
+        n.label, n.desc, n.autor, n.fuente_label, n.tema, ...(n.conceptos || []), ...(n.tags || []),
+      ].join('  '));
+      return terms.every((t) => h.includes(t)) || Boolean(semanticIds?.has(n.id));
+    };
+  }, [query, tipos, fuentes, conceptos, temasSel, pasaFacetas, haystack, semanticIds]);
+
   const { visibles, semanticos } = useMemo(() => {
     const q = normalizar(query.trim());
     const terms = q.split(/\s+/).filter(Boolean);
@@ -719,7 +734,7 @@ export default function App() {
         {vista === '3d' ? <Graph3DView {...propsGrafo} />
           : vista === '4d' ? (
             <Vista4D
-              selectedId={selectedId} onElegir={elegirEn4D} seccion={seccion} visibleIds={visibleIds}
+              selectedId={selectedId} onElegir={elegirEn4D} seccion={seccion} filtro={filtroNodo}
               pinnedEdge={pinnedEdge} onClearPin={propsGrafo.onClearPin} ego={ego} onFijar={fijarVecindario}
               highlightIds={highlightIds} colorMode={modoColor} onColorMode={setColorMode3d} colorDe={colorDe} temas={temas}
             />
@@ -992,6 +1007,7 @@ export default function App() {
           autoAbrir={autoAbrir}
           onSelect={(id) => { seleccionar(id); setPaletteOpen(false); }}
           onSeccion={(s) => { cambiarSeccion(s); setPaletteOpen(false); }}
+          onFiltrar={(texto) => { setQuery(texto); setPaletteOpen(false); }}
           onAction={(a) => {
             setPaletteOpen(false);
             if (a === 'ingest') setIngestOpen(true);

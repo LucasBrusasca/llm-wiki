@@ -74,6 +74,41 @@ class FichaTests(unittest.TestCase):
                 self.assertEqual(f["parametros"]["datos"]["tipo"], "tabla")
 
 
+class CorreDirectoTests(unittest.TestCase):
+    """Un script que sólo calcula y muestra corre con un clic; si toca algo, se confirma."""
+
+    def test_lo_que_no_toca_nada_corre_directo(self):
+        for codigo in ("import pandas as pd\nprint(pd.DataFrame({'a': [1]}))",
+                       "x = [1, 2]\nx.remove(1)",                    # lista, no archivo
+                       "s = 'a,b'.replace(',', '.')",                # texto, no archivo
+                       "print(open('datos.csv').read())"):            # leer no toca
+            with self.subTest(codigo=codigo):
+                self.assertTrue(wb.corre_directo(wb.efectos_de_codigo(codigo)))
+
+    def test_lo_que_toca_algo_se_confirma(self):
+        casos = {
+            "import os\nos.remove('a')": "borra archivos",
+            "import shutil\nshutil.copy('a', 'b')": "escribe archivos",
+            "from pathlib import Path\nPath('x').mkdir()": "escribe archivos",
+            "import subprocess\nsubprocess.run(['ls'])": "ejecuta comandos",
+            "import os\nos.system('ls')": "ejecuta comandos",
+            "eval('1 + 1')": "ejecuta código armado al vuelo",
+            "import sqlite3\nsqlite3.connect('a.db')": "abre bases de datos",
+            "import requests": "usa la red",
+            "def roto(:": "no se pudo analizar el código",
+        }
+        for codigo, efecto in casos.items():
+            with self.subTest(codigo=codigo):
+                efectos = wb.efectos_de_codigo(codigo)
+                self.assertIn(efecto, efectos)
+                self.assertFalse(wb.corre_directo(efectos))
+
+    def test_la_navaja_corre_directo(self):
+        for ruta in sorted((BASE / "herramientas" / "data_science").glob("*.py")):
+            with self.subTest(script=ruta.name):
+                self.assertTrue(wb.corre_directo(wb.efectos_de_codigo(ruta.read_text(encoding="utf-8"))))
+
+
 class SandboxConParametrosTests(unittest.TestCase):
     def test_los_parametros_llegan_al_script(self):
         import tempfile

@@ -209,7 +209,7 @@ function Boton({ texto, onClick, children }) {
 }
 
 export default function Vista4D({
-  selectedId, onElegir, seccion, visibleIds, pinnedEdge, onClearPin, ego, onFijar, highlightIds,
+  selectedId, onElegir, seccion, filtro, pinnedEdge, onClearPin, ego, onFijar, highlightIds,
   colorMode, onColorMode, colorDe, temas: temasSeccion,
 }) {
   const cajaRef = useRef(null);
@@ -224,9 +224,9 @@ export default function Vista4D({
   // filtros de la sección actual). La escena lo lee de acá y se entera de los cambios
   // por `cambios`, sin rearmarse.
   const estadoRef = useRef({});
-  estadoRef.current = { seccion, visibleIds, pinnedEdge, onClearPin, ego, highlightIds, colorMode, colorDe };
+  estadoRef.current = { seccion, filtro, pinnedEdge, onClearPin, ego, highlightIds, colorMode, colorDe };
   const cambios = useRef(0);
-  useEffect(() => { cambios.current += 1; }, [seccion, visibleIds, pinnedEdge, ego, highlightIds, colorMode, colorDe]);
+  useEffect(() => { cambios.current += 1; }, [seccion, filtro, pinnedEdge, ego, highlightIds, colorMode, colorDe]);
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState(null);
   const [dentro, setDentro] = useState(null);
@@ -700,10 +700,10 @@ export default function Vista4D({
 
     // ── Lo que llega de afuera: filtros, vínculo fijado, vecindario, marcas y color ──
     const aplicarEstado = () => {
-      const { seccion: actual, visibleIds: vis, pinnedEdge: pe, ego: eg, highlightIds: hl } = estadoRef.current;
-      // Sin lista todavía (recién cambiada la sección, mientras llega su grafo) = sin filtro.
-      const filtra = vis && vis.size > 0;
-      nodos.forEach((x, i) => { visible[i] = x.n.dominio !== actual || !filtra || vis.has(x.n.id) ? 1 : 0; });
+      const { filtro: f, pinnedEdge: pe, ego: eg, highlightIds: hl } = estadoRef.current;
+      // Los filtros (tipo, origen, tema, conceptos, texto) valen para TODAS las secciones
+      // del teseracto, no sólo para la elegida.
+      nodos.forEach((x, i) => { visible[i] = !f || f(x.n) ? 1 : 0; });
       const sel = selRef.current;
       pinOtro = pe && sel && (pe.source === sel || pe.target === sel) && indice.has(pe.source) && indice.has(pe.target)
         ? (pe.source === sel ? pe.target : pe.source) : null;
@@ -1032,10 +1032,9 @@ export default function Vista4D({
   const leyenda = useMemo(() => {
     if (!datos) return null;
     const ns = colorMode === 'cluster' ? datos.nodos.filter((n) => n.dominio === seccion) : datos.nodos;
-    const filtra = visibleIds && visibleIds.size > 0;
-    const vis = new Set(ns.filter((n) => n.dominio !== seccion || !filtra || visibleIds.has(n.id)).map((n) => n.id));
+    const vis = new Set(ns.filter((n) => !filtro || filtro(n)).map((n) => n.id));
     return calcularLeyenda(ns, vis, colorMode, temasSeccion || new Map());
-  }, [datos, colorMode, seccion, visibleIds, temasSeccion]);
+  }, [datos, colorMode, seccion, filtro, temasSeccion]);
   return (
     <div ref={cajaRef} className="relative size-full overflow-hidden bg-[#05060c]">
       <div className="pointer-events-none absolute left-3 right-3 top-3 z-10 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">

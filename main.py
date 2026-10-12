@@ -958,17 +958,20 @@ async def dimensiones(db: AsyncSession = Depends(get_async_session)):
     filas = (await db.execute(
         select(Node.id, Node.label, Node.dominio, Node.x3d, Node.y3d, Node.z3d, Node.fuente,
                Node.type, Node.created_at, Node.fecha_doc, Node.autor, Node.tema, Node.cluster,
-               Node.fuente_path, Node.fuente_url)
+               Node.fuente_path, Node.fuente_url, Node.fuente_label, Node.conceptos, Node.tags,
+               func.left(Node.desc, 300).label("desc"))
         .where(Node.is_centroid == False, Node.is_issue == False)
     )).all()
     # De cerca, cada documento es su tarjeta (miniatura, origen, tema, autor, fecha):
-    # van los campos cortos que eso necesita, no los textos.
+    # van los campos cortos que eso necesita, no los textos. Conceptos y el comienzo de
+    # la descripción, para que los filtros y la búsqueda valgan en todas las secciones.
     nodos = [{
         "id": f.id, "label": f.label, "dominio": f.dominio or "personal",
         "x": f.x3d, "y": f.y3d, "z": f.z3d, "fuente": f.fuente, "type": f.type,
         "creado": f.created_at.isoformat() if f.created_at else None, "fecha_doc": f.fecha_doc,
         "autor": f.autor, "tema": f.tema, "cluster": f.cluster if f.cluster is not None else -1,
-        "fuente_path": f.fuente_path, "fuente_url": f.fuente_url,
+        "fuente_path": f.fuente_path, "fuente_url": f.fuente_url, "fuente_label": f.fuente_label,
+        "conceptos": f.conceptos or [], "tags": f.tags or [], "desc": f.desc,
     } for f in filas]
     ids = {n["id"] for n in nodos}
     aristas = (await db.execute(select(Edge.source, Edge.target, Edge.score))).all()
@@ -2395,6 +2398,12 @@ async def run_node_file(node_id: str, request: Request, db: AsyncSession = Depen
     confirmada = body.get("version")
     if confirmada and confirmada != plan["version"]:
         raise HTTPException(409, "El script cambió desde la propuesta. Revisá el plan de nuevo antes de correrlo.")
+    # Sin plan visto (sin versión) sólo corre lo que únicamente calcula y muestra: un
+    # script que escribe, borra, usa la red o ejecuta comandos se confirma mirando el plan.
+    if not confirmada:
+        efectos = wb.efectos_de_codigo(_leer_codigo(p["ruta"]))
+        if not wb.corre_directo(efectos):
+            raise HTTPException(409, f"Este script {', '.join(efectos)}: revisá el plan y confirmá.")
     origen = body.get("origen") if body.get("origen") in ("ui", "agente") else "ui"
 
     salida = await asyncio.to_thread(_ejecutar_archivo, p["ruta"], [d["ruta"] for d in p["datos"]],
@@ -3010,18 +3019,22 @@ async def parametros_de_herramienta(node_id: str, db: AsyncSession = Depends(get
     El inspector arma con esto un formulario de listas (sólo se puede elegir lo que vale)."""
     node = await _nodo_o_404(db, node_id)
     try:
-        ficha = _ficha_de(_archivo_ejecutable(node))
+        ruta = _archivo_ejecutable(node)
     except HTTPException:
-        ficha = None
+        return {"parametros": [], "tablas": [], "efectos": [], "directo": False}
+    ficha = _ficha_de(ruta)
+    efectos = ficha["efectos"] if ficha else wb.efectos_de_codigo(_leer_codigo(ruta))
+    base = {"efectos": efectos, "directo": wb.corre_directo(efectos)}
     spec = (ficha or {}).get("parametros") or {}
     if not spec:
-        return {"parametros": [], "tablas": []}
+        return {"parametros": [], "tablas": [], **base}
     tablas = await _tablas_disponibles(db) if any(p["tipo"] in ("tabla", "columna", "columnas")
                                                    for p in spec.values()) else []
     return {
         "parametros": [{"nombre": n, **p} for n, p in spec.items()],
         "tablas": [{"node_id": t["node_id"], "label": t["label"], "columnas": t["columnas"]}
                    for t in tablas],
+        **base,
     }
 
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Upload, MessageSquare, List, Columns2, Share2, Orbit, Box, Layers, Sparkles, PanelRight, FileCode2, Trash2, Wrench, History } from 'lucide-react';
+import { Upload, MessageSquare, List, Columns2, Share2, Orbit, Box, Layers, Sparkles, PanelRight, FileCode2, Trash2, Wrench, History, Filter } from 'lucide-react';
 import {
   CommandDialog, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem,
 } from '@/components/ui/command';
@@ -24,7 +24,7 @@ const ACCIONES = [
 ];
 
 export default function CommandPalette({
-  open, onOpenChange, nodes, haystack, sections, seccion, onSelect, onSeccion, onAction,
+  open, onOpenChange, nodes, haystack, sections, seccion, onSelect, onSeccion, onAction, onFiltrar,
   inspectorAbierto = true, railAbierto = true, autoAbrir = false,
 }) {
   const [q, setQ] = useState('');
@@ -87,6 +87,17 @@ export default function CommandPalette({
       <CommandInput value={q} onValueChange={setQ} placeholder={`Buscar en «${seccion}», cambiar de sección o ejecutar una acción…`} />
       <CommandList>
         <CommandEmpty>Sin resultados.</CommandEmpty>
+        {/* Primero (Enter): filtrar la vista con lo escrito, como el filtro de la
+            biblioteca: la lista, el grafo, el 3D y la 4D muestran sólo lo que coincide. */}
+        {q.trim() && onFiltrar && (
+          <CommandGroup heading="Filtrar la vista">
+            <CommandItem value={`filtrar:${q}`} onSelect={() => onFiltrar(q.trim())}>
+              <Filter />
+              <span className="flex-1 truncate">Mostrar sólo lo que coincide con «{q.trim()}»</span>
+              <span className="text-[11px] text-ink-dim">oculta el resto · Enter</span>
+            </CommandItem>
+          </CommandGroup>
+        )}
         {docs.length > 0 && (
           <CommandGroup heading={terms.length ? 'Documentos' : 'Recientes en la sección'}>
             {docs.map((n) => fila(n))}

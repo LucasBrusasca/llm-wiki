@@ -221,19 +221,23 @@ export default function EjecutarArchivo({ node, onCorrida }) {
   const [params, setParams] = useState([]);
   const [tablas, setTablas] = useState([]);
   const [valores, setValores] = useState({});
+  // ¿Sólo calcula y muestra? Entonces corre con un clic, como una consulta. Si escribe,
+  // borra, usa la red o ejecuta comandos, primero se ve el plan y se confirma.
+  const [analisis, setAnalisis] = useState({ efectos: [], directo: false });
 
   const refrescar = () => fetchEjecuciones(node.id, 6).then(setPrevias).catch(() => {});
 
   useEffect(() => {
     setFase('idle'); setPropuesta(null); setResultado(null); setError(null);
     setPrevias({ versionActual: null, runs: [] });
-    setParams([]); setTablas([]); setValores({});
+    setParams([]); setTablas([]); setValores({}); setAnalisis({ efectos: [], directo: false });
     refrescar();
     let vivo = true;
     fetchParametros(node.id).then((d) => {
       if (!vivo) return;
       setParams(d.parametros || []);
       setTablas(d.tablas || []);
+      setAnalisis({ efectos: d.efectos || [], directo: !!d.directo });
       setValores(valoresIniciales(d.parametros || [], d.tablas || []));
     }).catch(() => {});
     return () => { vivo = false; };
@@ -260,6 +264,7 @@ export default function EjecutarArchivo({ node, onCorrida }) {
 
   async function proponer() {
     setError(null);
+    if (analisis.directo) { await correr(); return; }
     try {
       setPropuesta(await ejecutarArchivo(node.id, false, { parametros }));
       setFase('confirmar');
@@ -292,12 +297,16 @@ export default function EjecutarArchivo({ node, onCorrida }) {
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={proponer} disabled={fase === 'corriendo' || faltan.length > 0}>
-            {fase === 'corriendo' ? <Loader2 className="animate-spin" /> : <Play />} Ejecutar…
+            {fase === 'corriendo' ? <Loader2 className="animate-spin" /> : <Play />} {analisis.directo ? 'Ejecutar' : 'Ejecutar…'}
           </Button>
-          <span className="text-[11px] text-ink-dim">
+          <span className={cn('text-[11px]', !analisis.directo && analisis.efectos.length ? 'text-warn' : 'text-ink-dim')}>
             {faltan.length
               ? `falta elegir: ${faltan.map((p) => p.nombre).join(', ')}`
-              : 'primero muestra el plan · sandbox · queda en Corridas'}
+              : analisis.directo
+                ? 'sólo calcula y muestra · sandbox · queda en Corridas'
+                : analisis.efectos.length
+                  ? `${analisis.efectos.join(', ')}: primero muestra el plan`
+                  : 'primero muestra el plan · sandbox · queda en Corridas'}
           </span>
         </div>
       )}

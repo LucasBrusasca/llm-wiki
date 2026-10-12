@@ -193,7 +193,14 @@ VARIABLE_PARAMETROS = "ALGEDI_PARAMS"
 _RED = {"requests", "urllib", "urllib3", "http", "httpx", "aiohttp", "socket", "smtplib", "ftplib"}
 _ESCRIBE = {"to_csv", "to_excel", "to_parquet", "to_json", "to_sql", "write_text", "write_bytes",
             "savefig", "dump"}
-_BORRA = {"remove", "unlink", "rmtree", "rmdir"}
+# Sólo cuentan sobre os / shutil: `texto.str.replace(...)` o `lista.remove(x)` no tocan archivos.
+_BORRA = {"unlink", "rmtree", "rmdir"}
+_SHUTIL_ESCRIBE = {"copy", "copy2", "copyfile", "copytree", "move"}
+_OS_ESCRIBE = {"rename", "replace", "makedirs", "mkdir"}
+_COMANDOS_MODULOS = {"subprocess", "pty", "ctypes"}
+_COMANDOS_OS = {"system", "popen", "execv", "execve", "execl", "execlp", "spawnl", "spawnv", "fork", "kill"}
+_DINAMICO = {"eval", "exec", "compile", "__import__"}
+_BASES = {"sqlite3", "psycopg2", "psycopg", "asyncpg", "sqlalchemy", "pymysql", "pyodbc", "duckdb"}
 
 
 def _clave_ficha(texto: str) -> str:
@@ -230,26 +237,57 @@ def efectos_del_codigo(arbol: ast.AST) -> list[str]:
     """Lo que el código hace afuera de calcular: escribir o borrar archivos, usar la red.
     Es una lectura del AST (puede haber falsos positivos); sirve para avisar antes."""
     efectos = set()
+
+    def por_modulo(modulo: str):
+        raiz = modulo.split(".")[0]
+        if raiz in _RED:
+            efectos.add("usa la red")
+        elif raiz in _COMANDOS_MODULOS:
+            efectos.add("ejecuta comandos")
+        elif raiz in _BASES:
+            efectos.add("abre bases de datos")
+
     for nodo in ast.walk(arbol):
         if isinstance(nodo, ast.Import):
-            if any(a.name.split(".")[0] in _RED for a in nodo.names):
-                efectos.add("usa la red")
+            for a in nodo.names:
+                por_modulo(a.name)
         elif isinstance(nodo, ast.ImportFrom) and nodo.module:
-            if nodo.module.split(".")[0] in _RED:
-                efectos.add("usa la red")
+            por_modulo(nodo.module)
         elif isinstance(nodo, ast.Call):
             f = nodo.func
             nombre = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
-            if nombre in _ESCRIBE:
+            receptor = f.value.id if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) else None
+            if (nombre in _ESCRIBE or nombre in ("touch", "mkdir")
+                    or (receptor == "shutil" and nombre in _SHUTIL_ESCRIBE)
+                    or (receptor == "os" and nombre in _OS_ESCRIBE)):
                 efectos.add("escribe archivos")
-            elif nombre in _BORRA:
+            elif nombre in _BORRA or (receptor == "os" and nombre == "remove"):
                 efectos.add("borra archivos")
+            elif receptor == "os" and nombre in _COMANDOS_OS:
+                efectos.add("ejecuta comandos")
+            elif isinstance(f, ast.Name) and nombre in _DINAMICO:
+                efectos.add("ejecuta código armado al vuelo")
             elif nombre == "open":
                 modo = nodo.args[1] if len(nodo.args) > 1 else next(
                     (k.value for k in nodo.keywords if k.arg == "mode"), None)
                 if isinstance(modo, ast.Constant) and isinstance(modo.value, str) and set(modo.value) & set("wax+"):
                     efectos.add("escribe archivos")
     return sorted(efectos)
+
+
+def efectos_de_codigo(codigo: str) -> list[str]:
+    """Efectos de un script cualquiera (tenga ficha o no). Si no se puede leer, no se
+    sabe qué hace: se trata como si tocara algo."""
+    try:
+        return efectos_del_codigo(ast.parse(codigo or ""))
+    except SyntaxError:
+        return ["no se pudo analizar el código"]
+
+
+def corre_directo(efectos: list[str]) -> bool:
+    """Un script que sólo calcula y muestra (ni escribe, ni borra, ni usa la red, ni
+    ejecuta comandos) corre con un clic, como una consulta. Si toca algo, se confirma."""
+    return not efectos
 
 
 def leer_ficha(codigo: str) -> dict | None:
