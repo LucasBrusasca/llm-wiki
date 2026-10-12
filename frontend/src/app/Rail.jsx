@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2, Sparkles, StickyNote, RefreshCw, Loader2,
+  History,
 } from 'lucide-react';
 import { hayNombresAutomaticos } from '@/lib/temas';
 import {
@@ -81,7 +82,7 @@ export default function Rail({
   facetas, tipos, onToggleTipo, fuentes, onToggleFuente,
   topConceptos, conceptos, onToggleConcepto,
   temas, temasSel, onToggleTema, onNombrarTemas, onReagrupar, reagrupando = false,
-  onIngest, onScripts, onPapelera, papeleraCount = 0, onNuevaNota, onSeccionesCambiadas, onSeccionEliminada, ancho = 272,
+  onIngest, onCorridas, onPapelera, papeleraCount = 0, onNuevaNota, onNuevoScript, onSeccionesCambiadas, onSeccionEliminada, ancho = 272,
   onCollapse,
 }) {
   async function renombrar(nombre) {
@@ -129,9 +130,18 @@ export default function Rail({
         <Button variant="default" size="lg" className="flex-1 glow-sel" onClick={onIngest}>
           <Upload /> Ingestar
         </Button>
-        <Button variant="outline" size="lg" className="flex-1" onClick={onNuevaNota}>
-          <StickyNote /> Nota
-        </Button>
+        {/* Crear a mano: una nota o un script (los dos quedan como nodos de la sección). */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="lg" className="flex-1">
+              <Plus /> Nuevo <ChevronDown className="opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={onNuevaNota}><StickyNote /> Nota</DropdownMenuItem>
+            <DropdownMenuItem onSelect={onNuevoScript}><Terminal /> Script de Python</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       <nav className="min-h-0 flex-1 overflow-y-auto pb-4">
@@ -290,16 +300,16 @@ export default function Rail({
         )}
       </nav>
 
-      {/* Workbench: scripts y datos de la sección como nodos, y el log de corridas. Lo
-          que se corre en el día a día se corre desde el inspector del script. */}
+      {/* Corridas: el log de lo que se corrió y consultó. Scripts y datos son nodos (filtro
+          Tipo); se corren y consultan desde su inspector. */}
       <button
         type="button"
-        onClick={onScripts}
+        onClick={onCorridas}
         className="flex h-8 shrink-0 items-center gap-1.5 border-t border-hair px-3 text-[11.5px] text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink-muted"
-        title="Workbench: scripts y datos de la sección, y el log de corridas"
+        title="Corridas: cada script que se corrió y cada consulta, con su salida"
       >
-        <Terminal className="size-3" /> Workbench
-        <span className="text-ink-dim/70">· scripts, datos y corridas</span>
+        <History className="size-3" /> Corridas
+        <span className="text-ink-dim/70">· lo que se corrió y consultó</span>
       </button>
       {/* Papelera: lo que se sacó de la biblioteca, para restaurarlo o borrarlo del todo. */}
       <button

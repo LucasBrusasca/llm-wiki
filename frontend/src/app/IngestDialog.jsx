@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Button } from '@/components/ui/button';
 import { ingestFile, ingestUrls, ingestStatus, createJob, createUrlJob } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import BasesPostgres from '@/app/BasesPostgres';
 
 const ACEPTA = '.pdf,.docx,.pptx,.pptm,.xlsx,.xls,.txt,.md,.html,.htm,.csv,.py,.ipynb,.sqlite,.sqlite3,.db';
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -20,7 +21,9 @@ async function esperarFin(onTick, cancelado) {
   }
 }
 
-export default function IngestDialog({ open, onOpenChange, seccion, onDone, useBackground = true }) {
+export default function IngestDialog({
+  open, onOpenChange, seccion, onDone, useBackground = true, onAgregarBase, onAbrirNodo,
+}) {
   const [archivos, setArchivos] = useState([]);    // [{ file, estado, msg }]
   const [urls, setUrls] = useState('');
   const [drag, setDrag] = useState(false);
@@ -195,6 +198,15 @@ export default function IngestDialog({ open, onOpenChange, seccion, onDone, useB
               className="w-full resize-y rounded-sm border border-hair bg-surface-2 px-2 py-1.5 text-[12.5px] text-ink placeholder:text-ink-dim focus:border-accent/60 focus:outline-none"
             />
           </label>
+
+          {onAgregarBase && !corriendo && (
+            <BasesPostgres
+              open={open}
+              seccion={seccion}
+              onAgregar={async (nombre) => { await onAgregarBase(nombre); onOpenChange(false); }}
+              onAbrir={(id) => { onAbrirNodo?.(id); onOpenChange(false); }}
+            />
+          )}
 
           {corriendo && actual && (
             <div className="mt-3">

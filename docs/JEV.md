@@ -92,7 +92,8 @@ df = pd.read_csv(P["datos"], sep=None, engine="python")   # la tabla llega copia
 - **Toca**: si el script escribe archivos o usa la red, Algedi lo detecta igual (lee el
   código) y lo avisa en la propuesta.
 - Para que entre en la navaja: ponelo en `herramientas/data_science/` y corré
-  «Instalar o actualizar la navaja» (Ctrl+K), o crealo desde el Workbench.
+  «Instalar o actualizar la navaja» (Ctrl+K), o crealo con el botón «Script» del panel
+  izquierdo y pegale el código.
 
 ## Lo que sigue
 

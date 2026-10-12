@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Upload, Terminal, MessageSquare, List, Columns2, Share2, Orbit, Box, Layers, Sparkles, PanelRight, FileCode2, Trash2, Wrench } from 'lucide-react';
+import { Upload, MessageSquare, List, Columns2, Share2, Orbit, Box, Layers, Sparkles, PanelRight, FileCode2, Trash2, Wrench, History } from 'lucide-react';
 import {
   CommandDialog, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem,
 } from '@/components/ui/command';
@@ -9,7 +9,7 @@ import { normalizar } from '@/lib/utils';
 
 const ACCIONES = [
   { id: 'ingest', label: 'Ingestar documentos', icon: Upload },
-  { id: 'scripts', label: 'Workbench: scripts, datos y corridas', icon: Terminal },
+  { id: 'corridas', label: 'Corridas: lo que se corrió y consultó', icon: History },
   { id: 'nuevo-script', label: 'Nuevo script', icon: FileCode2 },
   { id: 'navaja', label: 'Instalar o actualizar la navaja de data science (herramientas para el agente)', icon: Wrench },
   { id: 'agent', label: 'Preguntar al agente', icon: MessageSquare },

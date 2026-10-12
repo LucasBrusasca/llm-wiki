@@ -10,8 +10,8 @@ export function tipoMedia(node) {
   const ext = (node.fuente_path || '').split('.').pop()?.toLowerCase() || '';
   const f = (node.fuente || '').toLowerCase();
   if (node.type === 'NOTA') return 'nota';
-  // Workbench: el script se ve y se edita como código; una base SQLite o Postgres se
-  // consulta. (Los SCRIPT del registry legacy no tienen archivo: caen al Resumen.)
+  // Scripts y datos como nodos: el script se ve y se edita como código; una base SQLite
+  // o Postgres se consulta. (Un SCRIPT sin archivo cae al Resumen.)
   if (f === 'postgres') return 'postgres';
   if (ext === 'py') return 'script';
   if (['sqlite', 'sqlite3', 'db'].includes(ext)) return 'sqlite';

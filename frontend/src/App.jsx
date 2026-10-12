@@ -6,8 +6,7 @@ import Library from '@/app/Library';
 import Inspector from '@/app/Inspector';
 import AgentFab from '@/app/AgentFab';
 import IngestDialog from '@/app/IngestDialog';
-import ScriptsSheet from '@/app/ScriptsSheet';
-import Workbench from '@/app/Workbench';
+import Corridas from '@/app/Corridas';
 import CommandPalette from '@/app/CommandPalette';
 import JobsPanel, { useJobs, JobsBadge } from '@/app/JobsPanel';
 import {
@@ -117,8 +116,7 @@ export default function App() {
 
   // ── Diálogos ───────────────────────────────────────────────────────
   const [ingestOpen, setIngestOpen] = useState(false);
-  const [scriptsOpen, setScriptsOpen] = useState(false);       // registry legacy
-  const [workbenchOpen, setWorkbenchOpen] = useState(false);
+  const [corridasOpen, setCorridasOpen] = useState(false);
   const [corridasKey, setCorridasKey] = useState(0);           // sube con cada corrida: refresca el log
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [jobsOpen, setJobsOpen] = useState(false);
@@ -779,10 +777,11 @@ export default function App() {
             onReagrupar={reagrupar}
             reagrupando={reagrupando}
             onIngest={() => setIngestOpen(true)}
-            onScripts={() => setWorkbenchOpen(true)}
+            onCorridas={() => setCorridasOpen(true)}
             onPapelera={() => setPapeleraOpen(true)}
             papeleraCount={papeleraCount}
             onNuevaNota={nuevaNota}
+            onNuevoScript={() => nuevoScript().catch((e) => window.alert(`No se pudo crear el script: ${e.message}`))}
             onSeccionesCambiadas={(activa) => { cambiarSeccion(activa); recargar(); }}
             onSeccionEliminada={olvidarSeccion}
             ancho={anchoRail}
@@ -928,7 +927,14 @@ export default function App() {
           onHighlight={(ids) => setHighlightIds(new Set(ids))}
         />
 
-        <IngestDialog open={ingestOpen} onOpenChange={setIngestOpen} seccion={seccion} onDone={recargar} />
+        <IngestDialog
+          open={ingestOpen}
+          onOpenChange={setIngestOpen}
+          seccion={seccion}
+          onDone={recargar}
+          onAgregarBase={agregarBase}
+          onAbrirNodo={(id) => { seleccionar(id); setInspectorAbierto(true); }}
+        />
         <MoverDialog
           open={!!moverIds}
           onOpenChange={(o) => !o && setMoverIds(null)}
@@ -967,25 +973,12 @@ export default function App() {
           onRefresh={refreshJobs}
           onSelectNode={(id) => { seleccionar(id); setJobsOpen(false); }}
         />
-        <Workbench
-          open={workbenchOpen}
-          onOpenChange={setWorkbenchOpen}
+        <Corridas
+          open={corridasOpen}
+          onOpenChange={setCorridasOpen}
           seccion={seccion}
-          nodes={graph.nodes}
           onAbrirNodo={(id) => { seleccionar(id); setInspectorAbierto(true); }}
-          onCrearScript={(nombre) => nuevoScript(nombre).then(() => setWorkbenchOpen(false))}
-          onAgregarConexion={(nombre) => agregarBase(nombre).then(() => setWorkbenchOpen(false))}
           corridasKey={corridasKey}
-          onRegistry={() => { setWorkbenchOpen(false); setScriptsOpen(true); }}
-        />
-        <ScriptsSheet
-          open={scriptsOpen}
-          onOpenChange={setScriptsOpen}
-          seccion={seccion}
-          selected={selected}
-          nodesById={nodesById}
-          onSelect={seleccionar}
-          onChanged={recargar}
         />
         <CommandPalette
           open={paletteOpen}
@@ -1002,7 +995,7 @@ export default function App() {
           onAction={(a) => {
             setPaletteOpen(false);
             if (a === 'ingest') setIngestOpen(true);
-            if (a === 'scripts') setWorkbenchOpen(true);
+            if (a === 'corridas') setCorridasOpen(true);
             if (a === 'nuevo-script') nuevoScript().catch((e) => window.alert(`No se pudo crear el script: ${e.message}`));
             if (a === 'agent') preguntarSobre(null);
             if (a === 'papelera') setPapeleraOpen(true);

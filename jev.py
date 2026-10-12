@@ -89,7 +89,7 @@ _VERBO_ACCION = re.compile(
 _PALABRAS_DATOS = re.compile(
     r"\b(datos|tabla|csv|planilla|excel|dataset|columna\w*|filas?|variables?)\b")
 _PALABRAS_GRAFO = re.compile(r"\b(relacion\w*|conect\w*|vincul\w*|vecin\w*|parec\w*|similar\w*|"
-                             r"une|unen|temas?|cuantos documentos)\b")
+                             r"une|unen|temas?|cuantos documentos|aislad\w*|huerfan\w*)\b")
 _PREGUNTA_CONCEPTO = re.compile(
     r"\b(que es (un|una|el|la|los|las)|que son (los|las)|que significa|que dice|que diferencia|"
     r"cual es la diferencia|como (se )?(calcula|interpreta|define|funciona|elige|lee|usa)|"

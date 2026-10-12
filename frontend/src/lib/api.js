@@ -129,7 +129,7 @@ export async function fetchEjecuciones(nodeId, limit = 5) {
   return { versionActual: d.version_actual || null, runs: d.runs || [] };
 }
 
-// ── Workbench: scripts y datos como nodos ─────────────────────────────
+// ── Scripts y datos como nodos ────────────────────────────────────────
 /** Log de corridas (scripts y consultas) de una sección, las más nuevas primero. */
 export async function fetchCorridas(seccion, limit = 50) {
   const q = new URLSearchParams({ limit: String(limit) });
@@ -381,42 +381,4 @@ export async function retryJob(jobId) {
 
 export async function cancelJob(jobId) {
   return fetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }).then(jsonOrThrow);
-}
-
-// ── Scripts (registry versionado — contrato a preservar) ──────────────
-export async function fetchScripts() {
-  const d = await fetch('/api/scripts').then(jsonOrThrow);
-  return { scripts: d.scripts || [], version: d.version, count: d.count || 0 };
-}
-
-export async function fetchScriptRuns(limit = 20) {
-  const d = await fetch(`/api/scripts/runs?limit=${limit}`).then(jsonOrThrow);
-  return d.runs || [];
-}
-
-export async function proposeScripts({ query = '', nodeIds = [], limit = 3 }) {
-  const d = await fetch('/api/scripts/propose', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, node_ids: nodeIds, limit }),
-  }).then(jsonOrThrow);
-  return d.proposals || [];
-}
-
-export async function runScript({ scriptId, inputs = {}, confirm = false, contextNodeIds = [] }) {
-  return fetch('/api/scripts/run', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      script_id: scriptId, inputs, confirm, context_node_ids: contextNodeIds,
-    }),
-  }).then(jsonOrThrow);
-}
-
-export async function createScriptNode({ scriptId, seccion, linkTo = [] }) {
-  return fetch('/api/scripts/nodes', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ script_id: scriptId, seccion, link_to_nodes: linkTo }),
-  }).then(jsonOrThrow);
 }
