@@ -3297,20 +3297,25 @@ async def _responder_grafo(db: AsyncSession, texto: str, seccion: str, contexto:
     """Preguntas sobre la biblioteca misma, respondidas con el grafo (sin LLM): con qué se
     relaciona un documento, o cuántos documentos y temas tiene la sección."""
     import jev
+    from sqlalchemy import true
     t = jev.plano(texto)
+    # «Todas las secciones» ('*'): la pregunta es sobre la biblioteca entera.
+    todas = seccion in ("*", None, "")
+    en_seccion = true() if todas else (func.coalesce(Node.dominio, "personal") == seccion)
+    donde = "la biblioteca" if todas else f"«{seccion}»"
     if re.search(r"\b(sin (relacion\w*|vincul\w*|conexion\w*)|aislad\w*|huerfan\w*|suelt\w*)\b", t):
         # Documentos de la sección que no quedaron unidos a nada (antes era un script del
         # registry viejo; es una pregunta al grafo).
         conectados = select(Edge.source).union(select(Edge.target))
         aislados = (await db.execute(select(Node.id, Node.label).where(
-            func.coalesce(Node.dominio, "personal") == seccion,
+            en_seccion,
             Node.is_centroid == False, Node.is_issue == False,
             Node.id.not_in(conectados)).order_by(Node.label))).all()
         if not aislados:
-            reply = f"En «{seccion}» todos los documentos tienen al menos una relación."
+            reply = f"En {donde} todos los documentos tienen al menos una relación."
         else:
             reply = "\n".join(
-                [f"En «{seccion}» hay **{len(aislados)}** documentos sin relaciones (ninguno se parece "
+                [f"En {donde} hay **{len(aislados)}** documentos sin relaciones (ninguno se parece "
                  "lo suficiente a otro, ni comparte conceptos con él):"]
                 + [f"- {label}" for _, label in aislados[:30]]
                 + ([f"- … y {len(aislados) - 30} más"] if len(aislados) > 30 else []))
@@ -3318,10 +3323,10 @@ async def _responder_grafo(db: AsyncSession, texto: str, seccion: str, contexto:
                 "accion": None, "node_ids": [i for i, _ in aislados][:30]}
     if re.search(r"\b(cuantos|cuantas|temas?)\b", t) and not contexto:
         docs = (await db.execute(select(Node.cluster, Node.tema, Node.conceptos).where(
-            func.coalesce(Node.dominio, "personal") == seccion,
+            en_seccion,
             Node.is_centroid == False, Node.is_issue == False))).all()
         temas = _temas_con_nombre(docs)
-        lineas = [f"La sección «{seccion}» tiene **{len(docs)}** documentos"
+        lineas = [("La biblioteca" if todas else f"La sección «{seccion}»") + f" tiene **{len(docs)}** documentos"
                   + (f" en **{len(temas)}** temas:" if temas else " (todavía sin temas).")]
         lineas += [f"- {nombre} ({n})" for nombre, n in temas[:20]]
         sin_tema = len(docs) - sum(n for _, n in temas)

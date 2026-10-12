@@ -1,17 +1,18 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2, Sparkles, StickyNote, RefreshCw, Loader2,
-  History,
+  History, ChevronRight, Database, Table2, Eye, Calendar, Type, ToggleLeft, Layers,
 } from 'lucide-react';
 import { hayNombresAutomaticos } from '@/lib/temas';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import { renameSection, deleteSection } from '@/lib/api';
+import { renameSection, deleteSection, fetchFuentesDatos, fetchModelo } from '@/lib/api';
+import { abrirExplorador } from '@/lib/eventos';
 import { pedirClave, avisarClaveIncorrecta } from '@/security.js';
 import { Button } from '@/components/ui/button';
 import { BotonPanel } from '@/app/PanelLateral';
-import { tipoMeta, fuenteLabel, iconoDe, colorFuente, colorTipo, colorSeccion } from '@/lib/nodes';
+import { tipoMeta, fuenteLabel, iconoDe, colorFuente, colorTipo, colorSeccion, TODAS } from '@/lib/nodes';
 import { cn } from '@/lib/utils';
 
 function Grupo({ titulo, children, accion, plegable = false }) {
@@ -76,6 +77,91 @@ function Check({ on }) {
 
 // Espejo de SECCIONES_BASE en el backend: no se eliminan aunque estén en cero.
 const SECCIONES_BASE = new Set(['personal', 'finanzas', 'maestria']);
+const ICONO_CLASE = { numerica: Hash, fecha: Calendar, texto: Type, booleano: ToggleLeft };
+
+/**
+ * Lo que tiene una sección por dentro, como el panel de campos de Power BI: sus fuentes
+ * de datos → tablas → campos. Clic en una fuente la abre; en una tabla o un campo, la
+ * explora (tabla dinámica y gráficos).
+ */
+function ArbolDatos({ fuentes, onAbrirNodo }) {
+  const [abiertas, setAbiertas] = useState(() => new Set());
+  const [modelos, setModelos] = useState(() => new Map());
+  const alternar = (clave, fn) => setAbiertas((a) => {
+    const n = new Set(a);
+    if (n.has(clave)) n.delete(clave); else { n.add(clave); fn?.(); }
+    return n;
+  });
+  const cargar = (f) => {
+    if (modelos.has(f.id)) return;
+    setModelos((m) => new Map(m).set(f.id, 'cargando'));
+    fetchModelo(f.id).then((mo) => setModelos((m) => new Map(m).set(f.id, mo)))
+      .catch((e) => setModelos((m) => new Map(m).set(f.id, { error: e.message })));
+  };
+  if (!fuentes.length) {
+    return <p className="py-1 pl-9 pr-2 text-[11px] text-ink-dim/80">Sin fuentes de datos (CSV, Excel o una base).</p>;
+  }
+  const fila = 'flex h-6 w-full items-center gap-1.5 rounded-xs pr-2 text-left text-[11.5px] hover:bg-surface-2';
+  return (
+    <ul className="pb-1">
+      {fuentes.map((f) => {
+        const abierta = abiertas.has(f.id);
+        const mo = modelos.get(f.id);
+        return (
+          <li key={f.id}>
+            <div className={cn(fila, 'pl-5')}>
+              <button type="button" aria-label="Desplegar" onClick={() => alternar(f.id, () => cargar(f))} className="grid size-4 place-items-center text-ink-dim">
+                <ChevronRight className={cn('size-3 transition-transform', abierta && 'rotate-90')} />
+              </button>
+              <Database className="size-3 shrink-0 text-ink-dim" />
+              <button type="button" onClick={() => onAbrirNodo?.(f.id, f.seccion)} className="min-w-0 flex-1 truncate text-left text-ink-muted hover:text-ink" title="Abrir la fuente">
+                {f.label}
+              </button>
+            </div>
+            {abierta && mo === 'cargando' && <p className="pl-12 text-[11px] text-ink-dim">Leyendo…</p>}
+            {abierta && mo?.error && <p className="pl-12 pr-2 text-[11px] text-danger/80">{mo.error}</p>}
+            {abierta && mo?.tablas && (
+              <ul>
+                {mo.tablas.map((t) => {
+                  const clave = f.id + ':' + t.clave;
+                  const tAbierta = abiertas.has(clave);
+                  return (
+                    <li key={clave}>
+                      <div className={cn(fila, 'pl-9')}>
+                        <button type="button" aria-label="Desplegar" onClick={() => alternar(clave)} className="grid size-4 place-items-center text-ink-dim">
+                          <ChevronRight className={cn('size-3 transition-transform', tAbierta && 'rotate-90')} />
+                        </button>
+                        {t.vista ? <Eye className="size-3 shrink-0 text-ink-dim" /> : <Table2 className="size-3 shrink-0 text-ink-dim" />}
+                        <button type="button" onClick={() => abrirExplorador(f, t.clave)} className="min-w-0 flex-1 truncate text-left text-ink-muted hover:text-ink" title="Explorar la tabla">
+                          {t.clave}
+                        </button>
+                      </div>
+                      {tAbierta && (
+                        <ul>
+                          {t.campos.map((c) => {
+                            const I = ICONO_CLASE[c.clase] || Type;
+                            return (
+                              <li key={c.nombre}>
+                                <button type="button" onClick={() => abrirExplorador(f, t.clave)} className={cn(fila, 'pl-[60px] text-ink-dim hover:text-ink')} title={c.tipo || c.clase}>
+                                  <I className="size-3 shrink-0" />
+                                  <span className="min-w-0 truncate">{c.nombre}</span>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 export default function Rail({
   sections, seccion, onSeccion, onNuevaSeccion,
@@ -83,8 +169,14 @@ export default function Rail({
   topConceptos, conceptos, onToggleConcepto,
   temas, temasSel, onToggleTema, onNombrarTemas, onReagrupar, reagrupando = false,
   onIngest, onCorridas, onPapelera, papeleraCount = 0, onNuevaNota, onNuevoScript, onSeccionesCambiadas, onSeccionEliminada, ancho = 272,
-  onCollapse,
+  onCollapse, onAbrirNodo,
 }) {
+  // Fuentes de datos de todas las secciones, para desplegarlas bajo cada una.
+  const [fuentesDatos, setFuentesDatos] = useState([]);
+  const [desplegadas, setDesplegadas] = useState(() => new Set());
+  const firmaSecciones = sections.map((s) => s.nombre + ':' + s.count).join('|');
+  useEffect(() => { fetchFuentesDatos().then(setFuentesDatos).catch(() => {}); }, [firmaSecciones]);
+
   async function renombrar(nombre) {
     const nuevo = (window.prompt(`Nuevo nombre para «${nombre}»:`, nombre) || '').trim().toLowerCase();
     if (!nuevo || nuevo === nombre) return;
@@ -118,6 +210,7 @@ export default function Rail({
   const tiposOrden = [...facetas.tipo.entries()].sort((a, b) => b[1] - a[1]);
   const fuentesOrden = [...facetas.fuente.entries()].sort((a, b) => b[1] - a[1]);
   const seccionesVista = sections;
+  const total = sections.reduce((n, s) => n + (s.count || 0), 0);
 
   return (
     <aside className="flex shrink-0 flex-col hairline-r bg-surface" style={{ width: ancho }}>
@@ -153,7 +246,25 @@ export default function Rail({
             </button>
           }
         >
+          <Fila
+            activa={seccion === TODAS}
+            onClick={() => onSeccion(TODAS)}
+            label="Todas las secciones"
+            count={total}
+            title="La biblioteca entera en una sola vista"
+            marca={<Layers className={cn('size-3 shrink-0', seccion === TODAS ? 'text-accent' : 'text-ink-dim')} />}
+          />
           {seccionesVista.map((s, i) => (
+            <div key={s.nombre} className="relative pl-3.5">
+            <button
+              type="button"
+              aria-label={(desplegadas.has(s.nombre) ? 'Plegar ' : 'Desplegar ') + s.nombre}
+              title="Ver sus fuentes de datos, tablas y campos"
+              onClick={() => setDesplegadas((d) => { const x = new Set(d); if (x.has(s.nombre)) x.delete(s.nombre); else x.add(s.nombre); return x; })}
+              className="absolute left-0 top-2 z-[1] grid size-4 place-items-center rounded-xs text-ink-dim/70 hover:text-ink"
+            >
+              <ChevronRight className={cn('size-3 transition-transform', desplegadas.has(s.nombre) && 'rotate-90')} />
+            </button>
             <Fila
               key={s.nombre}
               activa={s.nombre === seccion}
@@ -197,6 +308,10 @@ export default function Rail({
                 </DropdownMenu>
               )}
             />
+            {desplegadas.has(s.nombre) && (
+              <ArbolDatos fuentes={fuentesDatos.filter((f) => f.seccion === s.nombre)} onAbrirNodo={onAbrirNodo} />
+            )}
+            </div>
           ))}
         </Grupo>
 

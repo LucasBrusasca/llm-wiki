@@ -99,7 +99,7 @@ export default function Corridas({ open, onOpenChange, seccion, onAbrirNodo, cor
         <SheetHeader>
           <SheetTitle className="flex items-center gap-2"><History className="size-3.5 text-accent" /> Corridas</SheetTitle>
           <SheetDescription>
-            Lo que se corrió y consultó en «<span className="capitalize">{seccion}</span>»: versión del código, quién lo propuso, datos, horas y salida.
+            Lo que se corrió y consultó {seccion ? <>en «<span className="capitalize">{seccion}</span>»</> : 'en todas las secciones'}: versión del código, quién lo propuso, datos, horas y salida.
           </SheetDescription>
         </SheetHeader>
         <div className="flex items-center gap-2 hairline-b px-3.5 py-1.5 text-[11px] text-ink-dim">

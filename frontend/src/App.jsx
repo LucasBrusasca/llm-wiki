@@ -16,7 +16,7 @@ import {
   reagruparTemas, recalcularRelaciones, instalarHerramientas,
   fetchPapelera,
 } from '@/lib/api';
-import { AGRUPADORES, MODOS_COLOR, TIPOS, indexarRelaciones } from '@/lib/nodes';
+import { AGRUPADORES, MODOS_COLOR, TIPOS, TODAS, nombreSeccion, indexarRelaciones } from '@/lib/nodes';
 import { construirTemas, temaKey, temaDe } from '@/lib/temas';
 import TaxonomiaDialog from '@/app/TaxonomiaDialog';
 import Splitter from '@/app/Splitter';
@@ -172,11 +172,18 @@ export default function App() {
     for (const n of extrasSecciones) {
       if (!known.has(n)) merged.push({ nombre: n, count: 0 });
     }
-    if (seccion && !merged.some((s) => s.nombre === seccion)) {
+    if (seccion && seccion !== TODAS && !merged.some((s) => s.nombre === seccion)) {
       merged.push({ nombre: seccion, count: 0 });
     }
     return merged;
   }, [sections, extrasSecciones, seccion]);
+
+  // Crear o ingestar necesita una sección concreta: en «Todas las secciones», va a la
+  // última que se eligió (y el diálogo lo dice).
+  const seccionReal = seccion === TODAS
+    ? (LS.get('algedi_ultima_seccion', '') || [...sections].sort((a, b) => b.count - a.count)[0]?.nombre || 'personal')
+    : seccion;
+  const etiquetaSeccion = nombreSeccion(seccion);
 
   // Si la API ya tiene la sección, sacar del listado local de vacías.
   useEffect(() => {
@@ -191,7 +198,7 @@ export default function App() {
 
   // Si la sección guardada no existe ni como vacía local, caer a la más poblada.
   useEffect(() => {
-    if (!sections.length) return;
+    if (!sections.length || seccion === TODAS) return;
     const existe = sections.some((s) => s.nombre === seccion) || extrasSecciones.includes(seccion);
     if (!existe) {
       const mayor = [...sections].sort((a, b) => b.count - a.count)[0];
@@ -243,7 +250,7 @@ export default function App() {
 
   // ── Jobs en background ─────────────────────────────────────────────
   const onJobDone = useCallback((job) => {
-    if (job?.seccion === seccion || job?.node_id) {
+    if (seccion === TODAS || job?.seccion === seccion || job?.node_id) {
       recargar();
     }
   }, [seccion, recargar]);
@@ -252,6 +259,7 @@ export default function App() {
   const cambiarSeccion = useCallback((nombre) => {
     setSeccion(nombre);
     LS.set('algedi_seccion', nombre);
+    if (nombre !== TODAS) LS.set('algedi_ultima_seccion', nombre);
     setSelectedId(null);
     setPinnedEdge(null);
     setCamino([]);
@@ -501,7 +509,7 @@ export default function App() {
   // y lo elige cuando llega su grafo. En la misma sección, igual que en el grafo.
   const elegirEn4D = useCallback((id, dominio) => {
     setInspectorAbierto(true);
-    if (dominio && dominio !== seccion) {
+    if (dominio && seccion !== TODAS && dominio !== seccion) {
       pendiente4D.current = id;
       cambiarSeccion(dominio);
       return;
@@ -600,14 +608,14 @@ export default function App() {
     const titulo = (window.prompt('Título de la nota:') || '').trim();
     if (!titulo) return;
     try {
-      const nd = await crearNota({ label: titulo, seccion });
+      const nd = await crearNota({ label: titulo, seccion: seccionReal });
       setGraph((g) => ({ ...g, nodes: [{ ...nd, x: 0, y: 0, z: 0 }, ...g.nodes] }));
       setSelectedId(nd.id);
       loadSections();
     } catch (e) {
       window.alert(`No se pudo crear la nota: ${e.message}`);
     }
-  }, [seccion, loadSections]);
+  }, [seccionReal, loadSections]);
 
   // Nodo recién creado en el backend (script o base): entra al grafo ya, queda elegido
   // y el inspector se abre en él; el recargo trae sus aristas.
@@ -627,16 +635,16 @@ export default function App() {
   const nuevoScript = useCallback(async (nombre) => {
     const titulo = (nombre ?? window.prompt('Nombre del script:') ?? '').trim();
     if (!titulo) return null;
-    const r = await crearScript({ nombre: titulo, seccion });
+    const r = await crearScript({ nombre: titulo, seccion: seccionReal });
     return mostrarNodoNuevo(r.node);
-  }, [seccion, mostrarNodoNuevo]);
+  }, [seccionReal, mostrarNodoNuevo]);
 
   // Base Postgres configurada → nodo de datos de la sección; el inspector se abre en
   // su consulta.
   const agregarBase = useCallback(async (nombre) => {
-    const r = await agregarConexion(nombre, seccion);
+    const r = await agregarConexion(nombre, seccionReal);
     return mostrarNodoNuevo(r.node);
-  }, [seccion, mostrarNodoNuevo]);
+  }, [seccionReal, mostrarNodoNuevo]);
 
   const preguntarSobre = useCallback((node) => {
     setAgentContext(node || null);
@@ -763,7 +771,7 @@ export default function App() {
     <TooltipProvider delayDuration={350}>
       <div className="grid h-screen grid-rows-[48px_minmax(0,1fr)]">
         <Topbar
-          seccion={seccion}
+          seccion={etiquetaSeccion}
           total={graph.nodes.length}
           vista={vista}
           onVista={setVista}
@@ -779,6 +787,7 @@ export default function App() {
           <Rail
             sections={sectionsVista}
             seccion={seccion}
+            onAbrirNodo={elegirEn4D}
             onSeccion={cambiarSeccion}
             onNuevaSeccion={crearSeccion}
             facetas={facetas}
@@ -825,7 +834,7 @@ export default function App() {
               >
                 <Library
                   status={status}
-                  seccion={seccion}
+                  seccion={etiquetaSeccion}
                   seccionCount={seccionInfo?.count ?? null}
                   totalNodes={graph.nodes.length}
                   grupos={grupos}
@@ -895,7 +904,7 @@ export default function App() {
               nodesById={nodesById}
               externos={externosById}
               relIndex={relIndex}
-              seccion={seccion}
+              seccion={etiquetaSeccion}
               seccionCount={graph.nodes.length}
               edgesCount={graph.edges.length}
               onSelect={seleccionar}
@@ -949,7 +958,7 @@ export default function App() {
         <IngestDialog
           open={ingestOpen}
           onOpenChange={setIngestOpen}
-          seccion={seccion}
+          seccion={seccionReal}
           onDone={recargar}
           onAgregarBase={agregarBase}
           onAbrirNodo={(id) => { seleccionar(id); setInspectorAbierto(true); }}
@@ -960,7 +969,7 @@ export default function App() {
           ids={moverIds || []}
           nodesById={nodesById}
           sections={sectionsVista}
-          seccion={seccion}
+          seccion={etiquetaSeccion}
           onDone={tras_mover}
         />
         <PapeleraDialog
@@ -1001,7 +1010,7 @@ export default function App() {
         <Corridas
           open={corridasOpen}
           onOpenChange={setCorridasOpen}
-          seccion={seccion}
+          seccion={seccion === TODAS ? '' : seccion}
           onAbrirNodo={(id) => { seleccionar(id); setInspectorAbierto(true); }}
           corridasKey={corridasKey}
         />
@@ -1011,7 +1020,7 @@ export default function App() {
           nodes={graph.nodes}
           haystack={haystack}
           sections={sections}
-          seccion={seccion}
+          seccion={etiquetaSeccion}
           inspectorAbierto={inspectorAbierto}
           railAbierto={railAbierto}
           autoAbrir={autoAbrir}

@@ -24,8 +24,10 @@ export async function fetchSections() {
  */
 export async function fetchGraph(seccion, { signal } = {}) {
   let data;
+  // «Todas las secciones» ('*'): el grafo sin filtro de sección.
+  const q = seccion && seccion !== '*' ? `?seccion=${encodeURIComponent(seccion)}` : '';
   try {
-    data = await fetch(`/api/graph?seccion=${encodeURIComponent(seccion)}`, { signal })
+    data = await fetch(`/api/graph${q}`, { signal })
       .then(jsonOrThrow);
   } catch (e) {
     if (e.name === 'AbortError') throw e;

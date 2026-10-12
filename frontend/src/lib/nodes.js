@@ -81,6 +81,10 @@ export function colorCluster(n) {
 }
 export const colorSeccion = (i) => `var(--sec-${i % 6})`;
 
+/** «Todas las secciones»: la biblioteca entera en una sola vista. */
+export const TODAS = '*';
+export const nombreSeccion = (s) => (s === TODAS ? 'Todas las secciones' : s);
+
 /** Cómo colorear nodos en los grafos. */
 export const MODOS_COLOR = {
   cluster: { label: 'Tema', de: colorCluster },

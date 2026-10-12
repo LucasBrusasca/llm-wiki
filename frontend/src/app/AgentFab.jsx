@@ -6,6 +6,7 @@ import { askAgent, ejecutarArchivo } from '@/lib/api';
 import { PlanCorrida, SalidaCorrida } from '@/app/EjecutarArchivo';
 import { renderMarkdown } from '@/markdown';
 import { cn, pct, truncar } from '@/lib/utils';
+import { nombreSeccion } from '@/lib/nodes';
 
 const claveConv = (seccion) => `algedi_fab_conv_${seccion}`;
 
@@ -362,7 +363,7 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
           <header className="flex h-10 shrink-0 items-center gap-2 hairline-b pl-3 pr-1.5">
             <span className="size-1.5 rounded-full bg-accent" />
             <span className="text-[12.5px] font-semibold">Agente</span>
-            <span className="text-[11.5px] capitalize text-ink-dim">· {seccion}</span>
+            <span className="text-[11.5px] capitalize text-ink-dim">· {nombreSeccion(seccion)}</span>
             <span className="text-[10.5px] text-ink-dim">cita o se abstiene</span>
             <div className="ml-auto flex items-center">
               <Hint texto="Nueva conversación">
