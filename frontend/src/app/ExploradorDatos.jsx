@@ -8,7 +8,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
-import { fetchModelo, pivotDatos, agregarRelacionModelo, quitarRelacionModelo } from '@/lib/api';
+import { fetchModelo, pivotDatos, agregarRelacionModelo, quitarRelacionModelo, consultarDatos } from '@/lib/api';
 import { cruzar, aCSV, descargar, graficoSugerido } from '@/lib/pivot';
 import Grafico, { TIPOS_GRAFICO, motivoNoDisponible } from '@/app/Grafico';
 import { cn } from '@/lib/utils';
@@ -45,36 +45,49 @@ function nuevo(pozo, t, c) {
 }
 
 /** El árbol de la fuente, como el navegador de DBeaver: tablas → campos. */
-function ArbolCampos({ modelo, abiertas, onAlternar, onAgregar }) {
+function ArbolCampos({ modelo, abiertas, onAlternar, onAgregar, onVerDatos }) {
+  // El menú de un campo se abre con un clic, no al apretar: si se abría al apretar,
+  // tapaba el arrastre y no se podía llevar el campo a un casillero.
+  const [menu, setMenu] = useState(null);
   return (
     <ul className="flex flex-col">
       {modelo.tablas.map((t) => {
         const abierta = abiertas.has(t.clave);
         return (
           <li key={t.clave}>
-            <button type="button" onClick={() => onAlternar(t.clave)}
-              className="flex w-full items-center gap-1.5 rounded-xs px-1.5 py-1 text-left text-[12px] text-ink hover:bg-surface-2">
-              <ChevronRight className={cn('size-3 shrink-0 text-ink-dim transition-transform', abierta && 'rotate-90')} />
-              {t.vista ? <Eye className="size-3.5 shrink-0 text-ink-dim" /> : <Table2 className="size-3.5 shrink-0 text-ink-dim" />}
-              <span className="min-w-0 flex-1 truncate">{t.clave}</span>
-              {t.filas_aprox != null && <span className="text-[10.5px] tabular-nums text-ink-dim">{fmt.format(t.filas_aprox)}</span>}
-            </button>
+            <div className="group flex w-full items-center rounded-xs hover:bg-surface-2">
+              <button type="button" onClick={() => onAlternar(t.clave)}
+                className="flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-1 text-left text-[12px] text-ink">
+                <ChevronRight className={cn('size-3 shrink-0 text-ink-dim transition-transform', abierta && 'rotate-90')} />
+                {t.vista ? <Eye className="size-3.5 shrink-0 text-ink-dim" /> : <Table2 className="size-3.5 shrink-0 text-ink-dim" />}
+                <span className="min-w-0 flex-1 truncate">{t.clave}</span>
+                {t.filas_aprox != null && <span className="text-[10.5px] tabular-nums text-ink-dim">{fmt.format(t.filas_aprox)}</span>}
+              </button>
+              {onVerDatos && (
+                <button type="button" onClick={() => onVerDatos(t)} title="Ver sus filas" aria-label={`Ver las filas de ${t.clave}`}
+                  className="mr-1 grid size-5 shrink-0 place-items-center rounded-xs text-ink-dim opacity-0 hover:bg-surface-3 hover:text-ink focus:opacity-100 group-hover:opacity-100">
+                  <Rows3 className="size-3" />
+                </button>
+              )}
+            </div>
             {abierta && (
               <ul className="mb-1 ml-4 border-l border-hair pl-1">
                 {t.campos.map((c) => {
                   const Icon = ICONO_CLASE[c.clase] || Type;
                   return (
                     <li key={c.nombre}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
+                      <DropdownMenu open={menu === `${t.clave}.${c.nombre}`} onOpenChange={(o) => setMenu(o ? `${t.clave}.${c.nombre}` : null)}>
+                        <div className="relative">
                           <button
                             type="button"
                             draggable
                             onDragStart={(e) => {
+                              setMenu(null);
                               e.dataTransfer.setData('application/x-campo', JSON.stringify({ tabla: t.clave, campo: c.nombre }));
                               e.dataTransfer.effectAllowed = 'copy';
                             }}
-                            title={[c.tipo, c.pk && 'clave primaria', c.ref && `apunta a ${c.ref.tabla}.${c.ref.columna}`].filter(Boolean).join(' · ')}
+                            onClick={() => setMenu(`${t.clave}.${c.nombre}`)}
+                            title={[c.tipo, c.pk && 'clave primaria', c.ref && `apunta a ${c.ref.tabla}.${c.ref.columna}`, 'arrastralo a un casillero o hacé clic'].filter(Boolean).join(' · ')}
                             className="flex w-full cursor-grab items-center gap-1.5 rounded-xs px-1.5 py-0.5 text-left text-[11.5px] text-ink-muted hover:bg-surface-2 hover:text-ink active:cursor-grabbing"
                           >
                             <Icon className="size-3 shrink-0 text-ink-dim" />
@@ -82,7 +95,11 @@ function ArbolCampos({ modelo, abiertas, onAlternar, onAgregar }) {
                             {c.pk && <KeyRound className="size-3 shrink-0 text-warn/80" />}
                             {c.ref && <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-ink-dim"><Link2 className="size-3" />{c.ref.tabla}</span>}
                           </button>
-                        </DropdownMenuTrigger>
+                          {/* Ancla del menú: no recibe el mouse, así apretar no lo abre. */}
+                          <DropdownMenuTrigger asChild>
+                            <span aria-hidden className="pointer-events-none absolute inset-0" />
+                          </DropdownMenuTrigger>
+                        </div>
                         <DropdownMenuContent align="start" side="right">
                           <DropdownMenuLabel>{c.nombre}</DropdownMenuLabel>
                           {POZOS.map((p) => (
@@ -105,10 +122,19 @@ function ArbolCampos({ modelo, abiertas, onAlternar, onAgregar }) {
 }
 
 /** Un campo puesto en un pozo, con lo que se puede ajustar ahí mismo. */
-function Ficha({ pozo, x, campo, onCambio, onQuitar }) {
+function Ficha({ pozo, i, x, campo, onCambio, onQuitar, onSoltarAntes }) {
   const etiqueta = x.columna === '*' ? 'filas' : (x.tabla === 'datos' ? x.columna : `${x.tabla}.${x.columna}`);
   return (
-    <span className="flex items-center gap-1 rounded-xs border border-hair-strong bg-surface-2 py-0.5 pl-1.5 pr-0.5 text-[11.5px] text-ink">
+    <span
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData('application/x-ficha', JSON.stringify({ pozo, i }));
+        e.dataTransfer.effectAllowed = 'move';
+      }}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => { e.stopPropagation(); onSoltarAntes(e); }}
+      title="Arrastrala a otro casillero, o delante de otra para reordenar"
+      className="flex cursor-grab items-center gap-1 rounded-xs border border-hair-strong bg-surface-2 py-0.5 pl-1.5 pr-0.5 text-[11.5px] text-ink active:cursor-grabbing">
       {pozo === 'valores' && (
         <select className={sel} value={x.agregacion} onChange={(e) => onCambio({ agregacion: e.target.value })}>
           {AGREGACIONES.filter(([id]) => campo?.clase === 'numerica' || ['conteo', 'distintos', 'min', 'max'].includes(id))
@@ -181,6 +207,59 @@ function PanelRelaciones({ modelo, onAceptar, onQuitar, onVerModelo }) {
         <p className="mt-1 text-[11px] leading-snug text-ink-dim">
           Ninguna todavía. En <button type="button" onClick={onVerModelo} className="underline hover:text-ink">Modelo</button> arrastrá de un campo a otro para unir dos tablas.
         </p>
+      )}
+    </div>
+  );
+}
+
+const refTabla = (t) => (t.esquema && t.esquema !== 'public' ? `"${t.esquema}"."${t.tabla}"` : `"${t.tabla}"`);
+
+/** Las filas de una tabla tal cual (las primeras 200), para ver qué hay antes de armar
+ *  la tabla dinámica. Sólo lectura. */
+function VistaFilas({ nodo, modelo, tabla, onTabla }) {
+  const [res, setRes] = useState(null);
+  const [error, setError] = useState(null);
+  const t = modelo.tablas.find((x) => x.clave === tabla) || modelo.tablas[0];
+  useEffect(() => {
+    if (!t) return undefined;
+    let vivo = true;
+    setRes(null); setError(null);
+    consultarDatos(nodo.id, { sql: `SELECT * FROM ${refTabla(t)} LIMIT 200`, limite: 200 })
+      .then((r) => vivo && setRes(r)).catch((e) => vivo && setError(e.message));
+    return () => { vivo = false; };
+  }, [nodo.id, t?.clave]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!t) return <p className="p-2 text-[12px] text-ink-dim">Esta fuente no tiene tablas.</p>;
+  const total = t.filas_aprox;
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-1.5">
+      <div className="flex items-center gap-2 text-[11.5px] text-ink-dim">
+        <select className={sel} value={t.clave} onChange={(e) => onTabla(e.target.value)}>
+          {modelo.tablas.map((x) => <option key={x.clave} value={x.clave}>{x.clave}</option>)}
+        </select>
+        {res && <span>{res.filas.length} filas{total && total > res.filas.length ? ` de ${fmt.format(total)}` : ''} · {res.ms} ms</span>}
+        {!res && !error && <Loader2 className="size-3.5 animate-spin" />}
+      </div>
+      {error && <pre className="whitespace-pre-wrap rounded-sm border border-danger/30 bg-danger/[0.06] p-2 text-[11.5px] text-danger">{error}</pre>}
+      {res && (
+        <div className="min-h-0 flex-1 overflow-auto rounded-md border border-hair">
+          <table className="w-full border-collapse text-[11.5px]">
+            <thead className="sticky top-0 z-[1] bg-surface-2">
+              <tr>{res.columnas.map((c) => <th key={c} className="hairline-b whitespace-nowrap px-2 py-1.5 text-left font-medium text-ink">{c}</th>)}</tr>
+            </thead>
+            <tbody>
+              {res.filas.map((f, i) => (
+                <tr key={i} className={cn(i % 2 && 'bg-surface-2/40')}>
+                  {f.map((v, j) => (
+                    <td key={j} title={v == null ? '' : String(v)}
+                      className={cn('max-w-[280px] truncate px-2 py-1', typeof v === 'number' ? 'text-right tabular-nums text-ink' : 'text-ink-muted')}>
+                      {v == null ? <span className="text-ink-dim/60">—</span> : typeof v === 'number' ? fmt.format(v) : String(v)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -298,8 +377,30 @@ export default function ExploradorDatos({ open, onOpenChange, nodo, tablaInicial
   const cambiar = (pozo, i, cambios) => setSpec((s) => ({ ...s, [pozo]: s[pozo].map((x, j) => (j === i ? { ...x, ...cambios } : x)) }));
   const quitar = (pozo, i) => setSpec((s) => ({ ...s, [pozo]: s[pozo].filter((_, j) => j !== i) }));
 
-  function soltar(pozo, e) {
+  // Mover una ficha a otro casillero (o reordenarla): entre Filas y Columnas conserva
+  // cómo agrupa las fechas; hacia Valores o Filtros toma los valores por defecto de ahí.
+  const mover = (origen, i, destino, antes = null) => setSpec((s) => {
+    const x = s[origen]?.[i];
+    if (!x || (x.columna === '*' && destino !== 'valores')) return s;
+    const t = modelo?.tablas.find((y) => y.clave === x.tabla);
+    const c = t?.campos.find((y) => y.nombre === x.columna);
+    const ejes = ['filas', 'columnas'];
+    const y = origen === destino || (ejes.includes(origen) && ejes.includes(destino)) || !c ? x : nuevo(destino, t, c);
+    const sin = { ...s, [origen]: s[origen].filter((_, j) => j !== i) };
+    const lista = [...sin[destino]];
+    let pos = antes == null ? lista.length : antes;
+    if (origen === destino && antes != null && antes > i) pos -= 1;
+    lista.splice(Math.max(0, Math.min(pos, lista.length)), 0, y);
+    return { ...sin, [destino]: lista };
+  });
+
+  function soltar(pozo, e, antes = null) {
     e.preventDefault(); setSobre(null);
+    const ficha = e.dataTransfer.getData('application/x-ficha');
+    if (ficha) {
+      try { const { pozo: origen, i } = JSON.parse(ficha); mover(origen, i, pozo, antes); } catch { /* nada */ }
+      return;
+    }
     try {
       const { tabla, campo } = JSON.parse(e.dataTransfer.getData('application/x-campo'));
       const t = modelo.tablas.find((x) => x.clave === tabla);
@@ -307,6 +408,10 @@ export default function ExploradorDatos({ open, onOpenChange, nodo, tablaInicial
       if (t && c) agregar(pozo, t, c);
     } catch { /* no era un campo */ }
   }
+
+  // Ver las filas de una tabla, como en DBeaver.
+  const [tablaDatos, setTablaDatos] = useState(null);
+  const verDatos = (t) => { setTablaDatos(t.clave); setVista('datos'); };
 
   // Marcar o sacar una relación devuelve el modelo nuevo: la tabla dinámica se recalcula
   // sola (ahora puede unir tablas que antes no).
@@ -324,7 +429,7 @@ export default function ExploradorDatos({ open, onOpenChange, nodo, tablaInicial
     setGuardando(true);
     try {
       await onGuardarReporte({ spec: { ...spec, filtros: spec.filtros.filter((f) => String(f.valor ?? '').trim() !== '') },
-        vista: vista === 'modelo' ? 'tabla' : vista, tipo: tipoGrafico });
+        vista: vista === 'grafico' ? 'grafico' : 'tabla', tipo: tipoGrafico });
     } catch (e) { setError(e.message); }
     finally { setGuardando(false); }
   }
@@ -350,7 +455,7 @@ export default function ExploradorDatos({ open, onOpenChange, nodo, tablaInicial
             <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
               {!modelo && !error && <p className="flex items-center gap-1.5 p-2 text-[12px] text-ink-dim"><Loader2 className="size-3.5 animate-spin" /> Leyendo el modelo…</p>}
               {modelo && (
-                <ArbolCampos modelo={modelo} abiertas={abiertas} onAgregar={agregar}
+                <ArbolCampos modelo={modelo} abiertas={abiertas} onAgregar={agregar} onVerDatos={verDatos}
                   onAlternar={(k) => setAbiertas((a) => { const n = new Set(a); n.has(k) ? n.delete(k) : n.add(k); return n; })} />
               )}
               {modelo && (
@@ -382,8 +487,9 @@ export default function ExploradorDatos({ open, onOpenChange, nodo, tablaInicial
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {spec[p.id].map((x, i) => (
-                      <Ficha key={`${x.tabla}.${x.columna}.${i}`} pozo={p.id} x={x} campo={campos.get(`${x.tabla}.${x.columna}`)}
-                        onCambio={(c) => cambiar(p.id, i, c)} onQuitar={() => quitar(p.id, i)} />
+                      <Ficha key={`${x.tabla}.${x.columna}.${i}`} pozo={p.id} i={i} x={x} campo={campos.get(`${x.tabla}.${x.columna}`)}
+                        onCambio={(c) => cambiar(p.id, i, c)} onQuitar={() => quitar(p.id, i)}
+                        onSoltarAntes={(e) => soltar(p.id, e, i)} />
                     ))}
                     {!spec[p.id].length && <span className="text-[11px] text-ink-dim/70">soltá un campo acá</span>}
                   </div>
@@ -393,8 +499,8 @@ export default function ExploradorDatos({ open, onOpenChange, nodo, tablaInicial
 
             <div className="flex shrink-0 flex-wrap items-center gap-2 px-2.5 py-1.5 text-[11.5px] text-ink-dim">
               <div className="flex rounded-sm border border-hair p-0.5">
-                {[['tabla', 'Tabla', Table2], ['grafico', 'Gráfico', BarChart3], ['modelo', 'Modelo', Network]].map(([id, l, I]) => (
-                  <button key={id} type="button" onClick={() => setVista(id)}
+                {[['tabla', 'Tabla', Table2], ['grafico', 'Gráfico', BarChart3], ['datos', 'Datos', Rows3], ['modelo', 'Modelo', Network]].map(([id, l, I]) => (
+                  <button key={id} type="button" onClick={() => { setVista(id); if (id === 'datos' && !tablaDatos) setTablaDatos(modelo?.tablas[0]?.clave || null); }}
                     className={cn('flex items-center gap-1 rounded-xs px-2 py-0.5', vista === id ? 'bg-surface-3 text-ink' : 'hover:text-ink')}>
                     <I className="size-3" /> {l}
                   </button>
@@ -435,13 +541,16 @@ export default function ExploradorDatos({ open, onOpenChange, nodo, tablaInicial
 
             <div className="min-h-0 flex-1 overflow-hidden px-2.5 pb-2.5">
               {error && <pre className="mb-2 whitespace-pre-wrap rounded-sm border border-danger/30 bg-danger/[0.06] p-2 text-[11.5px] text-danger">{error}</pre>}
-              {!listo && !error && vista !== 'modelo' && (
+              {!listo && !error && (vista === 'tabla' || vista === 'grafico') && (
                 <div className="grid h-full place-items-center text-center text-[12.5px] text-ink-dim">
                   <p>Elegí qué querés ver: por ejemplo, una fecha en Filas, una categoría en Columnas y un importe en Valores.</p>
                 </div>
               )}
               {cruce && vista === 'tabla' && <TablaCruzada cruce={cruce} />}
               {cruce && vista === 'grafico' && <Grafico ref={grafico} tipo={tipoGrafico} cruce={cruce} alto="100%" />}
+              {vista === 'datos' && modelo && (
+                <VistaFilas nodo={nodo} modelo={modelo} tabla={tablaDatos} onTabla={setTablaDatos} />
+              )}
               {vista === 'modelo' && modelo && (
                 <Suspense fallback={<p className="flex items-center gap-1.5 p-2 text-[12px] text-ink-dim"><Loader2 className="size-3.5 animate-spin" /> Armando el diagrama…</p>}>
                   <ModeloDatos modelo={modelo} onAgregar={(r) => relacionar(agregarRelacionModelo, r)}
