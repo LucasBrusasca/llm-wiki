@@ -3186,6 +3186,200 @@ async def ver_reporte(node_id: str, actualizar: bool = False, db: AsyncSession =
             "datos": {"id": datos.id, "label": datos.label}, "resultado": res}
 
 
+# ── Nodo «Pregunta»: RAG como nodo (preguntas.py) ──────────────────────────────
+# Una pregunta guardada con la evidencia que la responde y un semáforo de suficiencia.
+# La evidencia sale en segundos; la respuesta redactada por el LLM, sólo a pedido.
+
+TIPO_PREGUNTA = "PREGUNTA"
+REL_SE_APOYA_EN = "SE_APOYA_EN"
+
+
+def _clave_pregunta(node_id: str) -> str:
+    return f"pregunta:{node_id}"
+
+
+async def _pasajes_en(db: AsyncSession, pregunta: str, alcance: str, max_n: int = 8) -> list[dict]:
+    """Los fragmentos que mejor responden, sólo del alcance (una sección o todas).
+    Mismo orden híbrido que el agente (significado + palabras, RRF); `sim` es el coseno."""
+    import busqueda
+    import preguntas
+    from processor import embed_consulta
+    vec = embed_consulta(pregunta)
+    todas = alcance == preguntas.TODAS
+    profundidad = busqueda.PROFUNDIDAD
+    if todas:
+        await _preparar_knn(db, profundidad)
+    else:
+        # Con el filtro de sección el índice HNSW puede devolver de menos (filtra después
+        # de buscar): se recorre entero, que con este tamaño son milisegundos.
+        await db.execute(text("SET LOCAL enable_indexscan = off"))
+    densos = (await db.execute(text("""
+        SELECT c.id FROM chunks c
+        JOIN documents d ON d.id = c.document_id JOIN nodes n ON n.id = d.node_id
+        WHERE c.embedding IS NOT NULL AND NOT COALESCE(n.is_issue, false)
+          AND n.type <> :tipo AND (:todas OR n.dominio = :sec)
+        ORDER BY c.embedding <=> CAST(:vec AS vector) LIMIT :lim
+    """), {"vec": str(vec), "lim": profundidad, "todas": todas, "sec": alcance, "tipo": TIPO_PREGUNTA})).scalars().all()
+    lexicos = [cid for cid, _, _ in (await _indice_lexico(db)).buscar(pregunta, profundidad)]
+    if lexicos and not todas:
+        en_alcance = set((await db.execute(text("""
+            SELECT c.id FROM chunks c JOIN documents d ON d.id = c.document_id JOIN nodes n ON n.id = d.node_id
+            WHERE c.id = ANY(:ids) AND n.dominio = :sec
+        """), {"ids": lexicos, "sec": alcance})).scalars().all())
+        lexicos = [c for c in lexicos if c in en_alcance]
+    ids = busqueda.rrf(list(densos), lexicos)[:max_n]
+    if not ids:
+        return []
+    filas = {r.id: r for r in (await db.execute(text("""
+        SELECT c.id, c.content, c.page, n.id AS node_id, n.label,
+               (c.embedding <=> CAST(:vec AS vector)) AS dist
+        FROM chunks c JOIN documents d ON d.id = c.document_id JOIN nodes n ON n.id = d.node_id
+        WHERE c.id = ANY(:ids)
+    """), {"vec": str(vec), "ids": ids})).all()}
+    return [{"chunk_id": r.id, "node_id": r.node_id, "label": r.label, "page": r.page,
+             "texto": (r.content or "")[:preguntas.CARACTERES_PASAJE], "sim": round(max(0.0, 1.0 - float(r.dist)), 4)}
+            for r in (filas[i] for i in ids if i in filas)]
+
+
+def _indexar_pregunta(nodo: dict, doc_ids: list[str]):
+    """Guarda el nodo y lo une a los documentos en los que se apoya su evidencia."""
+    from processor import generar_embedding
+    generar_embedding(nodo)
+    nodo.update(_ubicacion_por_vecinos(nodo.get("embedding"), nodo["dominio"]))
+    _save_node_sync(nodo)
+    with get_sync_session() as s:
+        s.execute(sql_delete(Edge).where((Edge.source == nodo["id"]) & (Edge.label == REL_SE_APOYA_EN)))
+        for doc in dict.fromkeys(doc_ids):
+            par = ((Edge.source == nodo["id"]) & (Edge.target == doc)) | ((Edge.source == doc) & (Edge.target == nodo["id"]))
+            s.execute(sql_delete(Edge).where(par))
+            s.execute(pg_insert(Edge).values(**wb._arista_codigo(
+                nodo["id"], doc, REL_SE_APOYA_EN, "La respuesta se apoya en fragmentos de este documento.",
+                {"pregunta": nodo["id"]})))
+        s.commit()
+
+
+async def _correr_pregunta(db: AsyncSession, pregunta: str, alcance: str) -> dict:
+    import preguntas
+    pasajes = await _pasajes_en(db, pregunta, alcance, preguntas.MAX_PASAJES)
+    return {"pasajes": pasajes, "semaforo": preguntas.semaforo(pasajes, AGENT_CITA_UMBRAL, AGENT_VETO_UMBRAL),
+            "corrida": datetime.now(timezone.utc).isoformat()}
+
+
+async def _guardar_pregunta(db: AsyncSession, node_id: str, pregunta: str, alcance: str, dominio: str,
+                            corrida: dict, respuesta: dict | None) -> dict:
+    import preguntas
+    alcance_label = "en todas las secciones" if alcance == preguntas.TODAS else f"en {alcance}"
+    pasajes = corrida["pasajes"]
+    nodo = {
+        "id": node_id, "label": pregunta[:160], "type": TIPO_PREGUNTA, "fuente": "pregunta",
+        "fuente_label": alcance_label, "dominio": dominio,
+        "desc": preguntas.descripcion(pregunta, corrida["semaforo"], pasajes, alcance_label),
+        "fragmento": (pasajes[0]["texto"][:600] if pasajes else ""),
+        "conceptos": list(dict.fromkeys(p["label"] for p in pasajes))[:6],
+    }
+    citables = [p["node_id"] for p in pasajes if p["sim"] >= AGENT_CITA_UMBRAL] or [p["node_id"] for p in pasajes[:3]]
+    await asyncio.to_thread(_indexar_pregunta, nodo, citables)
+    definicion = {"pregunta": pregunta, "alcance": alcance, **corrida, "respuesta": respuesta}
+    await db.execute(pg_insert(GraphStat).values(key=_clave_pregunta(node_id), value=definicion)
+                     .on_conflict_do_update(index_elements=["key"], set_={"value": definicion}))
+    await db.commit()
+    return definicion
+
+
+async def _definicion_pregunta(db: AsyncSession, node_id: str) -> tuple[Node, dict]:
+    node = await _nodo_o_404(db, node_id)
+    fila = (await db.execute(select(GraphStat).where(GraphStat.key == _clave_pregunta(node_id)))).scalar_one_or_none()
+    if node.type != TIPO_PREGUNTA or not fila:
+        raise HTTPException(404, "No es una pregunta guardada (o se perdió su definición).")
+    return node, dict(fila.value or {})
+
+
+async def _respuesta_pregunta(db: AsyncSession, node: Node, d: dict) -> dict:
+    """La definición más lo que cambió desde la última corrida: documentos nuevos en su
+    alcance (para el aviso «hay documentos nuevos»)."""
+    import preguntas
+    nuevos = 0
+    if d.get("corrida"):
+        desde = datetime.fromisoformat(d["corrida"]).replace(tzinfo=None)
+        q = select(func.count()).select_from(Node).where(
+            Node.created_at > desde, Node.type != TIPO_PREGUNTA, Node.is_issue == False)
+        if d.get("alcance") != preguntas.TODAS:
+            q = q.where(Node.dominio == d.get("alcance"))
+        nuevos = (await db.execute(q)).scalar() or 0
+    nd = node_to_dict(node, con_embedding=False)
+    nd.pop("embedding", None)
+    return {"node": nd, "pregunta": d, "documentos_nuevos": nuevos,
+            "umbral_cita": AGENT_CITA_UMBRAL}
+
+
+@app.post("/api/preguntas")
+async def crear_pregunta(request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Guarda una pregunta como nodo: {pregunta, alcance (sección o "*"), dominio (la
+    sección donde vive el nodo)}. Busca la evidencia en el momento; no usa el LLM."""
+    import preguntas
+    body = await _read_body(request)
+    pregunta = " ".join(str(body.get("pregunta") or "").split())
+    if len(pregunta) < 4:
+        raise HTTPException(400, "Escribí la pregunta.")
+    alcance = str(body.get("alcance") or preguntas.TODAS)
+    dominio = str(body.get("dominio") or (alcance if alcance != preguntas.TODAS else "personal"))
+    node_id = preguntas.id_pregunta(pregunta, alcance)
+    corrida = await _correr_pregunta(db, pregunta, alcance)
+    await _guardar_pregunta(db, node_id, pregunta, alcance, dominio, corrida, None)
+    node, d = await _definicion_pregunta(db, node_id)
+    return await _respuesta_pregunta(db, node, d)
+
+
+@app.get("/api/preguntas/{node_id}")
+async def ver_pregunta(node_id: str, db: AsyncSession = Depends(get_async_session)):
+    node, d = await _definicion_pregunta(db, node_id)
+    return await _respuesta_pregunta(db, node, d)
+
+
+@app.post("/api/preguntas/{node_id}/actualizar")
+async def actualizar_pregunta(node_id: str, request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Vuelve a buscar la evidencia (opcional: {alcance} nuevo). Si la evidencia cambió,
+    la respuesta redactada queda marcada como desactualizada; no se borra."""
+    import preguntas
+    body = await _read_body(request)
+    node, d = await _definicion_pregunta(db, node_id)
+    alcance = str(body.get("alcance") or d.get("alcance") or preguntas.TODAS)
+    corrida = await _correr_pregunta(db, d["pregunta"], alcance)
+    cambio = preguntas.cambio_de_evidencia(d.get("pasajes") or [], corrida["pasajes"])
+    respuesta = d.get("respuesta")
+    if respuesta and (cambio["cambio"] or alcance != d.get("alcance")):
+        respuesta = {**respuesta, "desactualizada": True}
+    await _guardar_pregunta(db, node_id, d["pregunta"], alcance, node.dominio or "personal", corrida, respuesta)
+    node, d = await _definicion_pregunta(db, node_id)
+    return {**(await _respuesta_pregunta(db, node, d)), "cambio": cambio}
+
+
+@app.post("/api/preguntas/{node_id}/redactar")
+async def redactar_pregunta(node_id: str, db: AsyncSession = Depends(get_async_session)):
+    """El LLM redacta la respuesta SÓLO con la evidencia guardada, citando [n]. Tarda:
+    corre en otro hilo para no frenar al resto de Algedi mientras tanto."""
+    import preguntas
+    from processor import query_llm
+    node, d = await _definicion_pregunta(db, node_id)
+    pasajes = d.get("pasajes") or []
+    if not pasajes:
+        raise HTTPException(400, "No hay evidencia para redactar una respuesta: actualizala o ampliá el alcance.")
+    prompt, usados = preguntas.armar_prompt(d["pregunta"], pasajes, AGENT_CITA_UMBRAL)
+    t0 = time.time()
+    texto = await asyncio.to_thread(query_llm, [{"role": "user", "content": prompt}])
+    texto = (texto or "").strip()
+    d["respuesta"] = {
+        "texto": texto, "fuentes": [p["chunk_id"] for p in usados],
+        "citas": preguntas.citas_usadas(texto, len(usados)),
+        "fecha": datetime.now(timezone.utc).isoformat(), "segundos": round(time.time() - t0),
+        "modelo": os.getenv("LLM_MODEL", ""),
+    }
+    await db.execute(pg_insert(GraphStat).values(key=_clave_pregunta(node_id), value=d)
+                     .on_conflict_do_update(index_elements=["key"], set_={"value": d}))
+    await db.commit()
+    return await _respuesta_pregunta(db, node, d)
+
+
 @app.get("/api/sections/{seccion}/contenido")
 async def contenido_de_seccion(seccion: str, db: AsyncSession = Depends(get_async_session)):
     """Lo que tiene una sección, liviano (sin vectores ni textos), para desplegarla en
@@ -3509,7 +3703,7 @@ def _temas_con_nombre(docs) -> list[tuple[str, int]]:
 _ETIQUETA_RELACION = {
     "COMPLEMENTA_A": "complementa a", "PROFUNDIZA_EN": "profundiza en",
     "RELACIONADO_CON": "relacionado con", "COMPARTE_CONCEPTOS_CON": "comparte conceptos con",
-    "SEMANTICAMENTE_SIMILAR_A": "parecido a", wb.REL_LEE_DATOS: "lee los datos de", wb.REL_IMPORTA: "importa",
+    "SEMANTICAMENTE_SIMILAR_A": "parecido a", wb.REL_LEE_DATOS: "lee los datos de", wb.REL_IMPORTA: "importa", "SE_APOYA_EN": "se apoya en",
 }
 
 

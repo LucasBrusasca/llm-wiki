@@ -169,6 +169,33 @@ export async function fetchContenidoSeccion(seccion) {
   return d.nodos || [];
 }
 
+// ── Nodo «Pregunta» (RAG como nodo) ─────────────────────────────────────
+/** Guarda una pregunta como nodo y trae su evidencia (sin LLM, en segundos). */
+export async function crearPregunta({ pregunta, alcance, dominio }) {
+  return fetch('/api/preguntas', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pregunta, alcance, dominio }),
+  }).then(jsonOError);
+}
+
+/** { node, pregunta: {pregunta, alcance, pasajes, semaforo, corrida, respuesta}, documentos_nuevos } */
+export async function fetchPregunta(id) {
+  return fetch(`/api/preguntas/${encodeURIComponent(id)}`).then(jsonOError);
+}
+
+/** Vuelve a buscar la evidencia; `alcance` opcional ('*' = todas las secciones). */
+export async function actualizarPregunta(id, alcance) {
+  return fetch(`/api/preguntas/${encodeURIComponent(id)}/actualizar`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(alcance ? { alcance } : {}),
+  }).then(jsonOError);
+}
+
+/** El LLM redacta la respuesta con la evidencia guardada (tarda minutos en CPU). */
+export async function redactarPregunta(id) {
+  return fetch(`/api/preguntas/${encodeURIComponent(id)}/redactar`, { method: 'POST' }).then(jsonOError);
+}
+
 /** Nodos de datos de todas las secciones. */
 export async function fetchFuentesDatos() {
   const d = await fetch('/api/fuentes-datos').then(jsonOError);

@@ -12,7 +12,7 @@ import CommandPalette from '@/app/CommandPalette';
 import JobsPanel, { useJobs, JobsBadge } from '@/app/JobsPanel';
 import {
   fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota, crearScript, agregarConexion, normalizeGraph,
-  reagruparTemas, recalcularRelaciones, instalarHerramientas, crearReporte,
+  reagruparTemas, recalcularRelaciones, instalarHerramientas, crearReporte, crearPregunta,
   fetchPapelera,
 } from '@/lib/api';
 import { AGRUPADORES, MODOS_COLOR, TIPOS, TODAS, nombreSeccion, indexarRelaciones } from '@/lib/nodes';
@@ -662,6 +662,19 @@ export default function App() {
     mostrarNodoNuevo(r.node);
   }, [explorar, mostrarNodoNuevo]);
 
+  // Pregunta a la biblioteca como nodo: busca en la sección actual (o en todas, si se
+  // está viendo todo) y queda abierta en el inspector con su evidencia.
+  const nuevaPregunta = useCallback(async () => {
+    const texto = (window.prompt('¿Qué querés preguntarle a tu biblioteca?') || '').trim();
+    if (!texto) return;
+    try {
+      const r = await crearPregunta({ pregunta: texto, alcance: seccion === TODAS ? '*' : seccion, dominio: seccionReal });
+      mostrarNodoNuevo(r.node);
+    } catch (e) {
+      window.alert(`No se pudo crear la pregunta: ${e.message}`);
+    }
+  }, [seccion, seccionReal, mostrarNodoNuevo]);
+
   const preguntarSobre = useCallback((node) => {
     setAgentContext(node || null);
     setAgentOpen(true);
@@ -788,7 +801,7 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={350}>
-      <div className="grid h-screen grid-rows-[48px_minmax(0,1fr)]">
+      <div className="grid h-screen grid-rows-[56px_minmax(0,1fr)]">
         <Topbar
           seccion={etiquetaSeccion}
           total={graph.nodes.length}
@@ -829,6 +842,7 @@ export default function App() {
             papeleraCount={papeleraCount}
             onNuevaNota={nuevaNota}
             onNuevoScript={() => nuevoScript().catch((e) => window.alert(`No se pudo crear el script: ${e.message}`))}
+            onNuevaPregunta={nuevaPregunta}
             onSeccionesCambiadas={(activa) => { cambiarSeccion(activa); recargar(); }}
             onSeccionEliminada={olvidarSeccion}
             ancho={anchoRail}

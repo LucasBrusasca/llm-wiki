@@ -13,14 +13,16 @@ const VISTAS = [
 ];
 
 /** Marca: dos nodos y una arista; el nodo activo toma el acento con halo. */
+/** Algedi es una estrella doble (α Capricorni): dos estrellas unidas por su órbita,
+ *  como dos documentos unidos por una relación. */
 function Marca() {
   return (
-    <svg viewBox="0 0 24 24" className="size-[22px]" aria-hidden>
+    <svg viewBox="0 0 24 24" className="size-[26px]" aria-hidden>
       <rect x="0.5" y="0.5" width="23" height="23" rx="6" className="fill-surface-3 stroke-hair-strong" />
-      <line x1="7.5" y1="16.5" x2="16.5" y2="7.5" className="stroke-ink-dim" strokeWidth="1.3" />
-      <circle cx="7.5" cy="16.5" r="2.6" className="fill-ink" />
-      <circle cx="16.5" cy="7.5" r="5" className="fill-accent" opacity="0.18" />
-      <circle cx="16.5" cy="7.5" r="2.6" className="fill-accent" />
+      <ellipse cx="11.15" cy="12.8" rx="8.3" ry="3" transform="rotate(-44 11.15 12.8)" fill="none" className="stroke-ink-dim" strokeWidth="0.7" opacity="0.6" />
+      <circle cx="14.6" cy="9.3" r="5.2" className="fill-accent" opacity="0.16" />
+      <path d="M14.60 3.10 Q15.84 8.06 20.80 9.30 Q15.84 10.54 14.60 15.50 Q13.36 10.54 8.40 9.30 Q13.36 8.06 14.60 3.10Z" className="fill-accent" />
+      <path d="M7.70 12.90 Q8.38 15.62 11.10 16.30 Q8.38 16.98 7.70 19.70 Q7.02 16.98 4.30 16.30 Q7.02 15.62 7.70 12.90Z" className="fill-ink" />
     </svg>
   );
 }
@@ -58,7 +60,7 @@ export default function Topbar({ seccion, total, vista, onVista, onOpenPalette, 
     <header className="flex items-center gap-3 hairline-b bg-surface/90 px-3 backdrop-blur">
       <div className="flex w-[260px] shrink-0 items-center gap-2.5">
         <Marca />
-        <span className="text-[14px] font-semibold tracking-[-0.02em]">Algedi</span>
+        <span className="text-[15px] font-semibold tracking-[-0.02em]">Algedi</span>
         <span className="text-ink-dim">/</span>
         <span className="truncate text-[13px] capitalize text-ink-muted">{seccion}</span>
         {total > 0 && <span className="text-[11px] text-ink-dim">{total}</span>}
@@ -66,7 +68,7 @@ export default function Topbar({ seccion, total, vista, onVista, onOpenPalette, 
 
       <button
         onClick={onOpenPalette}
-        className="group flex h-8 w-full max-w-[440px] items-center gap-2 rounded-sm border border-hair bg-surface-2 px-2.5 text-left text-[12.5px] text-ink-dim transition-colors hover:border-hair-strong"
+        className="group flex h-9 w-full max-w-[460px] items-center gap-2 rounded-sm border border-hair bg-surface-2 px-2.5 text-left text-[12.5px] text-ink-dim transition-colors hover:border-hair-strong"
       >
         <Search className="size-3.5" />
         <span className="flex-1 truncate">Buscar documentos, secciones, acciones…</span>

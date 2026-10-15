@@ -20,6 +20,7 @@ import TablaPreview from '@/app/TablaPreview';
 import EjecutarArchivo from '@/app/EjecutarArchivo';
 import CodigoScript from '@/app/CodigoScript';
 import ConsultaDatos from '@/app/ConsultaDatos';
+import PreguntaVista from '@/app/PreguntaVista';
 import { abrirExplorador } from '@/lib/eventos';
 import NotaEditor from '@/app/NotaEditor';
 import { cn, fechaCorta, pct, normalizar } from '@/lib/utils';
@@ -253,9 +254,10 @@ function tienePreview(node) {
  * Vista previa según el tipo: reproductor, editor si es nota, código + ejecutar si es
  * un script, grilla + consulta si son datos (workbench).
  */
-function Preview({ node, onGuardar, onScriptGuardado, onCorrida }) {
+function Preview({ node, onGuardar, onScriptGuardado, onCorrida, onAbrir }) {
   const tipo = tipoMedia(node);
   if (tipo === 'nota') return <NotaEditor node={node} onGuardar={onGuardar} />;
+  if (tipo === 'pregunta') return <PreguntaVista node={node} onAbrir={onAbrir} />;
   if (tipo === 'reporte') {
     return (
       <Suspense fallback={<p className="p-4 text-[12px] text-ink-dim">Cargando…</p>}>
@@ -364,23 +366,17 @@ function Panorama({ seccionCount, edgesCount, relIndex, nodesById, onSelect }) {
     [relIndex, nodesById],
   );
   const aislados = seccionCount - [...relIndex.keys()].filter((id) => nodesById.has(id)).length;
+  const [atajos, setAtajos] = useState(false);
+  const fmt = (n) => n.toLocaleString('es-AR');
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto pb-24">
-      <div className="px-4 pt-1">
-        <dl className="grid grid-cols-3 gap-px overflow-hidden rounded-sm border border-hair bg-hair">
-          {[
-            ['Nodos', seccionCount],
-            ['Relaciones', edgesCount],
-            ['Sin vínculos', Math.max(0, aislados)],
-          ].map(([k, v]) => (
-            <div key={k} className="bg-surface px-2.5 py-2">
-              <dt className="text-[10.5px] text-ink-dim">{k}</dt>
-              <dd className="text-[15px] font-medium tabular-nums">{v}</dd>
-            </div>
-          ))}
-        </dl>
-      </div>
+      {/* Los números en una línea: dicen el tamaño sin ocupar media pantalla. */}
+      <p className="px-4 pt-1 text-[12px] text-ink-dim">
+        <b className="font-medium tabular-nums text-ink">{fmt(seccionCount)}</b> documentos
+        {' · '}<b className="font-medium tabular-nums text-ink">{fmt(edgesCount)}</b> relaciones
+        {' · '}<b className="font-medium tabular-nums text-ink">{fmt(Math.max(0, aislados))}</b> sin vínculos
+      </p>
 
       {conectados.length > 0 && (
         <Seccion titulo="Más conectados">
@@ -405,6 +401,14 @@ function Panorama({ seccionCount, edgesCount, relIndex, nodesById, onSelect }) {
         </Seccion>
       )}
 
+      <div className="px-4 pt-5">
+        <button type="button" onClick={() => setAtajos((a) => !a)}
+          className="flex items-center gap-1.5 text-[11.5px] text-ink-dim hover:text-ink" aria-expanded={atajos}>
+          <span className="grid size-4 place-items-center rounded-full border border-hair-strong text-[10px]">?</span>
+          Atajos de teclado
+        </button>
+      </div>
+      {atajos && (
       <Seccion titulo="Atajos">
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[12px]">
           {[
@@ -421,6 +425,7 @@ function Panorama({ seccionCount, edgesCount, relIndex, nodesById, onSelect }) {
           ))}
         </dl>
       </Seccion>
+      )}
     </div>
   );
 }
@@ -758,7 +763,7 @@ export default function Inspector({
         </TabsContent>
 
         <TabsContent value="preview" className="min-h-0 flex-1 overflow-y-auto">
-          <Preview node={node} onGuardar={onGuardar} onScriptGuardado={onScriptGuardado} onCorrida={onCorrida} />
+          <Preview node={node} onGuardar={onGuardar} onScriptGuardado={onScriptGuardado} onCorrida={onCorrida} onAbrir={onAbrir} />
         </TabsContent>
       </Tabs>
     </aside>

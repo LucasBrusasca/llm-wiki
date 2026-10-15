@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2, Sparkles, StickyNote, RefreshCw, Loader2,
-  History, ChevronRight, Database, Table2, Eye, Calendar, Type, ToggleLeft, Layers,
+  History, ChevronRight, Database, Table2, Eye, Calendar, Type, ToggleLeft, Layers, MessageCircleQuestion,
 } from 'lucide-react';
 import { hayNombresAutomaticos } from '@/lib/temas';
 import {
@@ -256,7 +256,7 @@ export default function Rail({
   facetas, tipos, onToggleTipo, fuentes, onToggleFuente,
   topConceptos, conceptos, onToggleConcepto,
   temas, temasSel, onToggleTema, onNombrarTemas, onReagrupar, reagrupando = false,
-  onIngest, onCorridas, onPapelera, papeleraCount = 0, onNuevaNota, onNuevoScript, onSeccionesCambiadas, onSeccionEliminada, ancho = 272,
+  onIngest, onCorridas, onPapelera, papeleraCount = 0, onNuevaNota, onNuevoScript, onNuevaPregunta, onSeccionesCambiadas, onSeccionEliminada, ancho = 272,
   onCollapse, onAbrirNodo,
 }) {
   // Fuentes de datos de todas las secciones, para desplegarlas bajo cada una.
@@ -321,6 +321,9 @@ export default function Rail({
           <DropdownMenuContent align="end">
             <DropdownMenuItem onSelect={onNuevaNota}><StickyNote /> Nota</DropdownMenuItem>
             <DropdownMenuItem onSelect={onNuevoScript}><Terminal /> Script de Python</DropdownMenuItem>
+            {onNuevaPregunta && (
+              <DropdownMenuItem onSelect={onNuevaPregunta}><MessageCircleQuestion /> Pregunta a tu biblioteca</DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

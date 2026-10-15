@@ -599,6 +599,7 @@ export default function Vista4D({
       const cands = [];
       for (let i = 0; i < nodos.length; i++) {
         if (!visible[i]) continue;
+        if (focoSala && nodos[i].sala.nombre !== focoSala) continue;   // con una sección en foco, sólo sus títulos
         const { n } = nodos[i];
         const estado = estadoNodo(n.id, { selectedId: selId, pinOtro, vecinos: vecinosSel, ego: egoAhora });
         const clase = claseDetalle(estado, { destacado: marcados.has(n.id), hito: !selId && !egoAhora && hitos.has(n.id) });
@@ -832,10 +833,12 @@ export default function Vista4D({
         const desdeCamara = horizontal(camara.position.clone().sub(centro));
         if (dir.lengthSq() < 1) dir = desdeCamara.lengthSq() > 1 ? desdeCamara : new THREE.Vector3(0, 0, 1);
         dir.normalize();
-        if (desdeCamara.lengthSq() > 1 && desdeCamara.normalize().dot(dir) > 0) {
-          dir.addScaledVector(desdeCamara, 0.3).normalize();                       // sin giros bruscos
-        }
-        dir.y = 0.12;                                                               // apenas desde arriba
+        // Vista de tres cuartos: girada ~40° hacia el lado donde ya está la cámara y
+        // algo desde arriba. Ni de frente (plano) ni cenital: se ve la profundidad.
+        const lado = desdeCamara.lengthSq() > 1 && new THREE.Vector3().crossVectors(dir, desdeCamara).y < 0 ? -1 : 1;
+        const giro = THREE.MathUtils.degToRad(40) * lado;
+        dir.set(dir.x * Math.cos(giro) - dir.z * Math.sin(giro), 0, dir.x * Math.sin(giro) + dir.z * Math.cos(giro));
+        dir.y = 0.45;
         dir.normalize();
         const mitadV = THREE.MathUtils.degToRad(camara.fov / 2);
         const mitad = Math.min(mitadV, Math.atan(Math.tan(mitadV) * camara.aspect));
