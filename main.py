@@ -1266,6 +1266,37 @@ async def get_file(node_id: str, db: AsyncSession = Depends(get_async_session)):
     )
 
 
+async def _archivo_de_nodo(db: AsyncSession, node_id: str) -> Path:
+    node = (await db.execute(select(Node).where(Node.id == node_id))).scalar_one_or_none()
+    if node is None or not node.fuente_path:
+        raise HTTPException(status_code=404, detail="El nodo no tiene archivo")
+    return _resolve_file(node.fuente_path)
+
+
+@app.get("/api/node/{node_id}/office")
+async def vista_office(node_id: str, db: AsyncSession = Depends(get_async_session)):
+    """Word o PowerPoint con su estructura (títulos, párrafos, listas, tablas, imágenes;
+    las diapositivas en orden), para verlo nítido en el inspector."""
+    import office_preview
+    target = await _archivo_de_nodo(db, node_id)
+    try:
+        return await asyncio.to_thread(office_preview.vista_previa, str(target))
+    except office_preview.OfficeInvalido as e:
+        raise HTTPException(status_code=415, detail=str(e))
+
+
+@app.get("/api/node/{node_id}/office/medio")
+async def medio_office(node_id: str, parte: str, db: AsyncSession = Depends(get_async_session)):
+    """Una imagen de adentro del .docx/.pptx (sólo de su carpeta de medios)."""
+    import office_preview
+    target = await _archivo_de_nodo(db, node_id)
+    try:
+        datos, tipo = await asyncio.to_thread(office_preview.medio, str(target), parte)
+    except office_preview.OfficeInvalido as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return Response(content=datos, media_type=tipo, headers={"Cache-Control": "public, max-age=86400"})
+
+
 def _yt_id(url: str):
     import re as _re
     m = _re.search(r"(?:youtu\.be/|v=|embed/)([A-Za-z0-9_-]{11})", url or "")
@@ -3131,6 +3162,18 @@ async def ver_reporte(node_id: str, actualizar: bool = False, db: AsyncSession =
         await _anotar_corrida_reporte(db, datos, node.label, res)
     return {"reporte": {"id": node.id, "titulo": node.label, "desc": node.desc, **definicion},
             "datos": {"id": datos.id, "label": datos.label}, "resultado": res}
+
+
+@app.get("/api/sections/{seccion}/contenido")
+async def contenido_de_seccion(seccion: str, db: AsyncSession = Depends(get_async_session)):
+    """Lo que tiene una sección, liviano (sin vectores ni textos), para desplegarla en
+    el panel izquierdo como el árbol de campos de Power BI."""
+    filas = (await db.execute(
+        select(Node.id, Node.label, Node.type, Node.fuente, Node.fuente_path)
+        .where(Node.dominio == seccion, Node.is_issue == False).order_by(Node.label))).all()
+    return {"seccion": seccion, "nodos": [
+        {"id": f.id, "label": f.label, "type": f.type, "fuente": f.fuente,
+         "ext": Path(f.fuente_path).suffix.lower().lstrip(".") if f.fuente_path else ""} for f in filas]}
 
 
 @app.get("/api/fuentes-datos")
@@ -5022,6 +5065,58 @@ def _run_umap():
     embeddings_engine.main()
 
 
+_PARAMS_RASTREO = re.compile(r"^(utm_|fbclid$|gclid$|mc_|ref$|ref_src$|si$|feature$)")
+
+
+def _url_normalizada(url: str) -> str:
+    """La misma página aunque cambie la forma de escribirla: sin #fragmento, sin
+    parámetros de rastreo, sin www ni barra final, host en minúscula."""
+    from urllib.parse import parse_qsl, urlencode, urlsplit
+    p = urlsplit((url or "").strip())
+    host = p.netloc.lower().removeprefix("www.")
+    query = urlencode(sorted((k, v) for k, v in parse_qsl(p.query) if not _PARAMS_RASTREO.match(k.lower())))
+    return f"{host}{p.path.rstrip('/')}" + (f"?{query}" if query else "")
+
+
+def _sha256_archivo(ruta: str) -> str | None:
+    import hashlib
+    try:
+        h = hashlib.sha256()
+        with open(ruta, "rb") as f:
+            for bloque in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(bloque)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _ya_ingerido(entrada: str) -> dict | None:
+    """¿Esta fuente ya está en Algedi? Se mira ANTES de procesar, porque el resumen del
+    LLM tarda minutos: un video de YouTube por su id (aunque cambie el &t= o la lista),
+    una página por su URL normalizada y un archivo por el hash de sus bytes (aunque se
+    llame distinto). Devuelve {id, label, dominio} del que ya estaba, o None."""
+    with get_sync_session() as s:
+        if entrada.startswith("http"):
+            vid = _yt_id(entrada)
+            if vid:
+                fila = s.execute(select(Node.id, Node.label, Node.dominio)
+                                 .where(Node.fuente_url.contains(vid)).order_by(Node.created_at)).first()
+            else:
+                buscada = _url_normalizada(entrada)
+                filas = s.execute(select(Node.id, Node.label, Node.dominio, Node.fuente_url)
+                                  .where(Node.fuente_url.isnot(None))).all()
+                fila = next((f for f in filas if _url_normalizada(f.fuente_url) == buscada), None)
+        else:
+            huella = _sha256_archivo(entrada)
+            if not huella:
+                return None
+            fila = s.execute(select(Node.id, Node.label, Node.dominio)
+                             .join(Document, Document.node_id == Node.id)
+                             .join(Source, Source.id == Document.source_id)
+                             .where(Source.content_hash == huella)).first()
+    return {"id": fila.id, "label": fila.label, "dominio": fila.dominio} if fila else None
+
+
 def _run_ingest_for_job(entrada: str, skip_umap: bool = True, seccion: str = "personal",
                         progress_callback=None):
     """Versión de _run_ingest para el sistema de jobs en background.
@@ -5040,6 +5135,12 @@ def _run_ingest_for_job(entrada: str, skip_umap: bool = True, seccion: str = "pe
         if entrada.startswith("http") and _es_playlist_youtube(entrada):
             _prog(15, "Es una playlist de YouTube…")
             return _ingest_playlist_for_job(entrada, seccion, progress_callback)
+
+        previo = _ya_ingerido(entrada)
+        if previo:
+            # Nada que procesar: ni LLM ni recálculo de temas. El job lleva al que ya estaba.
+            return {"success": True, "node_id": previo["id"], "sin_cambios": True,
+                    "mensaje": f"Ya estaba en Algedi: «{previo['label']}» (sección {previo['dominio']}). No se volvió a procesar."}
 
         _prog(15, "Extrayendo contenido…")
         resultado = _extraer_documento(entrada)
@@ -5080,10 +5181,13 @@ def _ingest_playlist_for_job(url: str, seccion: str, progress_callback=None):
     n = len(a_cargar)
 
     _prog(10, f"Playlist con {total} videos (cargando {n})…")
-    ok = 0
+    ok = ya = 0
     for i, v in enumerate(a_cargar):
         titulo = (v.get("title") or "")[:35]
         _prog(10 + int(70 * i / max(1, n)), f"Video {i+1}/{n}: {titulo}…")
+        if _ya_ingerido(v["url"]):
+            ya += 1
+            continue
         try:
             resultado = procesar_youtube(v["url"], title_hint=v.get("title"),
                                          author_hint=v.get("channel"))
@@ -5099,7 +5203,9 @@ def _ingest_playlist_for_job(url: str, seccion: str, progress_callback=None):
     _prog(85, "Clasificando temas…")
     asignar_temas_pendientes()
 
-    return {"success": True, "node_id": None, "videos_ok": ok, "videos_total": total}
+    return {"success": True, "node_id": None, "videos_ok": ok, "videos_total": total,
+            "sin_cambios": ok == 0,
+            "mensaje": f"{ok} videos nuevos" + (f"; {ya} ya estaban y no se volvieron a procesar" if ya else "") + "."}
 
 
 def _run_ingest_batch(entradas: list, seccion: str = "personal"):
@@ -5122,8 +5228,12 @@ def _run_ingest_batch(entradas: list, seccion: str = "personal"):
                             "message": f"Analizando {total} documentos…"})
 
         listos, fallidos = [], []
+        # Lo que ya está (mismo video, misma página, mismos bytes) no se procesa de nuevo.
+        repetidos = [e for e in entradas if _ya_ingerido(e)]
+        entradas = [e for e in entradas if e not in repetidos]
+        total = max(1, len(entradas))
         completados = 0
-        workers = min(INGEST_WORKERS, total)
+        workers = max(1, min(INGEST_WORKERS, len(entradas)))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futuros = {pool.submit(_extraer_documento, e): e for e in entradas}
             for futuro in as_completed(futuros):
@@ -5150,19 +5260,22 @@ def _run_ingest_batch(entradas: list, seccion: str = "personal"):
                 fallidos.append((etiqueta, str(exc)))
                 print(f"Error guardando '{etiqueta}': {exc}")
 
-        _cerrar_lote(skip_umap=False)
+        if guardados:
+            _cerrar_lote(skip_umap=False)
 
         # Se informa lo que quedó EN EL GRAFO, no lo que se logró leer: un documento
         # extraído que después no se pudo guardar no está incorporado.
-        mensaje = f"{guardados} de {total} documentos incorporados al grafo."
+        mensaje = f"{guardados} de {len(entradas)} documentos incorporados al grafo."
+        if repetidos:
+            mensaje += f" {len(repetidos)} ya estaban y no se volvieron a procesar."
         if fallidos:
             # El nombre del primero alcanza para saber por dónde empezar a mirar; el
             # detalle completo de cada falla ya quedó en el log del servidor.
             mensaje += f" {len(fallidos)} con error (p. ej. {fallidos[0][0]})."
         with _ingest_lock:
-            _ingest = {"state": "done" if guardados else "error", "message": mensaje,
+            _ingest = {"state": "done" if guardados or repetidos else "error", "message": mensaje,
                        "label": f"{guardados} documentos", "progress": 100}
-        return bool(guardados)
+        return bool(guardados or repetidos)
 
     except Exception as exc:
         with _ingest_lock:
@@ -5184,6 +5297,13 @@ def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"
         # Playlist de YouTube → un nodo por video (camino propio, sale temprano).
         if entrada.startswith("http") and _es_playlist_youtube(entrada):
             return _ingest_playlist(entrada, skip_umap, seccion)
+
+        previo = _ya_ingerido(entrada)
+        if previo:
+            with _ingest_lock:
+                _ingest = {"state": "done", "progress": 100, "label": previo["label"],
+                           "message": f"Ya estaba en Algedi: «{previo['label']}». No se volvió a procesar."}
+            return {"success": True, "node_id": previo["id"], "sin_cambios": True}
 
         _set_progress(10, "Extrayendo contenido…")
 
@@ -5437,7 +5557,7 @@ def retry_job(job_id: str):
 
 @app.post("/api/jobs/{job_id}/cancel")
 def cancel_job(job_id: str):
-    """Cancela un job encolado (no se puede cancelar uno en ejecución)."""
+    """Cancela un job: encolado, al instante; en curso, al terminar el paso actual."""
     from job_manager import get_job_manager
     mgr = get_job_manager()
     result = mgr.cancel_job(job_id)

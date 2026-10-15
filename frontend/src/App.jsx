@@ -411,9 +411,12 @@ export default function App() {
   const grupos = useMemo(() => {
     const base = AGRUPADORES[groupBy] || AGRUPADORES.fuente;
     // "Tema" usa el índice de temas legibles (nombre humano o automático), no el número de cluster.
+    const grado = (n) => relIndex.get(n.id)?.length || 0;
     const agr = groupBy === 'tema'
       ? { keyOf: temaKey, titleOf: (k) => temas.get(k)?.nombre || 'Sin tema', colorOf: (k) => temas.get(k)?.color }
-      : base;
+      : groupBy === 'conexiones'
+        ? { ...base, keyOf: (n) => { const d = grado(n); return d === 0 ? '0' : d <= 3 ? '1' : d <= 9 ? '2' : '3'; } }
+        : base;
     const map = new Map();
     for (const n of visibles) {
       const k = agr.keyOf(n);
@@ -421,13 +424,15 @@ export default function App() {
       map.get(k).items.push(n);
     }
     // Más poblados primero; "Sin tema" / "Sin origen" siempre al final.
-    const ultimo = (g) => (g.key === 'sin-tema' || g.key === 'sin-origen' ? 1 : 0);
-    const arr = [...map.values()].sort((a, b) => ultimo(a) - ultimo(b) || b.items.length - a.items.length);
+    const ultimo = (g) => (['sin-tema', 'sin-origen', 'Sin fecha'].includes(g.key) ? 1 : 0);
+    // Las fechas van en orden de tiempo (lo más nuevo arriba); el resto, por tamaño.
+    const arr = [...map.values()].sort((a, b) => ultimo(a) - ultimo(b)
+      || (base.ordenar ? base.ordenar(a.key, b.key) : b.items.length - a.items.length));
     if (semanticos.length) {
       arr.push({ key: '__semantico', title: 'Por significado', semantic: true, items: semanticos });
     }
     return arr;
-  }, [visibles, semanticos, groupBy, temas]);
+  }, [visibles, semanticos, groupBy, temas, relIndex]);
 
   const orden = useMemo(() => grupos.flatMap((g) => g.items.map((n) => n.id)), [grupos]);
 
@@ -760,6 +765,8 @@ export default function App() {
               selectedId={selectedId} onElegir={elegirEn4D} seccion={seccion} filtro={filtroNodo}
               pinnedEdge={pinnedEdge} onClearPin={propsGrafo.onClearPin} ego={ego} onFijar={fijarVecindario}
               highlightIds={highlightIds} colorMode={modoColor} onColorMode={setColorMode3d} colorDe={colorDe} temas={temas}
+              onAbrirSeccion={(nombre, v) => { cambiarSeccion(nombre); setVista(v); }}
+              onVacio={soltarUno}
             />
           )
           : <GraphCanvas {...propsGrafo} />}

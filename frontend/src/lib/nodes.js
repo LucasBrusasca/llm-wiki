@@ -155,6 +155,45 @@ export const AGRUPADORES = {
     keyOf: (n) => n.autor || 'Sin autor',
     titleOf: (k) => k,
   },
+  // Útil en «Todas las secciones»: la biblioteca entera, partida por sección.
+  seccion: {
+    label: 'Sección',
+    keyOf: (n) => n.dominio || 'personal',
+    titleOf: (k) => k.replace(/(^|\s)\S/g, (c) => c.toUpperCase()),
+  },
+  anio: {
+    label: 'Año del documento',
+    keyOf: (n) => (/^\d{4}/.exec(n.fecha_doc || '') || ['Sin fecha'])[0],
+    titleOf: (k) => k,
+    ordenar: (a, b) => b.localeCompare(a),
+  },
+  // Cuándo entró a Algedi (no cuándo se escribió): «qué sumé este mes».
+  ingesta: {
+    label: 'Fecha de ingesta',
+    keyOf: (n) => (/^\d{4}-\d{2}/.exec(n.created_at || '') || ['Sin fecha'])[0],
+    titleOf: (k) => {
+      const m = /^(\d{4})-(\d{2})$/.exec(k);
+      return m ? new Date(Number(m[1]), Number(m[2]) - 1, 1).toLocaleDateString('es-AR', { month: 'long', year: 'numeric' }) : k;
+    },
+    ordenar: (a, b) => b.localeCompare(a),
+  },
+  // Si la fuente sigue valiendo, cambió o es copia de otra que ya estaba.
+  vigencia: {
+    label: 'Vigencia',
+    keyOf: (n) => (n.vigencia?.duplicado_de ? 'duplicado' : n.vigencia?.estado || 'vigente'),
+    titleOf: (k) => ({
+      vigente: 'Vigentes', posiblemente_desactualizado: 'Posiblemente desactualizados',
+      reemplazado: 'Reemplazados', duplicado: 'Copias de otro documento',
+    }[k] || k),
+  },
+  // Cuánto está conectado: «Sin vínculos» primero, para revisar lo que quedó aislado.
+  // El grado lo calcula App con el índice de relaciones.
+  conexiones: {
+    label: 'Conexiones',
+    keyOf: () => '0',
+    titleOf: (k) => ({ 0: 'Sin vínculos', 1: '1 a 3 vínculos', 2: '4 a 9 vínculos', 3: '10 o más vínculos' }[k] || k),
+    ordenar: (a, b) => a.localeCompare(b),
+  },
   ninguno: { label: 'Sin agrupar', keyOf: () => '', titleOf: () => '' },
 };
 

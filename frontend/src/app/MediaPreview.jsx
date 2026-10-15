@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ExternalLink, FileQuestion, Loader2, ZoomIn, ZoomOut, Maximize } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import Thumb from '@/app/Thumb';
+import VistaOffice from '@/app/VistaOffice';
 import { cn } from '@/lib/utils';
 
 /** Qué se puede reproducir/mostrar del nodo, mirando fuente y extensión del archivo. */
@@ -21,6 +22,8 @@ export function tipoMedia(node) {
   if (['mp3', 'wav', 'ogg', 'm4a', 'flac'].includes(ext) || f === 'audio') return 'audio';
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext) || f === 'imagen') return 'imagen';
   if (['xlsx', 'xls', 'csv'].includes(ext)) return 'tabla';
+  if (ext === 'docx' || (f === 'word' && ext !== 'doc')) return 'word';
+  if (['pptx', 'pptm'].includes(ext) || (f === 'ppt' && ext !== 'ppt')) return 'ppt';
   if (ext === 'pdf' || f === 'pdf') return 'pdf';
   if (['html', 'htm'].includes(ext) || f === 'html') return 'html';
   if (['py', 'ipynb', 'txt', 'md', 'json'].includes(ext)) return 'codigo';
@@ -128,7 +131,6 @@ export default function MediaPreview({ node, onAbrirOriginal }) {
             loading="lazy"
           />
         </div>
-        {node.desc && <p className="text-[12.5px] leading-relaxed text-ink-muted">{node.desc}</p>}
       </div>
     );
   }
@@ -170,6 +172,14 @@ export default function MediaPreview({ node, onAbrirOriginal }) {
           className="min-h-[380px] flex-1 rounded-md border border-hair bg-white"
           loading="lazy"
         />
+        <div className="flex gap-1.5">{original}</div>
+      </div>
+    );
+  }
+  if (tipo === 'word' || tipo === 'ppt') {
+    return (
+      <div className="flex flex-col gap-2">
+        <VistaOffice node={node} />
         <div className="flex gap-1.5">{original}</div>
       </div>
     );

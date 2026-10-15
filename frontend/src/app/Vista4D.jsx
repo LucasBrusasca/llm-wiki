@@ -210,7 +210,7 @@ function Boton({ texto, onClick, children }) {
 
 export default function Vista4D({
   selectedId, onElegir, seccion, filtro, pinnedEdge, onClearPin, ego, onFijar, highlightIds,
-  colorMode, onColorMode, colorDe, temas: temasSeccion,
+  colorMode, onColorMode, colorDe, temas: temasSeccion, onAbrirSeccion, onVacio,
 }) {
   const cajaRef = useRef(null);
   const apiRef = useRef(null);
@@ -224,7 +224,7 @@ export default function Vista4D({
   // filtros de la sección actual). La escena lo lee de acá y se entera de los cambios
   // por `cambios`, sin rearmarse.
   const estadoRef = useRef({});
-  estadoRef.current = { seccion, filtro, pinnedEdge, onClearPin, ego, highlightIds, colorMode, colorDe };
+  estadoRef.current = { seccion, filtro, pinnedEdge, onClearPin, onVacio, ego, highlightIds, colorMode, colorDe };
   const cambios = useRef(0);
   useEffect(() => { cambios.current += 1; }, [seccion, filtro, pinnedEdge, ego, highlightIds, colorMode, colorDe]);
   const [datos, setDatos] = useState(null);
@@ -836,7 +836,9 @@ export default function Vista4D({
       aNdc(e);
       const n = elegirBajo();
       if (n) elegirRef.current?.(n.id, n.dominio);
-      else if (estadoRef.current.pinnedEdge) estadoRef.current.onClearPin?.();   // clic al vacío suelta el vínculo, como en el 3D
+      // Clic al vacío: suelta una capa del foco (vínculo, vecindario, elegido), como en el 2D y el 3D.
+      else if (estadoRef.current.onVacio) estadoRef.current.onVacio();
+      else if (estadoRef.current.pinnedEdge) estadoRef.current.onClearPin?.();
     };
     // Doble clic: sobre un documento, ir hasta él; en cualquier otro lado, acercarte ahí.
     const onDbl = (e) => {
@@ -879,6 +881,53 @@ export default function Vista4D({
     let cambiosVistos = -1;
     let kCubos = cubosRef.current / 50;
     marco.visible = kCubos > 0;
+    // Los rótulos de las habitaciones: las de adelante y atrás caen sobre la del centro
+    // en pantalla (están sobre el mismo eje de la vista). Se separan en pantalla, sin
+    // mover las habitaciones: cada uno se corre lo mínimo hasta no pisar a otro.
+    const proy = new THREE.Vector3();
+    const despejarRotulos = () => {
+      const cajas = [];
+      for (const s of salas) {
+        const el = s.rotulo.element.firstElementChild;
+        if (!el || s.rotulo.element.style.display === 'none') continue;
+        proy.copy(s.rotulo.position).project(camara);
+        if (proy.z > 1) continue;
+        s.tam = s.tam || { w: el.offsetWidth || 120, h: el.offsetHeight || 44 };
+        cajas.push({ s, el, x: (proy.x * 0.5 + 0.5) * W, y: (-proy.y * 0.5 + 0.5) * H, dx: 0, dy: 0,
+          peso: s === salas[0] ? 0.25 : 1 });
+      }
+      const PAD = 8;
+      for (let it = 0; it < 24; it++) {
+        let movio = false;
+        for (let i = 0; i < cajas.length; i++) {
+          for (let j = i + 1; j < cajas.length; j++) {
+            const a = cajas[i];
+            const b = cajas[j];
+            const ox = (a.s.tam.w + b.s.tam.w) / 2 + PAD - Math.abs((a.x + a.dx) - (b.x + b.dx));
+            const oy = (a.s.tam.h + b.s.tam.h) / 2 + PAD - Math.abs((a.y + a.dy) - (b.y + b.dy));
+            if (ox <= 0 || oy <= 0) continue;
+            movio = true;
+            const total = a.peso + b.peso;
+            // Se separan por el eje que menos cuesta; empate exacto → en vertical.
+            if (oy <= ox) {
+              const sg = (a.y + a.dy) < (b.y + b.dy) || ((a.y + a.dy) === (b.y + b.dy) && i < j) ? -1 : 1;
+              a.dy += sg * oy * (a.peso / total);
+              b.dy -= sg * oy * (b.peso / total);
+            } else {
+              const sg = (a.x + a.dx) < (b.x + b.dx) ? -1 : 1;
+              a.dx += sg * ox * (a.peso / total);
+              b.dx -= sg * ox * (b.peso / total);
+            }
+          }
+        }
+        if (!movio) break;
+      }
+      for (const c of cajas) {
+        const t = `translate(${Math.round(c.dx)}px, ${Math.round(c.dy)}px)`;
+        if (c.el.style.transform !== t) c.el.style.transform = t;
+      }
+    };
+
     const cuadro = (ahora) => {
       raf = requestAnimationFrame(cuadro);
       const dt = Math.min(0.05, (ahora - antes) / 1000);
@@ -997,6 +1046,7 @@ export default function Vista4D({
       if (sucio) {
         renderer.render(scene, camara);
         capa.render(scene, camara);
+        despejarRotulos();
         sucio = false;
       }
     };
@@ -1035,6 +1085,16 @@ export default function Vista4D({
     const vis = new Set(ns.filter((n) => !filtro || filtro(n)).map((n) => n.id));
     return calcularLeyenda(ns, vis, colorMode, temasSeccion || new Map());
   }, [datos, colorMode, seccion, filtro, temasSeccion]);
+
+  // Elegir una sección en el panel izquierdo estando en la 4D: volar a su habitación.
+  const seccionVista = useRef(seccion);
+  useEffect(() => {
+    if (!datos || seccionVista.current === seccion) return;
+    seccionVista.current = seccion;
+    if (seccion && seccion !== '*') apiRef.current?.volarASala(seccion);
+    else apiRef.current?.salir();
+  }, [seccion, datos]);
+
   return (
     <div ref={cajaRef} className="relative size-full overflow-hidden bg-[#05060c]">
       <div className="pointer-events-none absolute left-3 right-3 top-3 z-10 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">
@@ -1081,6 +1141,21 @@ export default function Vista4D({
                 <span className="ml-auto pl-3 tabular-nums text-ink-dim">{s.count}</span>
               </button>
             ))}
+            {/* De lo general a lo particular: estando en una habitación, se entra a esa
+                sección en la vista que convenga. */}
+            {dentro && onAbrirSeccion && (
+              <div className="mt-1 border-t border-hair px-1 pt-1.5">
+                <span className="block pb-1 text-[10.5px] text-ink-dim">Entrar a <span className="capitalize text-ink-muted">{dentro}</span> en</span>
+                <div className="flex gap-1">
+                  {[['grafo', 'Grafo 2D'], ['3d', '3D'], ['lista', 'Lista']].map(([v, l]) => (
+                    <button key={v} type="button" onClick={() => onAbrirSeccion(dentro, v)}
+                      className="rounded-xs border border-hair-strong px-1.5 py-0.5 text-ink-muted hover:border-accent/60 hover:text-ink">
+                      {l}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
           {onColorMode && <ColorPanel modo={colorMode} onModo={onColorMode} leyenda={leyenda} />}
         </div>

@@ -163,6 +163,12 @@ export async function fetchReporte(id, { actualizar = false } = {}) {
   return fetch(`/api/reportes/${encodeURIComponent(id)}${actualizar ? '?actualizar=true' : ''}`).then(jsonOError);
 }
 
+/** Lo que tiene una sección, liviano: [{id, label, type, fuente, ext}]. */
+export async function fetchContenidoSeccion(seccion) {
+  const d = await fetch(`/api/sections/${encodeURIComponent(seccion)}/contenido`).then(jsonOError);
+  return d.nodos || [];
+}
+
 /** Nodos de datos de todas las secciones. */
 export async function fetchFuentesDatos() {
   const d = await fetch('/api/fuentes-datos').then(jsonOError);

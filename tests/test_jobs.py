@@ -19,6 +19,7 @@ for _nombre in _MODULOS_BASE:
     sys.modules[_nombre] = MagicMock()
 
 from job_manager import (
+    JobCancelado,
     JobManager,
     JOB_KIND_FILE,
     JOB_KIND_URL,
@@ -158,7 +159,9 @@ class JobStatusTransitionTests(unittest.TestCase):
         self.assertEqual(failed_job.status, JOB_STATUS_QUEUED)
 
     @patch("job_manager.get_sync_session")
-    def test_cancel_only_works_on_queued(self, mock_session):
+    def test_cancel_running_job_stops_at_next_checkpoint(self, mock_session):
+        """Un job en curso se cancela al volver del paso que está haciendo (la llamada
+        al LLM no se interrumpe a la mitad) y lo que produjo no se guarda."""
         mgr = JobManager()
         running_job = FakeIngestJob(status=JOB_STATUS_RUNNING)
         session = FakeSession([running_job])
@@ -166,8 +169,51 @@ class JobStatusTransitionTests(unittest.TestCase):
         mock_session.return_value.__exit__ = MagicMock(return_value=False)
 
         result = mgr.cancel_job(running_job.id)
-        self.assertIn("error", result)
-        self.assertIn("ejecución", result["error"])
+        self.assertTrue(result.get("cancelling"))
+        self.assertEqual(running_job.status, JOB_STATUS_RUNNING)       # sigue hasta el punto de control
+        self.assertIn("Cancelando", running_job.message)
+        with self.assertRaises(JobCancelado):
+            mgr._chequear_cancelacion(running_job.id)
+        mgr._chequear_cancelacion("otro_job")                          # a los demás no los toca
+
+    @patch("job_manager.get_sync_session")
+    def test_cancel_during_processing_discards_result(self, mock_session):
+        mgr = JobManager()
+        job = FakeIngestJob(status=JOB_STATUS_QUEUED)
+        session = FakeSession([job])
+        mock_session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_session.return_value.__exit__ = MagicMock(return_value=False)
+        hechos = []
+
+        def ingest(entrada, skip_umap, seccion, progress_callback):
+            progress_callback(15, "Extrayendo contenido…")
+            mgr.cancel_job(job.id)                      # la persona cancela durante el LLM
+            progress_callback(60, "Guardando en el grafo…")
+            hechos.append("guardado")                   # no tiene que llegar acá
+            return {"node_id": "x"}
+
+        umap = MagicMock()
+        mgr.configure(ingest, umap)
+        mgr._process_job(job.id)
+        self.assertEqual(hechos, [])
+        umap.assert_not_called()
+        self.assertEqual(job.status, JOB_STATUS_FAILED)
+        self.assertEqual(job.message, "Cancelado por el usuario")
+        self.assertNotIn(job.id, mgr._cancelar)
+
+    @patch("job_manager.get_sync_session")
+    def test_already_ingested_skips_umap_and_says_so(self, mock_session):
+        mgr = JobManager()
+        job = FakeIngestJob(status=JOB_STATUS_QUEUED)
+        session = FakeSession([job])
+        mock_session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_session.return_value.__exit__ = MagicMock(return_value=False)
+        umap = MagicMock()
+        mgr.configure(lambda *a, **k: {"node_id": "previo", "sin_cambios": True,
+                                       "mensaje": "Ya estaba en Algedi: «X»."}, umap)
+        mgr._process_job(job.id)
+        umap.assert_not_called()
+        self.assertEqual((job.status, job.node_id, job.message), (JOB_STATUS_DONE, "previo", "Ya estaba en Algedi: «X»."))
 
     @patch("job_manager.get_sync_session")
     def test_cancel_sets_failed_status(self, mock_session):

@@ -51,6 +51,10 @@ _ERROR_MESSAGES = {
 }
 
 
+class JobCancelado(Exception):
+    """El usuario canceló un job en curso: se corta en el próximo punto de control."""
+
+
 class JobManager:
     """Gestor de jobs de ingesta en background."""
 
@@ -58,6 +62,10 @@ class JobManager:
         self._queue: queue.Queue = queue.Queue()
         self._workers: list[threading.Thread] = []
         self._ingest_fn: Optional[Callable] = None
+        # Jobs en curso que el usuario pidió cancelar. La llamada al LLM no se puede
+        # interrumpir a la mitad: el job se corta en el próximo punto de control y lo
+        # que haya producido se descarta (no se guarda nada a medias).
+        self._cancelar: set[str] = set()
         self._umap_fn: Optional[Callable] = None
         self._lock = threading.Lock()
         self._running = False
@@ -163,13 +171,17 @@ class JobManager:
         return result
 
     def cancel_job(self, job_id: str) -> dict:
-        """Cancela un job encolado (no se puede cancelar uno en ejecución)."""
+        """Cancela un job. Encolado: al instante. En curso: se corta en el próximo punto
+        de control (al volver del paso que esté haciendo) y no guarda nada."""
         with get_sync_session() as session:
             job = session.get(IngestJob, job_id)
             if not job:
                 return {"error": "Job no encontrado", "status": 404}
             if job.status == JOB_STATUS_RUNNING:
-                return {"error": "No se puede cancelar un job en ejecución", "status": 400}
+                self._cancelar.add(job_id)
+                job.message = "Cancelando… se detiene al terminar el paso actual"
+                session.commit()
+                return {"id": job.id, "status": job.status, "cancelling": True}
             if job.status in (JOB_STATUS_DONE, JOB_STATUS_FAILED):
                 return {"error": "El job ya terminó", "status": 400}
             job.status = JOB_STATUS_FAILED
@@ -178,6 +190,10 @@ class JobManager:
             job.finished_at = datetime.now(timezone.utc)
             session.commit()
             return {"id": job.id, "status": job.status, "cancelled": True}
+
+    def _chequear_cancelacion(self, job_id: str):
+        if job_id in self._cancelar:
+            raise JobCancelado(job_id)
 
     def get_job(self, job_id: str) -> Optional[dict]:
         """Obtiene el estado de un job."""
@@ -286,6 +302,7 @@ class JobManager:
             kind = job.kind
 
         def update_progress(progress: int, message: str):
+            self._chequear_cancelacion(job_id)
             with get_sync_session() as s:
                 self._update_job(s, job_id, progress=progress, message=message)
 
@@ -301,26 +318,44 @@ class JobManager:
                 raise RuntimeError("La ingesta devolvió False")
 
             node_id = None
+            mensaje = "Completado"
+            sin_cambios = False
             if isinstance(result, dict):
                 node_id = result.get("node_id")
+                mensaje = result.get("mensaje") or mensaje
+                sin_cambios = bool(result.get("sin_cambios"))
 
-            update_progress(90, "Calculando posiciones…")
+            update_progress(90, "Calculando posiciones…")   # último punto para cancelar
 
-            if self._umap_fn:
+            # Si no entró nada nuevo (ya estaba), no hay posiciones que recalcular.
+            if self._umap_fn and not sin_cambios:
                 try:
                     self._umap_fn()
                 except Exception as e:
                     print(f"[jobs] Error en UMAP: {e}")
 
+            self._cancelar.discard(job_id)   # si llegó tarde, el job ya estaba guardado
             with get_sync_session() as session:
                 self._update_job(
                     session, job_id,
                     status=JOB_STATUS_DONE,
                     progress=100,
-                    message="Completado",
+                    message=mensaje,
                     node_id=node_id,
                     finished_at=datetime.now(timezone.utc),
                 )
+
+        except JobCancelado:
+            self._cancelar.discard(job_id)
+            with get_sync_session() as session:
+                self._update_job(
+                    session, job_id,
+                    status=JOB_STATUS_FAILED,
+                    message="Cancelado por el usuario",
+                    error_message="Cancelado",
+                    finished_at=datetime.now(timezone.utc),
+                )
+            return
 
         except Exception as e:
             error_str = str(e).lower()

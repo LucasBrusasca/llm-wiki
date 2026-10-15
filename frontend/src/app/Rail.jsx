@@ -7,12 +7,12 @@ import { hayNombresAutomaticos } from '@/lib/temas';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
-import { renameSection, deleteSection, fetchFuentesDatos, fetchModelo } from '@/lib/api';
+import { renameSection, deleteSection, fetchFuentesDatos, fetchModelo, fetchContenidoSeccion } from '@/lib/api';
 import { abrirExplorador } from '@/lib/eventos';
 import { pedirClave, avisarClaveIncorrecta } from '@/security.js';
 import { Button } from '@/components/ui/button';
 import { BotonPanel } from '@/app/PanelLateral';
-import { tipoMeta, fuenteLabel, iconoDe, colorFuente, colorTipo, colorSeccion, TODAS } from '@/lib/nodes';
+import { tipoMeta, fuenteLabel, iconoDe, colorFuente, colorTipo, colorSeccion, TODAS, TIPOS } from '@/lib/nodes';
 import { cn } from '@/lib/utils';
 
 function Grupo({ titulo, children, accion, plegable = false }) {
@@ -163,6 +163,94 @@ function ArbolDatos({ fuentes, onAbrirNodo }) {
   );
 }
 
+const POR_TANDA = 60;
+
+/** El grupo de un nodo en el árbol: su tipo si es propio (Notas, Scripts, Reportes),
+ *  y si es un documento, su origen (PDF, Word, YouTube…). */
+function grupoDe(n) {
+  if (n.type && n.type !== 'DOCUMENTO' && TIPOS[n.type]) return TIPOS[n.type].plural;
+  return fuenteLabel(n) || 'Otros';
+}
+
+/**
+ * Lo que tiene una sección por dentro, como el panel de campos de Power BI: sus
+ * documentos agrupados por origen y sus fuentes de datos con tablas y campos. Se baja
+ * recién al desplegarla y muestra de a tandas, así una sección grande no traba nada.
+ */
+function ContenidoSeccion({ seccion, fuentes, onAbrirNodo, version }) {
+  const [nodos, setNodos] = useState(null);
+  const [error, setError] = useState(null);
+  const [abiertos, setAbiertos] = useState(() => new Set());
+  const [cuantos, setCuantos] = useState({});
+  useEffect(() => {
+    let vivo = true;
+    fetchContenidoSeccion(seccion).then((x) => vivo && setNodos(x)).catch((e) => vivo && setError(e.message));
+    return () => { vivo = false; };
+  }, [seccion, version]);
+
+  if (error) return <p className="py-1 pl-9 pr-2 text-[11px] text-danger/80">{error}</p>;
+  if (!nodos) return <p className="flex items-center gap-1.5 py-1 pl-9 text-[11px] text-ink-dim"><Loader2 className="size-3 animate-spin" /> Leyendo…</p>;
+
+  const grupos = new Map();
+  for (const n of nodos) {
+    if (n.type === 'DATOS') continue;            // van con sus tablas, abajo
+    const g = grupoDe(n);
+    if (!grupos.has(g)) grupos.set(g, []);
+    grupos.get(g).push(n);
+  }
+  const orden = [...grupos.entries()].sort((a, b) => b[1].length - a[1].length);
+  if (!orden.length && !fuentes.length) return <p className="py-1 pl-9 pr-2 text-[11px] text-ink-dim/80">Sección vacía.</p>;
+
+  const fila = 'flex h-6 w-full items-center gap-1.5 rounded-xs pr-2 text-left text-[11.5px] hover:bg-surface-2';
+  const alternar = (g) => setAbiertos((a) => { const x = new Set(a); if (x.has(g)) x.delete(g); else x.add(g); return x; });
+  const Cabeza = ({ g, n, Icono }) => (
+    <button type="button" onClick={() => alternar(g)} className={cn(fila, 'pl-5 text-ink-muted hover:text-ink')}>
+      <ChevronRight className={cn('size-3 shrink-0 text-ink-dim transition-transform', abiertos.has(g) && 'rotate-90')} />
+      <Icono className="size-3 shrink-0 text-ink-dim" />
+      <span className="min-w-0 flex-1 truncate">{g}</span>
+      <span className="text-[10.5px] tabular-nums text-ink-dim">{n}</span>
+    </button>
+  );
+  return (
+    <ul className="pb-1">
+      {fuentes.length > 0 && (
+        <li>
+          <Cabeza g="Datos" n={fuentes.length} Icono={Database} />
+          {abiertos.has('Datos') && <div className="pl-4"><ArbolDatos fuentes={fuentes} onAbrirNodo={onAbrirNodo} /></div>}
+        </li>
+      )}
+      {orden.map(([g, lista]) => {
+        const max = cuantos[g] || POR_TANDA;
+        return (
+          <li key={g}>
+            <Cabeza g={g} n={lista.length} Icono={iconoDe(lista[0])} />
+            {abiertos.has(g) && (
+              <ul>
+                {lista.slice(0, max).map((n) => (
+                  <li key={n.id}>
+                    <button type="button" onClick={() => onAbrirNodo?.(n.id, seccion)} title={n.label}
+                      className={cn(fila, 'pl-[38px] text-ink-dim hover:text-ink')}>
+                      <span className="min-w-0 truncate">{n.label}</span>
+                    </button>
+                  </li>
+                ))}
+                {lista.length > max && (
+                  <li>
+                    <button type="button" onClick={() => setCuantos((c) => ({ ...c, [g]: max + POR_TANDA }))}
+                      className={cn(fila, 'pl-[38px] text-accent/80 hover:text-accent')}>
+                      Ver {Math.min(POR_TANDA, lista.length - max)} más de {lista.length - max}
+                    </button>
+                  </li>
+                )}
+              </ul>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export default function Rail({
   sections, seccion, onSeccion, onNuevaSeccion,
   facetas, tipos, onToggleTipo, fuentes, onToggleFuente,
@@ -259,7 +347,7 @@ export default function Rail({
             <button
               type="button"
               aria-label={(desplegadas.has(s.nombre) ? 'Plegar ' : 'Desplegar ') + s.nombre}
-              title="Ver sus fuentes de datos, tablas y campos"
+              title="Ver lo que tiene: documentos por origen, fuentes de datos, tablas y campos"
               onClick={() => setDesplegadas((d) => { const x = new Set(d); if (x.has(s.nombre)) x.delete(s.nombre); else x.add(s.nombre); return x; })}
               className="absolute left-0 top-2 z-[1] grid size-4 place-items-center rounded-xs text-ink-dim/70 hover:text-ink"
             >
@@ -309,7 +397,8 @@ export default function Rail({
               )}
             />
             {desplegadas.has(s.nombre) && (
-              <ArbolDatos fuentes={fuentesDatos.filter((f) => f.seccion === s.nombre)} onAbrirNodo={onAbrirNodo} />
+              <ContenidoSeccion seccion={s.nombre} version={s.count}
+                fuentes={fuentesDatos.filter((f) => f.seccion === s.nombre)} onAbrirNodo={onAbrirNodo} />
             )}
             </div>
           ))}

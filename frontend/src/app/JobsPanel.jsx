@@ -86,12 +86,13 @@ function JobRow({ job, onRetry, onCancel, onDone }) {
       </div>
 
       <div className="shrink-0">
-        {job.status === 'queued' && (
+        {(job.status === 'queued' || job.status === 'running') && (
           <button
             type="button"
             onClick={() => onCancel(job.id)}
             className="rounded-xs p-1 text-ink-dim hover:bg-surface-3 hover:text-ink"
-            title="Cancelar"
+            title={job.status === 'running' ? 'Cancelar: se detiene al terminar el paso actual y no guarda nada' : 'Cancelar'}
+            aria-label="Cancelar"
           >
             <X className="size-3.5" />
           </button>
