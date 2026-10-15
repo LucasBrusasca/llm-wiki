@@ -799,6 +799,38 @@ def procesar_html(ruta_html):
     return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 
+_META_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_\-]+)""", re.IGNORECASE)
+
+
+def decodificar_html(contenido: bytes, content_type: str = "") -> str:
+    """El texto de una página con SU codificación. Muchas páginas del Estado (InfoLEG,
+    por ejemplo) están en Latin-1 y no lo dicen en el encabezado HTTP, sólo en un
+    <meta>: leerlas como UTF-8 rompía todos los acentos («Constituci�n»)."""
+    import codecs
+    candidatos = []
+    m = re.search(r"charset=([\w\-]+)", content_type or "", re.IGNORECASE)
+    if m:
+        candidatos.append(m.group(1))
+    m = _META_CHARSET.search(contenido[:4096])
+    if m:
+        candidatos.append(m.group(1).decode("ascii", "ignore"))
+    for cod in candidatos:
+        try:
+            codecs.lookup(cod)
+        except LookupError:
+            continue
+        # «iso-8859-1» declarado casi siempre es windows-1252 (comillas tipográficas, €).
+        cod = "cp1252" if cod.lower().replace("_", "-") in ("iso-8859-1", "latin-1", "latin1") else cod
+        try:
+            return contenido.decode(cod)
+        except UnicodeDecodeError:
+            continue
+    try:
+        return contenido.decode("utf-8")
+    except UnicodeDecodeError:
+        return contenido.decode("cp1252", errors="replace")
+
+
 def procesar_url_web(url: str):
     """Descarga y procesa cualquier URL web (artículo, Wikipedia, GitHub, etc.)."""
     from security_utils import safe_http_get
@@ -811,7 +843,7 @@ def procesar_url_web(url: str):
         content_type = resp.headers.get("content-type", "")
         if "pdf" in content_type:
             raise ValueError("URL apunta a un PDF — subilo como archivo")
-        html = resp.text
+        html = decodificar_html(resp.content, content_type)
     except httpx.HTTPStatusError as e:
         raise ValueError(f"No se pudo acceder a la URL: HTTP {e.response.status_code}")
     except Exception as e:

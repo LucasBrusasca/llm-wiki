@@ -210,7 +210,7 @@ function Boton({ texto, onClick, children }) {
 
 export default function Vista4D({
   selectedId, onElegir, seccion, filtro, pinnedEdge, onClearPin, ego, onFijar, highlightIds,
-  colorMode, onColorMode, colorDe, temas: temasSeccion, onAbrirSeccion, onVacio,
+  colorMode, onColorMode, colorDe, temas: temasSeccion, onAbrirSeccion, onVacio, version,
 }) {
   const cajaRef = useRef(null);
   const apiRef = useRef(null);
@@ -230,6 +230,7 @@ export default function Vista4D({
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState(null);
   const [dentro, setDentro] = useState(null);
+  const [salaFoco, setSalaFoco] = useState(null);   // la habitación a la que se voló
   const [hover, setHover] = useState(null);       // documento bajo el mouse (NodoTooltip)
   const etiquetasRef = useRef(null);              // tarjetas y chips (Etiquetas3D)
   const [ayuda, setAyuda] = useState(true);
@@ -248,11 +249,13 @@ export default function Vista4D({
   cubosRef.current = cubos;
   const ultimosCubos = useRef(cubos || 50);   // para volver a mostrarlos con el ojo
 
+  // Se vuelve a leer cuando cambian las secciones o lo que tienen (sección nueva,
+  // documentos ingeridos o movidos): si no, la 4D seguía mostrando lo de cuando se abrió.
   useEffect(() => {
     let vivo = true;
     fetchDimensiones().then((d) => vivo && setDatos(d)).catch((e) => vivo && setError(e.message));
     return () => { vivo = false; };
-  }, []);
+  }, [version]);
   useEffect(() => { const t = setTimeout(() => setAyuda(false), 10000); return () => clearTimeout(t); }, []);
   useEffect(() => { girandoRef.current = girando; }, [girando]);
   useEffect(() => {
@@ -400,10 +403,12 @@ export default function Vista4D({
     const ca = new Float32Array(Math.max(dibujadas.length, 1) * 6);
     const cIntra = new THREE.Color(0x6b79b8);
     const cPuerta = new THREE.Color(ACENTO);
+    const caBase = new Float32Array(ca.length);
     dibujadas.forEach((a, k) => {
       const c = seccionDe(a.source) !== seccionDe(a.target) ? cPuerta : cIntra;
-      ca.set([c.r, c.g, c.b, c.r, c.g, c.b], k * 6);
+      caBase.set([c.r, c.g, c.b, c.r, c.g, c.b], k * 6);
     });
+    ca.set(caBase);
     const ga = new THREE.BufferGeometry();
     ga.setAttribute('position', new THREE.BufferAttribute(pa, 3));
     ga.setAttribute('color', new THREE.BufferAttribute(ca, 3));
@@ -554,13 +559,37 @@ export default function Vista4D({
     const pPieza = new THREE.Vector3();
     // Un punto se apaga (negro no suma nada con mezcla aditiva) si es tarjeta o si los
     // filtros de la sección lo dejan afuera.
+    // Habitación en foco: al volar a una sección, las demás se apagan hasta salir o
+    // elegir algo de otra; así la que pediste es la que se ve.
+    let focoSala = null;
+    setSalaFoco(null);   // escena nueva: sin habitación en foco
     const aplicarColores = () => {
       for (let i = 0; i < nodos.length; i++) {
         if (enTarjeta.has(i) || !visible[i]) col.fill(0, i * 3, i * 3 + 3);
-        else col.set(colBase.subarray(i * 3, i * 3 + 3), i * 3);
+        else if (focoSala && nodos[i].sala.nombre !== focoSala) {
+          for (let k = 0; k < 3; k++) col[i * 3 + k] = colBase[i * 3 + k] * 0.14;
+        } else col.set(colBase.subarray(i * 3, i * 3 + 3), i * 3);
       }
       gp.attributes.color.needsUpdate = true;
       sucio = true;
+    };
+    const fijarFoco = (nombre) => {
+      if (focoSala === nombre) return;
+      focoSala = nombre;
+      setSalaFoco(nombre);
+      for (const s of salas) {
+        s.paredes.material.opacity = !nombre ? 0.045 : s.nombre === nombre ? 0.09 : 0.025;
+        s.rotulo.element.style.opacity = !nombre || s.nombre === nombre ? '' : '0.3';
+      }
+      // Relaciones: las de la habitación en foco quedan; las puertas hacia otras, a media
+      // luz; las que no la tocan, casi apagadas.
+      dibujadas.forEach((a, k) => {
+        const toca = !nombre ? 2 : (seccionDe(a.source) === nombre) + (seccionDe(a.target) === nombre);
+        const f = toca === 2 ? 1 : toca === 1 ? 0.45 : 0.08;
+        for (let j = 0; j < 6; j++) ca[k * 6 + j] = caBase[k * 6 + j] * f;
+      });
+      ga.attributes.color.needsUpdate = true;
+      aplicarColores();
     };
     const actualizarDetalle = () => {
       const focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(camara.fov / 2));
@@ -705,6 +734,7 @@ export default function Vista4D({
       // del teseracto, no sólo para la elegida.
       nodos.forEach((x, i) => { visible[i] = !f || f(x.n) ? 1 : 0; });
       const sel = selRef.current;
+      if (focoSala && sel != null && indice.has(sel) && nodos[indice.get(sel)].sala.nombre !== focoSala) fijarFoco(null);
       pinOtro = pe && sel && (pe.source === sel || pe.target === sel) && indice.has(pe.source) && indice.has(pe.target)
         ? (pe.source === sel ? pe.target : pe.source) : null;
       egoAhora = eg && indice.has(eg.origen) ? eg : null;
@@ -778,19 +808,50 @@ export default function Vista4D({
       volarASala(nombre) {
         const s = salas.find((x) => x.nombre === nombre);
         if (!s) return;
-        const dir = camara.position.clone().sub(s.centro).normalize();
-        if (dir.lengthSq() < 0.01) dir.set(0, 0, 1);
-        // Más cerca cuanto más chico es su grupo de documentos.
-        volar(s.centro.clone().add(dir.multiplyScalar(s.radio * (0.35 + 0.55 * s.llenado))), s.centro.clone());
+        // Se encuadran SUS documentos (como están proyectados ahora), no la caja entera.
+        const pts = [];
+        nodos.forEach((x, i) => { if (x.sala === s && visible[i]) pts.push(posicion(i)); });
+        const centro = pts.length
+          ? pts.reduce((c, p) => c.add(p), new THREE.Vector3()).multiplyScalar(1 / pts.length)
+          : s.centro.clone();
+        const dists = pts.map((p) => p.distanceTo(centro)).sort((a, b) => a - b);
+        const r = dists.length ? Math.max(140, dists[Math.floor(dists.length * 0.85)] || 0) : s.radio * 0.45;
+        // Se mira de costado (a la altura de la habitación, no desde arriba) y desde
+        // afuera del teseracto, del lado de esa habitación: entre la cámara y sus
+        // documentos no se cruza otra sección. La del centro, desde la habitación lateral
+        // con menos documentos; las de arriba y abajo, desde donde ya está la cámara.
+        const horizontal = (v) => new THREE.Vector3(v.x, 0, v.z);
+        let dir;
+        if (s === salas[0]) {
+          const laterales = salas.slice(1).filter((x) => Math.abs(x.centro.y) < 0.6 * x.centro.length());
+          const vacia = laterales.sort((a, b) => a.docs.length - b.docs.length)[0];
+          dir = vacia ? horizontal(vacia.centro.clone().sub(s.centro)) : new THREE.Vector3();
+        } else {
+          dir = horizontal(s.centro);
+        }
+        const desdeCamara = horizontal(camara.position.clone().sub(centro));
+        if (dir.lengthSq() < 1) dir = desdeCamara.lengthSq() > 1 ? desdeCamara : new THREE.Vector3(0, 0, 1);
+        dir.normalize();
+        if (desdeCamara.lengthSq() > 1 && desdeCamara.normalize().dot(dir) > 0) {
+          dir.addScaledVector(desdeCamara, 0.3).normalize();                       // sin giros bruscos
+        }
+        dir.y = 0.12;                                                               // apenas desde arriba
+        dir.normalize();
+        const mitadV = THREE.MathUtils.degToRad(camara.fov / 2);
+        const mitad = Math.min(mitadV, Math.atan(Math.tan(mitadV) * camara.aspect));
+        const dist = Math.max(260, (r / Math.sin(mitad)) * 1.15);
+        fijarFoco(s.nombre);
+        volar(centro.clone().add(dir.multiplyScalar(dist)), centro);
       },
       volarA(id) {
         const i = indice.get(id);
         if (i == null) return;
+        if (focoSala && nodos[i].sala.nombre !== focoSala) fijarFoco(null);
         const p = posicion(i);
         const dir = camara.position.clone().sub(p).normalize();
         volar(p.clone().add(dir.multiplyScalar(160)), p.clone(), 1100);
       },
-      salir() { const v = vistaGeneral(); volar(v.pos, v.target); },
+      salir() { fijarFoco(null); const v = vistaGeneral(); volar(v.pos, v.target); },
       zoom(f) {
         const dir = camara.position.clone().sub(controles.target);
         volar(controles.target.clone().add(dir.multiplyScalar(f)), controles.target.clone(), 450);
@@ -1078,6 +1139,7 @@ export default function Vista4D({
   const pinOtroId = pinnedEdge && selectedId && (pinnedEdge.source === selectedId || pinnedEdge.target === selectedId)
     ? (pinnedEdge.source === selectedId ? pinnedEdge.target : pinnedEdge.source) : null;
   const pinLabel = pinOtroId ? porId.get(pinOtroId)?.label : null;
+  const enSala = salaFoco || dentro;   // la que pediste manda sobre dónde quedó la cámara
   const egoLabel = ego ? porId.get(ego.origen)?.label : null;
   const leyenda = useMemo(() => {
     if (!datos) return null;
@@ -1100,8 +1162,8 @@ export default function Vista4D({
       <div className="pointer-events-none absolute left-3 right-3 top-3 z-10 flex flex-wrap items-start gap-2 text-[11px] text-ink-dim">
         <span data-hud className="pointer-events-auto flex items-center gap-1 whitespace-nowrap rounded-xs border border-hair bg-surface/90 px-1.5 py-0.5">
           <span className="font-medium text-ink">4D</span>
-          <span>· {dentro ? <>adentro de <b className="font-medium capitalize text-ink">{dentro}</b></> : 'tus secciones, unidas en un teseracto'}</span>
-          {dentro && (
+          <span>· {enSala ? <>en <b className="font-medium capitalize text-ink">{enSala}</b></> : 'tus secciones, unidas en un teseracto'}</span>
+          {enSala && (
             <button type="button" onClick={() => apiRef.current?.salir()} className="ml-1 flex items-center gap-0.5 text-accent-soft hover:text-accent">
               <Undo2 className="size-3" /> salir
             </button>
@@ -1134,7 +1196,7 @@ export default function Vista4D({
                 type="button"
                 onClick={() => apiRef.current?.volarASala(s.nombre)}
                 className={`flex items-center gap-2 rounded-xs px-1 py-0.5 text-left hover:bg-surface-2 hover:text-ink ${
-                  dentro === s.nombre ? 'bg-surface-2 text-ink' : 'text-ink-muted'}`}
+                  enSala === s.nombre ? 'bg-surface-2 text-ink' : 'text-ink-muted'}`}
               >
                 <span className="size-2 rounded-[2px] dot-cat" style={{ '--c': colorSeccion(i) }} />
                 <span className="capitalize">{s.nombre}</span>
@@ -1143,12 +1205,12 @@ export default function Vista4D({
             ))}
             {/* De lo general a lo particular: estando en una habitación, se entra a esa
                 sección en la vista que convenga. */}
-            {dentro && onAbrirSeccion && (
+            {enSala && onAbrirSeccion && (
               <div className="mt-1 border-t border-hair px-1 pt-1.5">
-                <span className="block pb-1 text-[10.5px] text-ink-dim">Entrar a <span className="capitalize text-ink-muted">{dentro}</span> en</span>
+                <span className="block pb-1 text-[10.5px] text-ink-dim">Entrar a <span className="capitalize text-ink-muted">{enSala}</span> en</span>
                 <div className="flex gap-1">
                   {[['grafo', 'Grafo 2D'], ['3d', '3D'], ['lista', 'Lista']].map(([v, l]) => (
-                    <button key={v} type="button" onClick={() => onAbrirSeccion(dentro, v)}
+                    <button key={v} type="button" onClick={() => onAbrirSeccion(enSala, v)}
                       className="rounded-xs border border-hair-strong px-1.5 py-0.5 text-ink-muted hover:border-accent/60 hover:text-ink">
                       {l}
                     </button>

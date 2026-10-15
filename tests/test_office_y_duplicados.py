@@ -113,3 +113,16 @@ class UrlNormalizadaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DecodificarHtmlTests(unittest.TestCase):
+    def test_latin1_declarado_solo_en_el_meta(self):
+        from processor import decodificar_html
+        html = '<html><head><meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1"></head><body>Constitución “Nacional”</body></html>'
+        self.assertIn("Constitución “Nacional”", decodificar_html(html.encode("cp1252"), "text/html"))
+
+    def test_utf8_y_encabezado_http(self):
+        from processor import decodificar_html
+        self.assertEqual(decodificar_html("año".encode("utf-8")), "año")
+        self.assertEqual(decodificar_html("año".encode("latin-1"), "text/html; charset=ISO-8859-1"), "año")
+        self.assertEqual(decodificar_html("año".encode("latin-1")), "año")      # sin pistas: no rompe

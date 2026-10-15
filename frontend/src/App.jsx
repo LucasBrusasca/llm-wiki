@@ -767,6 +767,7 @@ export default function App() {
               highlightIds={highlightIds} colorMode={modoColor} onColorMode={setColorMode3d} colorDe={colorDe} temas={temas}
               onAbrirSeccion={(nombre, v) => { cambiarSeccion(nombre); setVista(v); }}
               onVacio={soltarUno}
+              version={sections.map((x) => `${x.nombre}:${x.count}`).join('|')}
             />
           )
           : <GraphCanvas {...propsGrafo} />}

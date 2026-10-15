@@ -1273,6 +1273,28 @@ async def _archivo_de_nodo(db: AsyncSession, node_id: str) -> Path:
     return _resolve_file(node.fuente_path)
 
 
+@app.get("/api/node/{node_id}/texto")
+async def texto_de_nodo(node_id: str, db: AsyncSession = Depends(get_async_session)):
+    """El texto que Algedi guardó del documento, reconstruido de sus fragmentos (sin el
+    solapamiento entre uno y otro). Para páginas web ingeridas por enlace, que no
+    tienen archivo propio: muchas no se pueden mostrar embebidas o arman su contenido
+    con JavaScript."""
+    filas = (await db.execute(text("""
+        SELECT c.content, c.char_start, c.char_end, c.page
+        FROM chunks c JOIN documents d ON d.id = c.document_id
+        WHERE d.node_id = :id ORDER BY c.ordinal
+    """), {"id": node_id})).all()
+    partes, fin = [], None
+    for f in filas:
+        contenido = f.content or ""
+        if fin is not None and f.char_start is not None and f.char_start < fin:
+            contenido = contenido[fin - f.char_start:]          # lo que ya vino en el anterior
+        partes.append(contenido)
+        fin = f.char_end if f.char_end is not None else None
+    return {"node_id": node_id, "texto": "".join(partes) if fin is not None or len(partes) <= 1
+            else "\n\n".join(partes), "fragmentos": len(filas)}
+
+
 @app.get("/api/node/{node_id}/office")
 async def vista_office(node_id: str, db: AsyncSession = Depends(get_async_session)):
     """Word o PowerPoint con su estructura (títulos, párrafos, listas, tablas, imágenes;

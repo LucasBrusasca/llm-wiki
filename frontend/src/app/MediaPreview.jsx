@@ -25,6 +25,8 @@ export function tipoMedia(node) {
   if (ext === 'docx' || (f === 'word' && ext !== 'doc')) return 'word';
   if (['pptx', 'pptm'].includes(ext) || (f === 'ppt' && ext !== 'ppt')) return 'ppt';
   if (ext === 'pdf' || f === 'pdf') return 'pdf';
+  // Una página ingerida por enlace no tiene archivo: se muestra el texto que se guardó.
+  if (f === 'html' && !node.fuente_path && node.fuente_url) return 'web';
   if (['html', 'htm'].includes(ext) || f === 'html') return 'html';
   if (['py', 'ipynb', 'txt', 'md', 'json'].includes(ext)) return 'codigo';
   return node.fuente_path || node.fuente_url ? 'archivo' : 'nada';
@@ -69,6 +71,33 @@ function VisorImagen({ node }) {
         </div>
       </div>
       <p className="text-[11px] text-ink-dim">Rueda para acercar · arrastrá para mover · doble clic para encuadrar {z > 1 && `· ×${z.toFixed(1)}`}</p>
+    </div>
+  );
+}
+
+/** El texto que Algedi guardó de una página web (muchas no se dejan embeber o arman
+ *  su contenido con JavaScript, así que se muestra lo que se extrajo). */
+function VistaTextoWeb({ node }) {
+  const [d, setD] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let vivo = true;
+    setD(null); setError(null);
+    fetch(`/api/node/${encodeURIComponent(node.id)}/texto`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((x) => vivo && setD(x)).catch((e) => vivo && setError(e.message));
+    return () => { vivo = false; };
+  }, [node.id]);
+  if (error) return <p className="text-[12px] text-ink-dim">No se pudo leer el texto guardado: {error}</p>;
+  if (!d) return <p className="flex items-center gap-1.5 text-[12px] text-ink-dim"><Loader2 className="size-3.5 animate-spin" /> Leyendo…</p>;
+  if (!d.texto.trim()) return <p className="text-[12px] text-ink-dim">De esta página no se guardó texto (probablemente arma su contenido con JavaScript).</p>;
+  const parrafos = d.texto.split(/\n{2,}|(?<=[.:;])\s{2,}/).map((p) => p.trim()).filter(Boolean);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <p className="text-[11px] text-ink-dim">Texto guardado de la página · {d.texto.length.toLocaleString('es-AR')} caracteres</p>
+      <article className="max-h-[70vh] overflow-y-auto rounded-md border border-hair bg-surface-2 px-4 py-3 text-[12.5px] leading-relaxed text-ink-muted">
+        {parrafos.map((p, i) => <p key={i} className="mb-2 whitespace-pre-wrap">{p}</p>)}
+      </article>
     </div>
   );
 }
@@ -172,6 +201,14 @@ export default function MediaPreview({ node, onAbrirOriginal }) {
           className="min-h-[380px] flex-1 rounded-md border border-hair bg-white"
           loading="lazy"
         />
+        <div className="flex gap-1.5">{original}</div>
+      </div>
+    );
+  }
+  if (tipo === 'web') {
+    return (
+      <div className="flex flex-col gap-2">
+        <VistaTextoWeb node={node} />
         <div className="flex gap-1.5">{original}</div>
       </div>
     );
