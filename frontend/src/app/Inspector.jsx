@@ -1,7 +1,7 @@
 import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import {
   X, ExternalLink, MessageSquare, Share2, ArrowUpRight, ArrowDownLeft, ArrowRight, Copy, Check,
-  Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight, Pencil, FolderInput, Loader2, Trash2,
+  Hash, Link2, CornerDownRight, Pin, PinOff, Unlink, Undo2, ChevronRight, Pencil, FolderInput, Loader2, Trash2, RefreshCw,
   BarChart3,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -21,6 +21,7 @@ import EjecutarArchivo from '@/app/EjecutarArchivo';
 import CodigoScript from '@/app/CodigoScript';
 import ConsultaDatos from '@/app/ConsultaDatos';
 import PreguntaVista from '@/app/PreguntaVista';
+import { reprocesarNodo } from '@/lib/api';
 import { abrirExplorador } from '@/lib/eventos';
 import NotaEditor from '@/app/NotaEditor';
 import { cn, fechaCorta, pct, normalizar } from '@/lib/utils';
@@ -439,6 +440,7 @@ export default function Inspector({
   // Vista previa primero; si el documento no tiene nada que previsualizar, Resumen.
   const [tab, setTab] = useState('preview');
   const [copiado, setCopiado] = useState(false);
+  const [reprocesando, setReprocesando] = useState(null);   // id del nodo que se mandó a reprocesar
   const [editando, setEditando] = useState(false);
   const rels = useMemo(() => (node ? relIndex.get(node.id) || [] : []), [node, relIndex]);
   // Las relaciones también llegan a documentos de otras secciones: se nombran igual.
@@ -578,6 +580,18 @@ export default function Inspector({
                 <FolderInput />
               </Button>
             </Hint>
+            {(node.fuente_url || node.fuente_path) && !['REPORTE', 'PREGUNTA', 'NOTA'].includes(node.type) && (
+              <Hint texto={reprocesando === node.id ? 'Reprocesando: mirá el avance en Jobs' : 'Reprocesar: volver a leer la fuente y actualizar este nodo (mismo nodo, texto y resumen nuevos)'}>
+                <Button variant="ghost" size="icon-sm" aria-label="Reprocesar" disabled={reprocesando === node.id}
+                  onClick={async () => {
+                    if (!window.confirm(`¿Volver a leer la fuente de «${node.label}» y actualizarlo? Tarda lo que una ingesta.`)) return;
+                    setReprocesando(node.id);
+                    try { await reprocesarNodo(node.id); } catch (e) { window.alert(`No se pudo reprocesar: ${e.message}`); setReprocesando(null); }
+                  }}>
+                  <RefreshCw className={cn(reprocesando === node.id && 'animate-spin')} />
+                </Button>
+              </Hint>
+            )}
             {onPapelera && (
               <Hint texto="Mover a la papelera (se puede restaurar)">
                 <Button variant="ghost" size="icon-sm" onClick={() => onPapelera([node.id])} aria-label="Mover a la papelera" className="hover:text-danger">

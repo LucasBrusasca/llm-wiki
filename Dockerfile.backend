@@ -1,6 +1,10 @@
 FROM python:3.11-slim AS base
 WORKDIR /app
 RUN apt-get update && apt-get install -y gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+# torch sólo para CPU: la máquina no tiene GPU NVIDIA y la versión con CUDA bajaba más de
+# 2 GB de librerías que no se usan (cada reconstrucción tardaba 25 minutos). Se instala
+# antes para que sentence-transformers lo encuentre y no traiga la de CUDA.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 COPY requirements-fastapi.txt .
 RUN pip install --no-cache-dir -r requirements-fastapi.txt
 # Chromium para miniaturas de HTML renderizadas con estilos (Playwright headless).

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Plus, Upload, Terminal, Hash, ChevronDown, MoreHorizontal, Pencil, Trash2, Sparkles, StickyNote, RefreshCw, Loader2,
-  History, ChevronRight, Database, Table2, Eye, Calendar, Type, ToggleLeft, Layers, MessageCircleQuestion,
+  History, ChevronRight, Database, Table2, Eye, Calendar, Type, ToggleLeft, Layers, MessageCircleQuestion, Copy,
 } from 'lucide-react';
 import { hayNombresAutomaticos } from '@/lib/temas';
 import {
@@ -256,7 +256,7 @@ export default function Rail({
   facetas, tipos, onToggleTipo, fuentes, onToggleFuente,
   topConceptos, conceptos, onToggleConcepto,
   temas, temasSel, onToggleTema, onNombrarTemas, onReagrupar, reagrupando = false,
-  onIngest, onCorridas, onPapelera, papeleraCount = 0, onNuevaNota, onNuevoScript, onNuevaPregunta, onSeccionesCambiadas, onSeccionEliminada, ancho = 272,
+  onIngest, onCorridas, onPapelera, papeleraCount = 0, onDuplicados, duplicadosCount = 0, onNuevaNota, onNuevoScript, onNuevaPregunta, onSeccionesCambiadas, onSeccionEliminada, ancho = 272,
   onCollapse, onAbrirNodo,
 }) {
   // Fuentes de datos de todas las secciones, para desplegarlas bajo cada una.
@@ -518,6 +518,18 @@ export default function Rail({
         <History className="size-3" /> Corridas
         <span className="text-ink-dim/70">· lo que se corrió y consultó</span>
       </button>
+      {/* Posibles duplicados: sólo aparece si hay alguno para revisar. */}
+      {duplicadosCount > 0 && (
+        <button
+          type="button"
+          onClick={onDuplicados}
+          className="flex h-8 shrink-0 items-center gap-1.5 border-t border-hair px-3 text-[11.5px] text-warn/90 transition-colors hover:bg-surface-2 hover:text-warn"
+          title="Documentos que parecen el mismo: elegí cuál se conserva"
+        >
+          <Copy className="size-3" /> Posibles duplicados
+          <span className="ml-auto text-[11px] tabular-nums">{duplicadosCount}</span>
+        </button>
+      )}
       {/* Papelera: lo que se sacó de la biblioteca, para restaurarlo o borrarlo del todo. */}
       <button
         type="button"

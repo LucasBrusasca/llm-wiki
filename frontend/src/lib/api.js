@@ -163,6 +163,29 @@ export async function fetchReporte(id, { actualizar = false } = {}) {
   return fetch(`/api/reportes/${encodeURIComponent(id)}${actualizar ? '?actualizar=true' : ''}`).then(jsonOError);
 }
 
+// ── Posibles duplicados ─────────────────────────────────────────────────
+export async function fetchDuplicados() {
+  const d = await fetch('/api/duplicados').then(jsonOError);
+  return d.grupos || [];
+}
+
+export async function resolverDuplicados({ conservar, descartar }) {
+  return fetch('/api/duplicados/resolver', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conservar, descartar }),
+  }).then(jsonOError);
+}
+
+export async function noSonDuplicados(clave) {
+  return fetch('/api/duplicados/no-son', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clave }),
+  }).then(jsonOError);
+}
+
+/** Vuelve a leer la fuente de un nodo y lo actualiza en el lugar (encola un job). */
+export async function reprocesarNodo(id) {
+  return fetch(`/api/node/${encodeURIComponent(id)}/reprocesar`, { method: 'POST' }).then(jsonOError);
+}
+
 /** Lo que tiene una sección, liviano: [{id, label, type, fuente, ext}]. */
 export async function fetchContenidoSeccion(seccion) {
   const d = await fetch(`/api/sections/${encodeURIComponent(seccion)}/contenido`).then(jsonOError);

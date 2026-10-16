@@ -326,6 +326,23 @@ def extraer_paginas_pdf(ruta_pdf) -> list[tuple[int, str]]:
 def extraer_texto_pdf(ruta_pdf):
     return "\n".join(text for _, text in extraer_paginas_pdf(ruta_pdf)).strip()
 
+# Contexto que se le pide a Ollama en cada llamada (tokens). 8192 entra holgado un
+# documento muestreado (~4 mil tokens) + instrucciones + respuesta, y en CPU el KV cache
+# de un 7B a este tamaño ronda 1 GB de RAM.
+OLLAMA_NUM_CTX = int(os.getenv("ALGEDI_OLLAMA_NUM_CTX", "8192"))
+# Cuánto texto del documento se le muestra al LLM (caracteres, ~3,5 por token en castellano).
+MUESTRA_LLM = int(os.getenv("ALGEDI_MUESTRA_LLM", "14000"))
+
+
+def _url_ollama_nativa(url: str) -> str | None:
+    """De «http://host:11434/v1/chat/completions» a «http://host:11434/api/chat»."""
+    if "/v1/" in (url or ""):
+        return url.split("/v1/", 1)[0].rstrip("/") + "/api/chat"
+    if (url or "").rstrip("/").endswith("/api/chat"):
+        return url
+    return None
+
+
 def _post_llm_chat(url, payload, headers, timeout, retries=6):
     """POST a un endpoint OpenAI-compatible con reintentos + backoff ante sobrecarga
     transitoria del proveedor (429 rate-limit por minuto, 5xx como el 503 de Gemini)
@@ -392,6 +409,22 @@ def query_llm(messages: list, system: str = None) -> str:
                     m["content"] = f"{m['content']}\n\n/no_think"
                     break
 
+        # API nativa de Ollama (/api/chat), no la compatible con OpenAI: es la única que
+        # deja fijar el contexto. Sin num_ctx, Ollama usaba 4096 y recortaba el pedido a
+        # 2050 tokens quedándose con el FINAL: el LLM resumía sin ver título ni
+        # introducción (visto en su log el 14/10: pedidos de 4-6 mil tokens recortados).
+        # Contexto fijo para no forzar a Ollama a recargar el modelo entre llamadas.
+        nativa = _url_ollama_nativa(url)
+        if nativa:
+            payload = {"model": model, "messages": payload_messages, "stream": False,
+                       "options": {"temperature": 0.1, "num_ctx": OLLAMA_NUM_CTX}}
+            try:
+                data = _post_llm_chat(nativa, payload, headers, httpx.Timeout(900.0, connect=10.0))
+                return strip_thinking(data["message"]["content"])
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code != 404:
+                    raise
+                print("[LLM] Ollama sin /api/chat: uso el endpoint compatible con OpenAI")
         payload = {
             "model": model,
             "messages": payload_messages,
@@ -521,7 +554,7 @@ def procesar_pdf(ruta_pdf):
         ]}]
         response_text = query_llm(messages)
     else:
-        prompt = f"Analizá el siguiente documento y generá UN ÚNICO nodo de resumen.\n\nDOCUMENTO:\n{pdf_text[:20000]}\n\n" + _PROMPT_SUFIJO
+        prompt = f"Analizá el siguiente documento y generá UN ÚNICO nodo de resumen.\n\nDOCUMENTO:\n{_muestra_representativa(pdf_text)}\n\n" + _PROMPT_SUFIJO
         messages = [{"role": "user", "content": prompt}]
         response_text = query_llm(messages)
         
@@ -605,14 +638,25 @@ def obtener_transcript(video_id):
         return None
 
 
-def _muestra_representativa(txt, max_chars=20000):
-    """Para transcripts largos: inicio + medio + final (representa todo el video sin
-    pasarle 80k chars al LLM)."""
+def _muestra_representativa(txt, max_chars=None, tramos=5):
+    """Lo que el LLM ve de un documento largo: el comienzo (título, resumen, índice,
+    introducción), varios tramos repartidos a lo largo y el final (conclusiones), en vez
+    de sólo las primeras páginas. Cabe en el contexto que se le pide a Ollama."""
+    max_chars = max_chars or MUESTRA_LLM
+    txt = txt or ""
     if len(txt) <= max_chars:
         return txt
-    t = max_chars // 3
     n = len(txt)
-    return (txt[:t] + "\n[…]\n" + txt[n // 2 - t // 2: n // 2 + t // 2] + "\n[…]\n" + txt[-t:])
+    inicio = int(max_chars * 0.30)
+    final = int(max_chars * 0.15)
+    medio = max_chars - inicio - final
+    ventana = max(400, medio // tramos)
+    partes = [txt[:inicio]]
+    for k in range(1, tramos + 1):
+        centro = inicio + (n - inicio - final) * k // (tramos + 1)
+        partes.append(txt[max(inicio, centro - ventana // 2): centro + ventana // 2])
+    partes.append(txt[-final:])
+    return "\n[…]\n".join(p.strip() for p in partes if p.strip())
 
 
 def _youtube_extra(url):
@@ -764,7 +808,25 @@ def procesar_excel(ruta_excel):
 
 
 def _extraer_texto_html(html_str: str) -> str:
-    """Extrae texto limpio de HTML. Usa BeautifulSoup si está disponible."""
+    """El texto de una página. Con trafilatura, sólo el contenido principal (sin menús,
+    pie, publicidad ni barras laterales) y con sus párrafos, que después cortan mejor los
+    fragmentos. Si no está instalado o el «contenido principal» es una fracción mínima
+    de la página (portadas, índices, páginas armadas con tablas), queda el texto entero."""
+    completo = _texto_html_completo(html_str)
+    try:
+        import trafilatura
+        principal = trafilatura.extract(
+            html_str, include_tables=True, include_comments=False, include_links=False,
+            favor_recall=True, deduplicate=True) or ""
+    except Exception:
+        principal = ""
+    if len(principal) >= 200 and len(principal) >= 0.15 * len(completo):
+        return principal.strip()
+    return completo
+
+
+def _texto_html_completo(html_str: str) -> str:
+    """Todo el texto visible del HTML, sin scripts ni estilos (BeautifulSoup si está)."""
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_str, "html.parser")
@@ -784,7 +846,7 @@ def procesar_html(ruta_html):
     except Exception:
         texto_completo = f"[Archivo HTML: {Path(ruta_html).name}]"
 
-    prompt = f"Contenido HTML:\n{texto_completo[:6000]}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    prompt = f"Contenido HTML:\n{_muestra_representativa(texto_completo)}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
     messages = [{"role": "user", "content": prompt}]
     response_text = query_llm(messages)
     resultado = parsear_json(response_text.strip())
@@ -860,7 +922,7 @@ def procesar_url_web(url: str):
     title_hint = f'Título de la página: "{page_title}"\n' if page_title else ""
     prompt = (
         f"URL: {url}\n{title_hint}"
-        f"Contenido de la página web:\n{texto_completo[:6000]}\n\n"
+        f"Contenido de la página web:\n{_muestra_representativa(texto_completo)}\n\n"
         f"Generá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
     )
     messages = [{"role": "user", "content": prompt}]
@@ -929,7 +991,7 @@ def procesar_txt(ruta: str):
     except Exception:
         texto = f"[Archivo: {Path(ruta).name}]"
 
-    prompt = f"Documento de texto:\n{texto[:6000]}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    prompt = f"Documento de texto:\n{_muestra_representativa(texto)}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
     messages = [{"role": "user", "content": prompt}]
     response_text = query_llm(messages)
     resultado = parsear_json(response_text.strip())
@@ -1112,7 +1174,7 @@ def _office_meta(ruta: str):
 def procesar_word(ruta: str):
     """Un único nodo por documento de Word (.docx)."""
     texto = _extraer_texto_office(ruta, ["word/document.xml"]) or f"[Documento Word: {Path(ruta).name}]"
-    prompt = f"Documento de Word:\n{texto[:20000]}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    prompt = f"Documento de Word:\n{_muestra_representativa(texto)}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
     response_text = query_llm([{"role": "user", "content": prompt}])
     nodo = parsear_json(response_text.strip())["nodo"]
     p = Path(ruta)
@@ -1129,7 +1191,7 @@ def procesar_word(ruta: str):
 def procesar_pptx(ruta: str):
     """Un único nodo por presentación de PowerPoint (.pptx)."""
     texto = _extraer_texto_office(ruta, ["ppt/slides/"]) or f"[Presentación: {Path(ruta).name}]"
-    prompt = f"Presentación de PowerPoint (texto de las diapositivas):\n{texto[:20000]}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
+    prompt = f"Presentación de PowerPoint (texto de las diapositivas):\n{_muestra_representativa(texto)}\n\nGenerá UN ÚNICO nodo de resumen." + _PROMPT_SUFIJO
     response_text = query_llm([{"role": "user", "content": prompt}])
     nodo = parsear_json(response_text.strip())["nodo"]
     p = Path(ruta)

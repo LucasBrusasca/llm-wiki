@@ -9,11 +9,12 @@ import IngestDialog from '@/app/IngestDialog';
 import Corridas from '@/app/Corridas';
 import { alPedirExplorar } from '@/lib/eventos';
 import CommandPalette from '@/app/CommandPalette';
+import DuplicadosDialog from '@/app/DuplicadosDialog';
 import JobsPanel, { useJobs, JobsBadge } from '@/app/JobsPanel';
 import {
   fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota, crearScript, agregarConexion, normalizeGraph,
   reagruparTemas, recalcularRelaciones, instalarHerramientas, crearReporte, crearPregunta,
-  fetchPapelera,
+  fetchPapelera, fetchDuplicados,
 } from '@/lib/api';
 import { AGRUPADORES, MODOS_COLOR, TIPOS, TODAS, nombreSeccion, indexarRelaciones } from '@/lib/nodes';
 import { construirTemas, temaKey, temaDe } from '@/lib/temas';
@@ -133,6 +134,8 @@ export default function App() {
   const [temaIds, setTemaIds] = useState(null);            // ids a los que cambiarles el tema
   const [papeleraOpen, setPapeleraOpen] = useState(false);
   const [papeleraCount, setPapeleraCount] = useState(0);
+  const [duplicadosOpen, setDuplicadosOpen] = useState(false);
+  const [duplicadosCount, setDuplicadosCount] = useState(0);
   const [pedidoEditar, setPedidoEditar] = useState(null);  // id que el inspector abre ya en edición
   const [marcados, setMarcados] = useState(() => new Set()); // selección múltiple en la lista
 
@@ -580,6 +583,10 @@ export default function App() {
     fetchPapelera().then((items) => setPapeleraCount(items.length)).catch(() => {});
   }, []);
   useEffect(() => { cargarPapeleraCount(); }, [cargarPapeleraCount]);
+  const cargarDuplicados = useCallback(() => {
+    fetchDuplicados().then((g) => setDuplicadosCount(g.length)).catch(() => {});
+  }, []);
+  useEffect(() => { cargarDuplicados(); }, [cargarDuplicados, sections]);
 
   // Lo mandado a la papelera deja de existir para la UI: fuera de la selección, del
   // camino, del vecindario y de la relación fijada.
@@ -840,6 +847,8 @@ export default function App() {
             onCorridas={() => setCorridasOpen(true)}
             onPapelera={() => setPapeleraOpen(true)}
             papeleraCount={papeleraCount}
+            onDuplicados={() => setDuplicadosOpen(true)}
+            duplicadosCount={duplicadosCount}
             onNuevaNota={nuevaNota}
             onNuevoScript={() => nuevoScript().catch((e) => window.alert(`No se pudo crear el script: ${e.message}`))}
             onNuevaPregunta={nuevaPregunta}
@@ -1018,6 +1027,12 @@ export default function App() {
           ids={temaIds || []}
           temas={temas}
           onDone={tras_tema}
+        />
+        <DuplicadosDialog
+          open={duplicadosOpen}
+          onOpenChange={setDuplicadosOpen}
+          onCambio={() => { recargar(); cargarPapeleraCount(); cargarDuplicados(); }}
+          onAbrir={(id, dom) => elegirEn4D(id, dom)}
         />
         <Papelera
           open={papeleraOpen}

@@ -1273,6 +1273,112 @@ async def _archivo_de_nodo(db: AsyncSession, node_id: str) -> Path:
     return _resolve_file(node.fuente_path)
 
 
+# ── Posibles duplicados (duplicados.py): se revisan a mano, nada se borra solo ──────
+
+_CLAVE_DUP_DESCARTADOS = "duplicados:descartados"
+
+
+@app.get("/api/duplicados")
+async def posibles_duplicados(db: AsyncSession = Depends(get_async_session)):
+    """Grupos de documentos que parecen el mismo: seguros (mismo video, mismos bytes,
+    misma página) y probables (contenido casi igual o mismo título)."""
+    import duplicados
+    import numpy as np
+    filas = (await db.execute(select(
+        Node.id, Node.label, Node.dominio, Node.fuente, Node.fuente_url, Node.fuente_path, Node.type, Node.created_at)
+        .where(Node.is_issue == False, Node.type.notin_([TIPO_PREGUNTA, TIPO_REPORTE, "NOTA"])))).all()
+    hashes = dict((await db.execute(text("""
+        SELECT d.node_id, s.content_hash FROM documents d JOIN sources s ON s.id = d.source_id
+        WHERE s.content_hash IS NOT NULL AND d.node_id IS NOT NULL
+    """))).all())
+    grados: dict[str, int] = {}
+    for s_, t_ in (await db.execute(select(Edge.source, Edge.target))).all():
+        grados[s_] = grados.get(s_, 0) + 1
+        grados[t_] = grados.get(t_, 0) + 1
+    nodos = []
+    for f in filas:
+        vid = _yt_id(f.fuente_url) if f.fuente_url else None
+        nodos.append({
+            "id": f.id, "label": f.label, "dominio": f.dominio, "fuente": f.fuente, "type": f.type,
+            "created_at": f.created_at.isoformat() if f.created_at else None, "relaciones": grados.get(f.id, 0),
+            "video": vid, "hash": hashes.get(f.id),
+            "url": _url_normalizada(f.fuente_url) if f.fuente_url and not vid else None,
+        })
+    # Contenido casi igual: coseno entre los vectores de documento.
+    pares = []
+    vecs = (await db.execute(select(Node.id, Node.embedding).where(
+        Node.embedding.isnot(None), Node.id.in_([n["id"] for n in nodos])))).all()
+    if len(vecs) > 1:
+        ids_v = [v.id for v in vecs]
+        m = np.array([np.asarray(v.embedding, dtype=np.float32) for v in vecs])
+        m /= np.linalg.norm(m, axis=1, keepdims=True) + 1e-9
+        sims = m @ m.T
+        ii, jj = np.where(np.triu(sims, 1) >= duplicados.UMBRAL_CONTENIDO)
+        pares = [(ids_v[i], ids_v[j], float(sims[i, j])) for i, j in zip(ii, jj)]
+    fila = (await db.execute(select(GraphStat).where(GraphStat.key == _CLAVE_DUP_DESCARTADOS))).scalar_one_or_none()
+    descartados = set((fila.value or {}).get("claves", [])) if fila else set()
+    por_id = {n["id"]: n for n in nodos}
+    grupos = duplicados.agrupar(nodos, pares_contenido=pares, descartados=descartados)
+    salida = []
+    for g in grupos:
+        miembros = [{k: por_id[i][k] for k in ("id", "label", "dominio", "fuente", "type", "created_at", "relaciones")}
+                    for i in g["ids"]]
+        salida.append({**g, "nodos": miembros, "sugerido": duplicados.sugerido(miembros)})
+    return {"grupos": salida}
+
+
+@app.post("/api/duplicados/resolver")
+async def resolver_duplicados(request: Request, db: AsyncSession = Depends(get_async_session)):
+    """{conservar, descartar: [ids]}: las relaciones marcadas a mano de los descartados
+    pasan al que queda y los descartados van a la papelera (se pueden restaurar)."""
+    body = await _read_body(request)
+    conservar = str(body.get("conservar") or "")
+    descartar = [str(x) for x in (body.get("descartar") or []) if str(x) and str(x) != conservar]
+    if not conservar or not descartar:
+        raise HTTPException(400, "Elegí cuál se conserva y cuáles se descartan.")
+    await _nodo_o_404(db, conservar)
+    await db.execute(sql_update(Edge).where(Edge.source.in_(descartar), Edge.is_manual == True).values(source=conservar))
+    await db.execute(sql_update(Edge).where(Edge.target.in_(descartar), Edge.is_manual == True).values(target=conservar))
+    await db.execute(sql_delete(Edge).where(Edge.source == Edge.target))
+    await db.commit()
+    creados = await asyncio.to_thread(_en_sesion, papelera.mover, descartar, commit=True)
+    return {"ok": True, "movidos": len(creados)}
+
+
+@app.post("/api/duplicados/no-son")
+async def no_son_duplicados(request: Request, db: AsyncSession = Depends(get_async_session)):
+    """{clave}: este grupo no son duplicados; no se vuelve a proponer."""
+    clave = str((await _read_body(request)).get("clave") or "")
+    if not clave:
+        raise HTTPException(400, "Falta la clave del grupo.")
+    fila = (await db.execute(select(GraphStat).where(GraphStat.key == _CLAVE_DUP_DESCARTADOS))).scalar_one_or_none()
+    claves = list(dict.fromkeys(((fila.value or {}).get("claves", []) if fila else []) + [clave]))
+    valor = {"claves": claves}
+    await db.execute(pg_insert(GraphStat).values(key=_CLAVE_DUP_DESCARTADOS, value=valor)
+                     .on_conflict_do_update(index_elements=["key"], set_={"value": valor}))
+    await db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/node/{node_id}/reprocesar")
+async def reprocesar_nodo(node_id: str, db: AsyncSession = Depends(get_async_session)):
+    """Encola volver a leer la fuente de este nodo y actualizarlo en el lugar (mismo id).
+    Corre como cualquier ingesta: en segundo plano, con progreso y cancelable."""
+    from job_manager import get_job_manager, JOB_KIND_FILE, JOB_KIND_URL
+    node = await _nodo_o_404(db, node_id)
+    if node.type in (TIPO_REPORTE, TIPO_PREGUNTA, "NOTA"):
+        raise HTTPException(400, "Este nodo no sale de una fuente: se actualiza desde su propia vista.")
+    if node.fuente_url:
+        fuente, kind = node.fuente_url, JOB_KIND_URL
+    elif node.fuente_path:
+        fuente, kind = str(_resolve_file(node.fuente_path)), JOB_KIND_FILE
+    else:
+        raise HTTPException(400, "Este nodo no tiene una fuente para volver a leer.")
+    job = get_job_manager().create_job(kind=kind, entrada=f"{PREFIJO_REPROCESAR}{node.id}::{fuente}",
+                                       seccion=node.dominio or "personal", label=f"Reprocesar: {node.label}")
+    return {"ok": True, "job": job}
+
+
 @app.get("/api/node/{node_id}/texto")
 async def texto_de_nodo(node_id: str, db: AsyncSession = Depends(get_async_session)):
     """El texto que Algedi guardó del documento, reconstruido de sus fragmentos (sin el
@@ -5333,6 +5439,34 @@ def _ya_ingerido(entrada: str) -> dict | None:
     return {"id": fila.id, "label": fila.label, "dominio": fila.dominio} if fila else None
 
 
+PREFIJO_REPROCESAR = "reprocesar::"
+
+
+def _reprocesar_para_job(entrada: str, seccion: str, _prog) -> dict:
+    """Vuelve a leer la fuente de un nodo que ya existe y lo actualiza EN EL LUGAR: mismo
+    id (sus relaciones manuales, papelera y referencias siguen valiendo), texto, resumen,
+    conceptos y fragmentos nuevos. Para lo ingerido con errores que ya se corrigieron
+    (acentos de páginas en Latin-1, PDF leídos sólo al principio). No pasa por el control
+    de duplicados: el «duplicado» es justamente él mismo."""
+    from processor import asignar_temas_pendientes
+    node_id, fuente = entrada[len(PREFIJO_REPROCESAR):].split("::", 1)
+    _prog(15, "Volviendo a leer la fuente…")
+    resultado = _extraer_documento(fuente)
+    nodos = resultado.get("nodos") or []
+    if not nodos:
+        raise RuntimeError("La fuente no devolvió contenido")
+    viejo = nodos[0]["id"]
+    nodos[0]["id"] = node_id
+    for c in resultado.get("chunks") or []:
+        if c.get("node_id") == viejo:
+            c["node_id"] = node_id
+    _prog(60, "Guardando en el grafo…")
+    _persistir_resultado({**resultado, "nodos": nodos[:1]}, seccion)
+    _prog(75, "Clasificando temas…")
+    asignar_temas_pendientes()
+    return {"success": True, "node_id": node_id, "mensaje": f"Reprocesado: «{nodos[0].get('label', node_id)}»."}
+
+
 def _run_ingest_for_job(entrada: str, skip_umap: bool = True, seccion: str = "personal",
                         progress_callback=None):
     """Versión de _run_ingest para el sistema de jobs en background.
@@ -5348,6 +5482,9 @@ def _run_ingest_for_job(entrada: str, skip_umap: bool = True, seccion: str = "pe
             progress_callback(pct, msg)
 
     try:
+        if entrada.startswith(PREFIJO_REPROCESAR):
+            return _reprocesar_para_job(entrada, seccion, _prog)
+
         if entrada.startswith("http") and _es_playlist_youtube(entrada):
             _prog(15, "Es una playlist de YouTube…")
             return _ingest_playlist_for_job(entrada, seccion, progress_callback)

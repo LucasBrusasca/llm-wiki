@@ -202,6 +202,27 @@ class JobStatusTransitionTests(unittest.TestCase):
         self.assertNotIn(job.id, mgr._cancelar)
 
     @patch("job_manager.get_sync_session")
+    def test_umap_once_per_batch(self, mock_session):
+        """Con más jobs en la fila, la ubicación se recalcula una sola vez, al final."""
+        mgr = JobManager()
+        j1 = FakeIngestJob(id="j1", status=JOB_STATUS_QUEUED)
+        j2 = FakeIngestJob(id="j2", status=JOB_STATUS_QUEUED)
+        session = FakeSession([j1, j2])
+        mock_session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_session.return_value.__exit__ = MagicMock(return_value=False)
+        umap = MagicMock()
+        mgr.configure(lambda *a, **k: {"node_id": "x"}, umap)
+        mgr._queue.put("j2")                     # j2 espera mientras se procesa j1
+        mgr._process_job("j1")
+        umap.assert_not_called()
+        self.assertTrue(mgr._umap_pendiente)
+        self.assertEqual(j1.status, JOB_STATUS_DONE)
+        mgr._queue.get_nowait()
+        mgr._process_job("j2")
+        umap.assert_called_once()
+        self.assertFalse(mgr._umap_pendiente)
+
+    @patch("job_manager.get_sync_session")
     def test_already_ingested_skips_umap_and_says_so(self, mock_session):
         mgr = JobManager()
         job = FakeIngestJob(status=JOB_STATUS_QUEUED)

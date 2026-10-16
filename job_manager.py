@@ -66,6 +66,8 @@ class JobManager:
         # interrumpir a la mitad: el job se corta en el próximo punto de control y lo
         # que haya producido se descarta (no se guarda nada a medias).
         self._cancelar: set[str] = set()
+        # Hay documentos nuevos cuya ubicación (UMAP) y temas faltan recalcular.
+        self._umap_pendiente = False
         self._umap_fn: Optional[Callable] = None
         self._lock = threading.Lock()
         self._running = False
@@ -191,6 +193,15 @@ class JobManager:
             session.commit()
             return {"id": job.id, "status": job.status, "cancelled": True}
 
+    def _correr_umap(self):
+        try:
+            if self._umap_fn:
+                self._umap_fn()
+        except Exception as e:
+            print(f"[jobs] Error en UMAP: {e}")
+        finally:
+            self._umap_pendiente = False
+
     def _chequear_cancelacion(self, job_id: str):
         if job_id in self._cancelar:
             raise JobCancelado(job_id)
@@ -283,6 +294,10 @@ class JobManager:
                     )
             finally:
                 self._queue.task_done()
+                # Si el último job de la tanda falló o se canceló, lo que entraron los
+                # anteriores igual tiene que quedar ubicado.
+                if self._umap_pendiente and self._queue.empty():
+                    self._correr_umap()
 
     def _process_job(self, job_id: str):
         """Procesa un job de ingesta."""
@@ -325,14 +340,17 @@ class JobManager:
                 mensaje = result.get("mensaje") or mensaje
                 sin_cambios = bool(result.get("sin_cambios"))
 
-            update_progress(90, "Calculando posiciones…")   # último punto para cancelar
-
-            # Si no entró nada nuevo (ya estaba), no hay posiciones que recalcular.
-            if self._umap_fn and not sin_cambios:
-                try:
-                    self._umap_fn()
-                except Exception as e:
-                    print(f"[jobs] Error en UMAP: {e}")
+            # Ubicación y temas de TODAS las secciones: se recalculan una vez por tanda, al
+            # terminar el último job de la fila, no después de cada documento (con 10
+            # archivos en la fila se hacían 10 veces). Mismo cálculo sobre los mismos
+            # datos: al final de la tanda queda igual.
+            if not sin_cambios:
+                self._umap_pendiente = True
+            if self._umap_pendiente and self._queue.empty():
+                update_progress(90, "Calculando posiciones…")   # último punto para cancelar
+                self._correr_umap()
+            else:
+                self._chequear_cancelacion(job_id)
 
             self._cancelar.discard(job_id)   # si llegó tarde, el job ya estaba guardado
             with get_sync_session() as session:
