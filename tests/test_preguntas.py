@@ -26,6 +26,20 @@ class SemaforoTests(unittest.TestCase):
         self.assertEqual(pr.semaforo([pasaje(0.79)], CITA, VETO)["color"], "rojo")
         self.assertEqual(pr.semaforo([], CITA, VETO)["color"], "rojo")
 
+    def test_rojo_muestra_mensaje_honesto_sin_fuente(self):
+        """Cuando no hay evidencia, el motivo es el mensaje honesto estándar."""
+        s = pr.semaforo([], CITA, VETO)
+        self.assertEqual(s["motivo"], pr.SIN_FUENTE)
+        self.assertIn("No encontré una fuente", s["motivo"])
+        self.assertIn("no prueba que no exista", s["motivo"])
+
+    def test_sin_fuente_constante_definida(self):
+        """La constante SIN_FUENTE está definida y tiene el mensaje correcto."""
+        self.assertEqual(
+            pr.SIN_FUENTE,
+            "No encontré una fuente que respalde esto. Eso no prueba que no exista."
+        )
+
     def test_el_motivo_no_compara_porcentajes(self):
         # el agente decía «86 %, debajo del 86 %» por el redondeo
         for ps in ([pasaje(0.857)], [pasaje(0.9), pasaje(0.91)], []):

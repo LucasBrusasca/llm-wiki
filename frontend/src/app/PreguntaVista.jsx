@@ -168,7 +168,10 @@ export default function PreguntaVista({ node, onAbrir }) {
             ))}
           </ul>
         ) : (
-          <p className="text-[12px] text-ink-dim">No se encontró nada en este alcance. Probá «Buscar en todas».</p>
+          <div className="rounded-md border border-dashed border-hair-strong p-3">
+            <p className="text-[12px] text-ink">No encontré una fuente que respalde esto.</p>
+            <p className="mt-1 text-[11px] text-ink-dim">Eso no prueba que no exista. Probá «Buscar en todas» o agregá más documentos a tu biblioteca.</p>
+          </div>
         )}
       </section>
     </div>

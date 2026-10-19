@@ -21,6 +21,8 @@ TODAS = "*"
 MAX_PASAJES = 8
 CARACTERES_PASAJE = 1400
 
+SIN_FUENTE = "No encontré una fuente que respalde esto. Eso no prueba que no exista."
+
 
 def id_pregunta(pregunta: str, alcance: str) -> str:
     """Id estable que sale del texto (nunca del LLM): la misma pregunta con el mismo
@@ -55,8 +57,7 @@ def semaforo(pasajes: list[dict], cita: float, veto: float) -> dict:
     if mejor >= (cita + veto) / 2:
         return {"color": "amarillo", "citables": 0,
                 "motivo": "Hay fragmentos sobre el tema, pero ninguno responde directamente."}
-    return {"color": "rojo", "citables": 0,
-            "motivo": "Tu biblioteca no tiene evidencia para esta pregunta en este alcance."}
+    return {"color": "rojo", "citables": 0, "motivo": SIN_FUENTE}
 
 
 def armar_prompt(pregunta: str, pasajes: list[dict], cita: float) -> str:

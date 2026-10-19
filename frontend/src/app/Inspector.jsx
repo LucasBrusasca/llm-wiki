@@ -698,6 +698,11 @@ export default function Inspector({
               {vig?.duplicado_de && <Meta k="Duplicado de"><span className="text-ink-dim">{vig.duplicado_de}</span></Meta>}
               <Meta k="ID"><span className="text-ink-dim">{node.id}</span></Meta>
             </dl>
+            {!node.fuente_path && !node.fuente_url && !['NOTA', 'PREGUNTA', 'REPORTE'].includes(node.type) && (
+              <p className="mt-2 rounded-xs border border-dashed border-warn/40 bg-warn/[0.04] px-2 py-1.5 text-[11px] text-ink-dim">
+                No encontré una fuente que respalde esto. Eso no prueba que no exista.
+              </p>
+            )}
           </Seccion>
 
           {node.conceptos?.length > 0 && (
