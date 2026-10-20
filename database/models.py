@@ -264,3 +264,38 @@ class IngestJob(Base):
     started_at     = Column(DateTime)
     finished_at    = Column(DateTime)
     updated_at     = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class WatchedSource(Base):
+    """Fuente viva: URL que se monitorea periódicamente en busca de cambios.
+    
+    Tipos soportados:
+    - pdf: URL directa a un PDF (se reingiere si el hash cambia)
+    - listing: página que lista links a PDFs (se detectan nuevos links)
+    - html: página web (se reingiere si cambia sustancialmente)
+    """
+    __tablename__ = "watched_sources"
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    seccion         = Column(String, nullable=False, index=True)
+    url             = Column(Text, nullable=False)
+    kind            = Column(String, nullable=False)  # pdf | listing | html
+    label           = Column(String)                  # nombre descriptivo
+    frequency_hours = Column(Integer, default=24)     # cada cuántas horas revisar
+    enabled         = Column(Boolean, default=True)
+    # Estado de monitoreo
+    status          = Column(String, default="pending")  # pending | ok | error | changed
+    last_check      = Column(DateTime(timezone=True))
+    last_hash       = Column(String)                  # SHA-256 del último contenido exitoso
+    last_error      = Column(Text)
+    # Para listings: links ya conocidos (evitar reingerir)
+    known_links     = Column(JSON, default=list)
+    # Nodos creados desde esta fuente
+    node_ids        = Column(JSON, default=list)
+    # Historial de versiones detectadas
+    version_history = Column(JSON, default=list)  # [{hash, detected_at, node_id}]
+    # Contadores
+    check_count     = Column(Integer, default=0)
+    change_count    = Column(Integer, default=0)
+    error_count     = Column(Integer, default=0)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at      = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

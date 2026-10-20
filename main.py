@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.connection import get_async_session, get_sync_session
 from database.models import (AuditLog, Chunk, Document, Edge, GraphStat, Node, Papelera, ScriptRun,
-                             Section, Source)
+                             Section, Source, WatchedSource)
 import papelera
 import workbench as wb
 
@@ -87,8 +87,32 @@ async def lifespan(app: FastAPI):
     await init_db()
     _start_vault_watcher()
     _start_job_manager()
+    _start_watched_sources()
     _precalentar_busqueda()
     yield
+    _stop_watched_sources()
+
+
+def _start_watched_sources():
+    """Arranca el monitoreo de fuentes vivas. Opt-out con ALGEDI_WATCHER=0."""
+    if os.getenv("ALGEDI_WATCHER", "1") not in ("1", "true", "True"):
+        print("[watcher] Monitoreo de fuentes deshabilitado (ALGEDI_WATCHER=0)")
+        return
+    try:
+        import watcher
+        watcher.start_watcher()
+        print("[watcher] Monitoreo de fuentes vivas iniciado")
+    except Exception as e:
+        print(f"[watcher] No se pudo iniciar el monitoreo: {e}")
+
+
+def _stop_watched_sources():
+    """Detiene el monitoreo de fuentes vivas."""
+    try:
+        import watcher
+        watcher.stop_watcher()
+    except Exception:
+        pass
 
 
 def _precalentar_busqueda():
@@ -6499,6 +6523,185 @@ def vault_rescan():
         raise HTTPException(400, "La Ingesta Continua no está activa")
     threading.Thread(target=w.rescan, daemon=True).start()
     return {"ok": True}
+
+
+# ── Fuentes Vivas: Monitoreo de URLs ────────────────────────────────────
+
+class WatchedSourceCreate(BaseModel):
+    url: str
+    kind: str = "pdf"  # pdf | listing | html
+    label: str = None
+    frequency_hours: int = 24
+    seccion: str = "personal"
+
+
+class WatchedSourceUpdate(BaseModel):
+    label: str = None
+    frequency_hours: int = None
+    enabled: bool = None
+
+
+@app.get("/api/watched-sources")
+def list_watched_sources(seccion: str = None, limit: int = 50):
+    """Lista las fuentes vivas de una sección (o todas)."""
+    from database.models import WatchedSource
+    with get_sync_session() as session:
+        q = session.query(WatchedSource).order_by(WatchedSource.updated_at.desc())
+        if seccion:
+            q = q.filter(WatchedSource.seccion == seccion)
+        sources = q.limit(limit).all()
+        return {
+            "sources": [
+                {
+                    "id": ws.id,
+                    "url": ws.url,
+                    "kind": ws.kind,
+                    "label": ws.label,
+                    "frequency_hours": ws.frequency_hours,
+                    "enabled": ws.enabled,
+                    "status": ws.status,
+                    "seccion": ws.seccion,
+                    "last_check": ws.last_check.isoformat() if ws.last_check else None,
+                    "last_error": ws.last_error,
+                    "check_count": ws.check_count or 0,
+                    "change_count": ws.change_count or 0,
+                    "error_count": ws.error_count or 0,
+                    "node_ids": ws.node_ids or [],
+                    "version_count": len(ws.version_history or []),
+                    "created_at": ws.created_at.isoformat() if ws.created_at else None,
+                }
+                for ws in sources
+            ]
+        }
+
+
+@app.post("/api/watched-sources")
+def create_watched_source(body: WatchedSourceCreate):
+    """Crea una nueva fuente viva para monitorear."""
+    from database.models import WatchedSource
+    with get_sync_session() as session:
+        existing = session.query(WatchedSource).filter(
+            WatchedSource.url == body.url,
+            WatchedSource.seccion == body.seccion,
+        ).first()
+        if existing:
+            raise HTTPException(400, f"Esta URL ya está siendo monitoreada (id={existing.id})")
+        
+        ws = WatchedSource(
+            url=body.url,
+            kind=body.kind,
+            label=body.label or body.url.split("/")[-1][:50],
+            frequency_hours=body.frequency_hours,
+            seccion=body.seccion,
+            status="pending",
+        )
+        session.add(ws)
+        session.commit()
+        session.refresh(ws)
+        return {
+            "id": ws.id,
+            "url": ws.url,
+            "kind": ws.kind,
+            "label": ws.label,
+            "status": "pending",
+            "message": "Fuente agregada. Se revisará en el próximo ciclo."
+        }
+
+
+@app.get("/api/watched-sources/{source_id}")
+def get_watched_source(source_id: int):
+    """Detalle de una fuente viva."""
+    from database.models import WatchedSource
+    with get_sync_session() as session:
+        ws = session.query(WatchedSource).filter(WatchedSource.id == source_id).first()
+        if not ws:
+            raise HTTPException(404, "Fuente no encontrada")
+        return {
+            "id": ws.id,
+            "url": ws.url,
+            "kind": ws.kind,
+            "label": ws.label,
+            "frequency_hours": ws.frequency_hours,
+            "enabled": ws.enabled,
+            "status": ws.status,
+            "seccion": ws.seccion,
+            "last_check": ws.last_check.isoformat() if ws.last_check else None,
+            "last_hash": ws.last_hash,
+            "last_error": ws.last_error,
+            "known_links": ws.known_links or [],
+            "node_ids": ws.node_ids or [],
+            "version_history": ws.version_history or [],
+            "check_count": ws.check_count or 0,
+            "change_count": ws.change_count or 0,
+            "error_count": ws.error_count or 0,
+            "created_at": ws.created_at.isoformat() if ws.created_at else None,
+            "updated_at": ws.updated_at.isoformat() if ws.updated_at else None,
+        }
+
+
+@app.patch("/api/watched-sources/{source_id}")
+def update_watched_source(source_id: int, body: WatchedSourceUpdate):
+    """Actualiza una fuente viva (label, frecuencia, habilitada)."""
+    from database.models import WatchedSource
+    with get_sync_session() as session:
+        ws = session.query(WatchedSource).filter(WatchedSource.id == source_id).first()
+        if not ws:
+            raise HTTPException(404, "Fuente no encontrada")
+        if body.label is not None:
+            ws.label = body.label
+        if body.frequency_hours is not None:
+            ws.frequency_hours = max(1, body.frequency_hours)
+        if body.enabled is not None:
+            ws.enabled = body.enabled
+        session.commit()
+        return {"ok": True, "id": ws.id}
+
+
+@app.delete("/api/watched-sources/{source_id}")
+def delete_watched_source(source_id: int):
+    """Elimina una fuente viva (no borra los nodos ya ingeridos)."""
+    from database.models import WatchedSource
+    with get_sync_session() as session:
+        ws = session.query(WatchedSource).filter(WatchedSource.id == source_id).first()
+        if not ws:
+            raise HTTPException(404, "Fuente no encontrada")
+        session.delete(ws)
+        session.commit()
+        return {"ok": True, "deleted": source_id}
+
+
+@app.post("/api/watched-sources/{source_id}/check")
+def check_watched_source(source_id: int):
+    """Fuerza una revisión inmediata de una fuente (acción manual del usuario)."""
+    import watcher
+    result = watcher.check_source_now(source_id)
+    if "error" in result:
+        raise HTTPException(404, result["error"])
+    return result
+
+
+@app.post("/api/watched-sources/{source_id}/mark-seen")
+def mark_watched_source_seen(source_id: int):
+    """Marca una fuente como vista (quita el estado 'changed')."""
+    import watcher
+    watcher.mark_as_seen(source_id)
+    return {"ok": True}
+
+
+@app.get("/api/watched-sources/pending-count")
+def watched_sources_pending_count(seccion: str = None):
+    """Cuenta de fuentes con cambios pendientes de ver (para badge en UI)."""
+    import watcher
+    count = watcher.get_pending_updates_count(seccion)
+    return {"count": count}
+
+
+@app.get("/api/watched-sources/recent-changes")
+def watched_sources_recent_changes(seccion: str = None, limit: int = 10):
+    """Cambios recientes para mostrar en UI."""
+    import watcher
+    changes = watcher.get_recent_changes(seccion, limit)
+    return {"changes": changes}
 
 
 # ── Jobs: Ingesta en background ───────────────────────────────────────

@@ -11,6 +11,7 @@ import { alPedirExplorar } from '@/lib/eventos';
 import CommandPalette from '@/app/CommandPalette';
 import DuplicadosDialog from '@/app/DuplicadosDialog';
 import JobsPanel, { useJobs, JobsBadge } from '@/app/JobsPanel';
+import FuentesPanel, { useFuentesVivas, FuentesBadge } from '@/app/FuentesPanel';
 import {
   fetchGraph, fetchSections, searchSemantic, updateNode, createSection, crearNota, crearScript, agregarConexion, normalizeGraph,
   reagruparTemas, recalcularRelaciones, instalarHerramientas, crearReporte, crearPregunta,
@@ -126,6 +127,7 @@ export default function App() {
   const [corridasKey, setCorridasKey] = useState(0);           // sube con cada corrida: refresca el log
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [jobsOpen, setJobsOpen] = useState(false);
+  const [fuentesOpen, setFuentesOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
   const [agentContext, setAgentContext] = useState(null);
   const [taxonomiaOpen, setTaxonomiaOpen] = useState(false);
@@ -259,6 +261,9 @@ export default function App() {
     }
   }, [seccion, recargar]);
   const { active: activeJobs, recent: recentJobs, refresh: refreshJobs } = useJobs(onJobDone);
+
+  // ── Fuentes vivas ─────────────────────────────────────────────────
+  const { sources: fuentesSources, pendingCount: fuentesPending, refresh: refreshFuentes } = useFuentesVivas(seccion === TODAS ? null : seccion);
 
   const cambiarSeccion = useCallback((nombre) => {
     setSeccion(nombre);
@@ -818,6 +823,7 @@ export default function App() {
           onReload={recargar}
           loading={status === 'loading'}
           jobsBadge={<JobsBadge active={activeJobs} onClick={() => setJobsOpen(true)} />}
+          fuentesBadge={<FuentesBadge pendingCount={fuentesPending} onClick={() => setFuentesOpen(true)} />}
         />
 
         <div className="flex min-h-0">
@@ -1048,6 +1054,13 @@ export default function App() {
           recent={recentJobs}
           onRefresh={refreshJobs}
           onSelectNode={(id) => { seleccionar(id); setJobsOpen(false); }}
+        />
+        <FuentesPanel
+          open={fuentesOpen}
+          onOpenChange={setFuentesOpen}
+          seccion={seccion === TODAS ? 'personal' : seccion}
+          sources={fuentesSources}
+          onRefresh={refreshFuentes}
         />
         {explorar && (
           <Suspense fallback={null}>

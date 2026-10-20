@@ -130,5 +130,55 @@ class IntentRoutingTests(unittest.TestCase):
         self.assertTrue(jev._PREGUNTA_CONCEPTO.search(t))
 
 
+class WatchedSourcesTests(unittest.TestCase):
+    """Tests para Fuentes Vivas (watched sources)."""
+    
+    def test_modelo_watched_source_existe(self):
+        """El modelo WatchedSource debe estar definido con campos correctos."""
+        from database.models import WatchedSource
+        self.assertTrue(hasattr(WatchedSource, 'id'))
+        self.assertTrue(hasattr(WatchedSource, 'url'))
+        self.assertTrue(hasattr(WatchedSource, 'kind'))
+        self.assertTrue(hasattr(WatchedSource, 'seccion'))
+        self.assertTrue(hasattr(WatchedSource, 'frequency_hours'))
+        self.assertTrue(hasattr(WatchedSource, 'last_hash'))
+        self.assertTrue(hasattr(WatchedSource, 'version_history'))
+        self.assertTrue(hasattr(WatchedSource, 'status'))
+    
+    def test_content_hash_es_sha256(self):
+        """El hash de contenido debe ser SHA-256."""
+        import watcher
+        h = watcher._content_hash(b"test content")
+        self.assertEqual(len(h), 64)  # SHA-256 hex = 64 chars
+        # Debe ser determinístico
+        self.assertEqual(h, watcher._content_hash(b"test content"))
+    
+    def test_extract_pdf_links_detecta_pdfs(self):
+        """Debe extraer links a PDFs de HTML."""
+        import watcher
+        html = '''
+        <html>
+            <a href="doc.pdf">Doc</a>
+            <a href="/path/archivo.pdf">Archivo</a>
+            <a href="https://otro.com/reporte.PDF">Reporte</a>
+            <a href="noespdf.txt">No PDF</a>
+        </html>
+        '''
+        links = watcher._extract_pdf_links(html, "https://ejemplo.com/pagina/")
+        self.assertIn("https://ejemplo.com/pagina/doc.pdf", links)
+        self.assertIn("https://ejemplo.com/path/archivo.pdf", links)
+        self.assertIn("https://otro.com/reporte.PDF", links)
+        self.assertEqual(len(links), 3)
+    
+    def test_procesar_url_web_acepta_pdf(self):
+        """procesar_url_web con allow_pdf=True debe procesar PDFs por URL."""
+        import processor
+        # El test real requeriría mockear la descarga, pero verificamos que el parámetro existe
+        import inspect
+        sig = inspect.signature(processor.procesar_url_web)
+        self.assertIn('allow_pdf', sig.parameters)
+        self.assertEqual(sig.parameters['allow_pdf'].default, True)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -904,18 +904,38 @@ def decodificar_html(contenido: bytes, content_type: str = "") -> str:
         return contenido.decode("cp1252", errors="replace")
 
 
-def procesar_url_web(url: str):
-    """Descarga y procesa cualquier URL web (artículo, Wikipedia, GitHub, etc.)."""
+def procesar_url_web(url: str, *, allow_pdf: bool = True):
+    """Descarga y procesa cualquier URL web (artículo, Wikipedia, GitHub, etc.).
+    Si la URL apunta a un PDF y allow_pdf=True, lo descarga y procesa como PDF."""
+    import tempfile
     from security_utils import safe_http_get
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; Algedi/1.0; +https://github.com/algedi)"
     }
     try:
-        resp = safe_http_get(url, timeout=30.0, headers=headers)
+        resp = safe_http_get(url, timeout=60.0, headers=headers)
         resp.raise_for_status()
         content_type = resp.headers.get("content-type", "")
-        if "pdf" in content_type:
-            raise ValueError("URL apunta a un PDF — subilo como archivo")
+        
+        if "pdf" in content_type.lower() or url.lower().endswith(".pdf"):
+            if not allow_pdf:
+                raise ValueError("URL apunta a un PDF — subilo como archivo")
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(resp.content)
+                tmp_path = tmp.name
+            try:
+                resultado = procesar_pdf(tmp_path)
+                for nodo in resultado.get("nodos", []):
+                    nodo["fuente"] = "pdf"
+                    nodo["fuente_url"] = url
+                    nodo["fuente_label"] = nodo.get("fuente_label") or url.split("/")[-1]
+                return resultado
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        
         html = decodificar_html(resp.content, content_type)
     except httpx.HTTPStatusError as e:
         raise ValueError(f"No se pudo acceder a la URL: HTTP {e.response.status_code}")
