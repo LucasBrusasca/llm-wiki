@@ -107,9 +107,15 @@ CHUNK_OVERLAP_CHARS = 220
 CHUNK_LIMIT = 200
 
 
+def _char_to_byte_offset(text: str, char_offset: int) -> int:
+    """Convierte una posición en caracteres a posición en bytes (UTF-8)."""
+    return len(text[:char_offset].encode("utf-8"))
+
+
 def crear_chunks(texto: str, *, page: int | None = None,
-                 base_offset: int = 0, start_ordinal: int = 0) -> list[dict]:
-    """Divide texto en pasajes solapados, conservando página y posición aproximada."""
+                 base_offset: int = 0, start_ordinal: int = 0,
+                 base_byte_offset: int = 0) -> list[dict]:
+    """Divide texto en pasajes solapados, conservando página y posición en chars y bytes."""
     # PostgreSQL text no admite NUL; algunos PDFs/Office lo incluyen invisiblemente.
     text = (texto or "").replace("\x00", " ").strip()
     if not text:
@@ -134,6 +140,8 @@ def crear_chunks(texto: str, *, page: int | None = None,
                 "page": page,
                 "char_start": base_offset + start,
                 "char_end": base_offset + end,
+                "byte_start": base_byte_offset + _char_to_byte_offset(text, start),
+                "byte_end": base_byte_offset + _char_to_byte_offset(text, end),
             })
         if end >= len(text):
             break
@@ -143,16 +151,19 @@ def crear_chunks(texto: str, *, page: int | None = None,
 
 def crear_chunks_paginas(paginas: list[tuple[int, str]]) -> list[dict]:
     chunks = []
-    offset = 0
+    char_offset = 0
+    byte_offset = 0
     for page, text in paginas:
         remaining = CHUNK_LIMIT - len(chunks)
         if remaining <= 0:
             break
         page_chunks = crear_chunks(
-            text, page=page, base_offset=offset, start_ordinal=len(chunks)
+            text, page=page, base_offset=char_offset, start_ordinal=len(chunks),
+            base_byte_offset=byte_offset
         )[:remaining]
         chunks.extend(page_chunks)
-        offset += len(text or "") + 1
+        char_offset += len(text or "") + 1
+        byte_offset += len((text or "").encode("utf-8")) + 1
     return chunks
 
 

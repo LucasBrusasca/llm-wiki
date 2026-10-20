@@ -145,6 +145,13 @@ class Chunk(Base):
     page           = Column(Integer)
     char_start     = Column(Integer)
     char_end       = Column(Integer)
+    # ── Procedencia exacta ────────────────────────────────────────────────────
+    # El SHA-256 del archivo fuente al momento de ingestar y la posición en bytes
+    # del chunk. Permite verificar que el archivo no cambió y ubicar el fragmento
+    # exacto. Nulls para datos migrados antes de esta feature.
+    source_sha256  = Column(String, index=True)
+    byte_start     = Column(Integer)
+    byte_end       = Column(Integer)
     embedding      = Column(Vector(384) if HAS_PGVECTOR else JSON)
     chunk_metadata = Column(JSON, default=dict)
     created_at     = Column(DateTime, server_default=func.now())

@@ -139,6 +139,34 @@ class ChunkingTests(unittest.TestCase):
         chunks = crear_chunks("antes\x00después")
         self.assertEqual(chunks[0]["content"], "antes después")
 
+    def test_chunks_include_byte_positions(self):
+        """Los chunks deben incluir byte_start y byte_end para procedencia exacta."""
+        text = "Texto simple en español con acentos: áéíóú ñ"
+        chunks = crear_chunks(text)
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("byte_start", chunks[0])
+        self.assertIn("byte_end", chunks[0])
+        self.assertEqual(chunks[0]["byte_start"], 0)
+        self.assertEqual(chunks[0]["byte_end"], len(text.encode("utf-8")))
+
+    def test_byte_positions_differ_from_char_positions_for_multibyte(self):
+        """Las posiciones en bytes difieren de chars para texto con multibyte."""
+        text = "áéíóú"  # 5 chars pero 10 bytes en UTF-8
+        chunks = crear_chunks(text)
+        chunk = chunks[0]
+        self.assertEqual(chunk["char_start"], 0)
+        self.assertEqual(chunk["char_end"], 5)
+        self.assertEqual(chunk["byte_start"], 0)
+        self.assertEqual(chunk["byte_end"], 10)
+
+    def test_byte_positions_accumulate_across_pages(self):
+        """Las posiciones en bytes se acumulan correctamente entre páginas."""
+        paginas = [(1, "página uno"), (2, "página dos")]
+        chunks = crear_chunks_paginas(paginas)
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(chunks[0]["byte_start"], 0)
+        self.assertGreater(chunks[1]["byte_start"], chunks[0]["byte_end"])
+
 
 class VaultConfirmationTests(unittest.TestCase):
     def _run_one(self, ingest_result):
@@ -199,6 +227,14 @@ class TraceabilitySchemaTests(unittest.TestCase):
         self.assertIn("source_id", Document.__table__.columns)
         self.assertIn("document_id", Chunk.__table__.columns)
         self.assertIn("embedding", Chunk.__table__.columns)
+
+    def test_chunk_has_provenance_columns(self):
+        """Los chunks deben tener columnas de procedencia exacta."""
+        self.assertIn("source_sha256", Chunk.__table__.columns)
+        self.assertIn("byte_start", Chunk.__table__.columns)
+        self.assertIn("byte_end", Chunk.__table__.columns)
+        self.assertIn("char_start", Chunk.__table__.columns)
+        self.assertIn("char_end", Chunk.__table__.columns)
 
 
 class SolveContractTests(unittest.TestCase):

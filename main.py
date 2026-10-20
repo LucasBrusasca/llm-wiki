@@ -799,6 +799,9 @@ def _save_node_sync(nodo_data: dict, chunks: list[dict] | None = None):
                         page=chunk_data.get("page"),
                         char_start=chunk_data.get("char_start"),
                         char_end=chunk_data.get("char_end"),
+                        source_sha256=content_hash,
+                        byte_start=chunk_data.get("byte_start"),
+                        byte_end=chunk_data.get("byte_end"),
                         embedding=vector.tolist(),
                         chunk_metadata={"node_id": nodo_data["id"]},
                     ))
@@ -1075,6 +1078,105 @@ async def get_graph_chunks(seccion: str = None, db: AsyncSession = Depends(get_a
                                "score": e.score, "label": e.label})
 
     return {"nodos": nodos, "relaciones": relaciones}
+
+
+@app.get("/api/chunk/{chunk_id}/verify")
+async def verify_chunk_provenance(chunk_id: str, db: AsyncSession = Depends(get_async_session)):
+    """Verifica que el archivo fuente de un chunk no ha cambiado.
+    
+    Rehashea el archivo original y compara con el SHA-256 almacenado al ingestar.
+    Devuelve el estado de verificación y detalles de procedencia.
+    """
+    chunk = (await db.execute(
+        select(Chunk).where(Chunk.id == chunk_id)
+    )).scalar_one_or_none()
+    
+    if not chunk:
+        raise HTTPException(404, "Chunk no encontrado")
+    
+    doc = (await db.execute(
+        select(Document).where(Document.id == chunk.document_id)
+    )).scalar_one_or_none()
+    
+    if not doc:
+        raise HTTPException(404, "Documento no encontrado")
+    
+    source = (await db.execute(
+        select(Source).where(Source.id == doc.source_id)
+    )).scalar_one_or_none()
+    
+    if not source:
+        raise HTTPException(404, "Fuente no encontrada")
+    
+    node = (await db.execute(
+        select(Node).where(Node.id == doc.node_id)
+    )).scalar_one_or_none()
+    
+    provenance = {
+        "chunk_id": chunk.id,
+        "document_id": doc.id,
+        "source_id": source.id,
+        "stored_sha256": chunk.source_sha256,
+        "byte_start": chunk.byte_start,
+        "byte_end": chunk.byte_end,
+        "char_start": chunk.char_start,
+        "char_end": chunk.char_end,
+        "page": chunk.page,
+        "source_locator": source.locator,
+        "original_name": source.original_name,
+        "ingested_at": chunk.created_at.isoformat() if chunk.created_at else None,
+    }
+    
+    if not chunk.source_sha256:
+        return {
+            "status": "unknown",
+            "message": "Procedencia desconocida: este chunk se creó antes de registrar el hash de la fuente.",
+            "provenance": provenance,
+        }
+    
+    fuente_path = node.fuente_path if node else None
+    if not fuente_path:
+        return {
+            "status": "no_file",
+            "message": "No hay archivo fuente para verificar (puede ser una URL u otra fuente no local).",
+            "provenance": provenance,
+        }
+    
+    try:
+        path = _resolve_file(fuente_path)
+        if not path.exists():
+            return {
+                "status": "missing",
+                "message": f"El archivo fuente ya no existe: {fuente_path}",
+                "provenance": provenance,
+            }
+        
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(block)
+        current_hash = digest.hexdigest()
+        
+        provenance["current_sha256"] = current_hash
+        
+        if current_hash == chunk.source_sha256:
+            return {
+                "status": "verified",
+                "message": "El archivo fuente no ha cambiado desde la ingesta.",
+                "provenance": provenance,
+            }
+        else:
+            return {
+                "status": "changed",
+                "message": "El archivo fuente ha cambiado desde la ingesta. La cita puede no coincidir con el contenido actual.",
+                "provenance": provenance,
+            }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Error al verificar: {str(e)}",
+            "provenance": provenance,
+        }
 
 
 async def _vigencia_por_nodo(db: AsyncSession, node_ids: set[str]) -> dict:

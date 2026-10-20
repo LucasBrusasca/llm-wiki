@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Loader2, RotateCw, Sparkles, FileText, Globe2, AlertTriangle } from 'lucide-react';
+import { Loader2, RotateCw, Sparkles, FileText, Globe2, AlertTriangle, ShieldCheck, ShieldAlert, ShieldQuestion } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { fetchPregunta, actualizarPregunta, redactarPregunta } from '@/lib/api';
+import { fetchPregunta, actualizarPregunta, redactarPregunta, verificarChunk } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 const SEMAFORO = {
@@ -29,10 +29,36 @@ function TextoConCitas({ texto, onCita }) {
   );
 }
 
+const VERIFICACION_ICONOS = {
+  verified: { Icon: ShieldCheck, color: 'text-ok', bg: 'bg-ok/10' },
+  changed: { Icon: ShieldAlert, color: 'text-danger', bg: 'bg-danger/10' },
+  unknown: { Icon: ShieldQuestion, color: 'text-ink-dim', bg: 'bg-surface-3' },
+  missing: { Icon: ShieldAlert, color: 'text-warn', bg: 'bg-warn/10' },
+  no_file: { Icon: ShieldQuestion, color: 'text-ink-dim', bg: 'bg-surface-3' },
+  error: { Icon: ShieldAlert, color: 'text-danger', bg: 'bg-danger/10' },
+};
+
 function Pasaje({ p, n, citado, umbral, onAbrir }) {
   const [abierto, setAbierto] = useState(false);
+  const [verificacion, setVerificacion] = useState(null);
+  const [verificando, setVerificando] = useState(false);
   const responde = p.sim >= umbral;
   const largo = p.texto.length > 320;
+
+  const verificar = async () => {
+    setVerificando(true);
+    try {
+      const result = await verificarChunk(p.chunk_id);
+      setVerificacion(result);
+    } catch (e) {
+      setVerificacion({ status: 'error', message: e.message });
+    } finally {
+      setVerificando(false);
+    }
+  };
+
+  const verif = verificacion ? VERIFICACION_ICONOS[verificacion.status] || VERIFICACION_ICONOS.error : null;
+
   return (
     <li id={`pasaje-${p.chunk_id}`} className={cn('rounded-md border bg-surface-2/50 p-2.5', citado ? 'border-accent/50' : 'border-hair')}>
       <div className="mb-1 flex items-center gap-1.5 text-[11.5px]">
@@ -50,11 +76,31 @@ function Pasaje({ p, n, citado, umbral, onAbrir }) {
       <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-ink-muted">
         {abierto || !largo ? p.texto : `${p.texto.slice(0, 320)}…`}
       </p>
-      {largo && (
-        <button type="button" onClick={() => setAbierto((a) => !a)} className="mt-0.5 text-[11px] text-ink-dim hover:text-ink">
-          {abierto ? 'ver menos' : 'ver más'}
-        </button>
-      )}
+      <div className="mt-1.5 flex items-center gap-2">
+        {largo && (
+          <button type="button" onClick={() => setAbierto((a) => !a)} className="text-[11px] text-ink-dim hover:text-ink">
+            {abierto ? 'ver menos' : 'ver más'}
+          </button>
+        )}
+        {verificacion ? (
+          <span className={cn('flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-[10.5px]', verif.bg, verif.color)}
+            title={verificacion.message}>
+            <verif.Icon className="size-3" />
+            {verificacion.status === 'verified' ? 'Verificado' : 
+             verificacion.status === 'changed' ? 'Fuente modificada' :
+             verificacion.status === 'unknown' ? 'Procedencia desconocida' :
+             verificacion.status === 'missing' ? 'Archivo no encontrado' :
+             verificacion.status === 'no_file' ? 'Sin archivo local' : 'Error'}
+          </span>
+        ) : (
+          <button type="button" onClick={verificar} disabled={verificando}
+            className="flex items-center gap-1 rounded-xs border border-hair-strong px-1.5 py-0.5 text-[10.5px] text-ink-dim hover:border-accent/50 hover:text-ink disabled:opacity-50"
+            title="Verificar que el archivo fuente no cambió desde la ingesta">
+            {verificando ? <Loader2 className="size-3 animate-spin" /> : <ShieldCheck className="size-3" />}
+            Verificar
+          </button>
+        )}
+      </div>
     </li>
   );
 }

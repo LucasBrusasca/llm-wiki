@@ -219,6 +219,11 @@ export async function redactarPregunta(id) {
   return fetch(`/api/preguntas/${encodeURIComponent(id)}/redactar`, { method: 'POST' }).then(jsonOError);
 }
 
+/** Verifica la procedencia de un chunk (rehashea la fuente y compara). */
+export async function verificarChunk(chunkId) {
+  return fetch(`/api/chunk/${encodeURIComponent(chunkId)}/verify`).then(jsonOError);
+}
+
 /** Nodos de datos de todas las secciones. */
 export async function fetchFuentesDatos() {
   const d = await fetch('/api/fuentes-datos').then(jsonOError);
