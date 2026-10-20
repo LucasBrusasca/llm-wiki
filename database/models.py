@@ -47,7 +47,7 @@ class Node(Base):
     # known_since: cuándo el sistema supo de este nodo (backfilled de created_at).
     # valid_from: cuándo el contenido empezó a ser válido (ej. fecha de publicación).
     # Permiten reconstruir el grafo como era en un momento dado.
-    known_since   = Column(DateTime(timezone=True))
+    known_since   = Column(DateTime(timezone=True), default=func.now())
     valid_from    = Column(DateTime(timezone=True))
     created_at    = Column(DateTime, server_default=func.now())
     updated_at    = Column(DateTime, server_default=func.now(), onupdate=func.now())

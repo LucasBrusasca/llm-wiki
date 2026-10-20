@@ -103,5 +103,14 @@ class HnswSqlTests(unittest.TestCase):
         self.assertIn("n.dominio = :seccion", sql)
 
 
+class InitDbTimelineTests(unittest.TestCase):
+    def test_alter_known_since_y_valid_from(self):
+        from pathlib import Path
+        text = Path("database/init_db.py").read_text(encoding="utf-8")
+        self.assertIn("known_since TIMESTAMPTZ", text)
+        self.assertIn("valid_from TIMESTAMPTZ", text)
+        self.assertIn("SET known_since = created_at", text)
+
+
 if __name__ == "__main__":
     unittest.main()
