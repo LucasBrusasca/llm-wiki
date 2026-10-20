@@ -83,6 +83,18 @@ async def init_db():
         await conn.execute(text(
             "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS solve JSON"
         ))
+        # Línea temporal del grafo: known_since (cuándo Algedi supo del nodo) y
+        # valid_from (cuándo el contenido empezó a valer). Backfill de created_at.
+        await conn.execute(text(
+            "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS known_since TIMESTAMPTZ"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ"
+        ))
+        await conn.execute(text(
+            "UPDATE nodes SET known_since = created_at "
+            "WHERE known_since IS NULL AND created_at IS NOT NULL"
+        ))
         # Procedencia de relaciones. Las aristas anteriores quedan con estas columnas
         # en NULL a propósito: el sistema no sabe con qué método ni con qué piso se
         # calcularon, y esa ignorancia se muestra como tal en el panel. Inventarles un

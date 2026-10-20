@@ -210,7 +210,7 @@ function BotonCanvas({ texto, onClick, children, activo }) {
 function TimelineSlider({ nodes, timelineDate, onTimelineChange, isPlaying, onPlayToggle }) {
   const dates = useMemo(() => {
     const d = nodes
-      .map((n) => n.known_since || n.creado)
+      .map((n) => n.known_since || n.creado || n.created_at)
       .filter(Boolean)
       .map((s) => new Date(s).getTime())
       .sort((a, b) => a - b);
@@ -292,7 +292,7 @@ function Lienzo({
       return;
     }
     const dates = nodes
-      .map((n) => n.known_since || n.creado)
+      .map((n) => n.known_since || n.creado || n.created_at)
       .filter(Boolean)
       .map((s) => new Date(s).getTime())
       .sort((a, b) => a - b);
@@ -331,7 +331,7 @@ function Lienzo({
     for (const id of visibleIds) {
       const n = nodes.find((x) => x.id === id);
       if (!n) continue;
-      const t = n.known_since || n.creado;
+      const t = n.known_since || n.creado || n.created_at;
       if (!t || new Date(t).getTime() <= cutoff) filtered.add(id);
     }
     return filtered;

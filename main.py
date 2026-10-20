@@ -279,6 +279,11 @@ def node_to_dict(n, con_embedding: bool = True) -> dict:
         # rich_html NO viaja acá: puede pesar cientos de KB por nodo y el frontend
         # lo pide on-demand vía /api/node/{id}/rich-preview. Sacarlo aliviana /api/graph.
         "created_at": n.created_at.isoformat() if n.created_at else None,
+        "creado": n.created_at.isoformat() if n.created_at else None,
+        "known_since": (getattr(n, "known_since", None) or n.created_at).isoformat()
+            if (getattr(n, "known_since", None) or n.created_at) else None,
+        "valid_from": getattr(n, "valid_from", None).isoformat()
+            if getattr(n, "valid_from", None) else None,
     }
 
 
