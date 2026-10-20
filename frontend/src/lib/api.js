@@ -386,11 +386,11 @@ export async function searchSemantic(q, max = 24) {
  * `jev`: lo que la persona eligió tocando una opción de una pregunta anterior del agente
  * ({ herramienta, parametros, pedido }); el agente no lo vuelve a decidir.
  */
-export async function askAgent({ system, messages, seccion, contextoId, jev }) {
+export async function askAgent({ system, messages, seccion, contextoId, jev, model }) {
   return fetch('/api/agent', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ system, messages, seccion, contexto_id: contextoId, jev }),
+    body: JSON.stringify({ system, messages, seccion, contexto_id: contextoId, jev, model }),
   }).then(jsonOrThrow);
 }
 
@@ -561,4 +561,57 @@ export async function saveRelationsFromAnswer(convId, { message_id, pregunta }) 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message_id, pregunta }),
   }).then(jsonOrThrow);
+}
+
+// ── Fuentes Vivas (watched sources) ───────────────────────────────────
+export async function fetchWatchedSources(seccion, limit = 50) {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (seccion) q.set('seccion', seccion);
+  const d = await fetch(`/api/watched-sources?${q}`).then(jsonOrThrow);
+  return d.sources || [];
+}
+
+export async function createWatchedSource({ url, kind = 'pdf', label, frequency_hours = 24, seccion }) {
+  return fetch('/api/watched-sources', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, kind, label, frequency_hours, seccion }),
+  }).then(jsonOrThrow);
+}
+
+export async function getWatchedSource(sourceId) {
+  return fetch(`/api/watched-sources/${sourceId}`).then(jsonOrThrow);
+}
+
+export async function updateWatchedSource(sourceId, { label, frequency_hours, enabled }) {
+  return fetch(`/api/watched-sources/${sourceId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label, frequency_hours, enabled }),
+  }).then(jsonOrThrow);
+}
+
+export async function deleteWatchedSource(sourceId) {
+  return fetch(`/api/watched-sources/${sourceId}`, { method: 'DELETE' }).then(jsonOrThrow);
+}
+
+export async function checkWatchedSource(sourceId) {
+  return fetch(`/api/watched-sources/${sourceId}/check`, { method: 'POST' }).then(jsonOrThrow);
+}
+
+export async function markWatchedSourceSeen(sourceId) {
+  return fetch(`/api/watched-sources/${sourceId}/mark-seen`, { method: 'POST' }).then(jsonOrThrow);
+}
+
+export async function getWatchedSourcesPendingCount(seccion) {
+  const q = seccion ? `?seccion=${encodeURIComponent(seccion)}` : '';
+  const d = await fetch(`/api/watched-sources/pending-count${q}`).then(jsonOrThrow);
+  return d.count || 0;
+}
+
+export async function getWatchedSourcesRecentChanges(seccion, limit = 10) {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (seccion) q.set('seccion', seccion);
+  const d = await fetch(`/api/watched-sources/recent-changes?${q}`).then(jsonOrThrow);
+  return d.changes || [];
 }

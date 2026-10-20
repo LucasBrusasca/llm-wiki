@@ -383,7 +383,7 @@ function Lienzo({
 
   const leyenda = useMemo(() => calcularLeyenda(nodes, visibleIds, colorMode, temas), [nodes, visibleIds, colorMode, temas]);
 
-  // Encuadrar cuando cambia el conjunto visible (sección / filtros).
+  // Encuadrar cuando cambia el conjunto visible (sección / filtros / timeline).
   const firma = useMemo(() => `${visibleIds.size}:${nodes.length}`, [visibleIds, nodes.length]);
   useEffect(() => {
     const t = setTimeout(() => rf.fitView({ padding: 0.12, duration: 250 }), 30);

@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.connection import get_async_session, get_sync_session
 from database.models import (AuditLog, Chunk, Document, Edge, GraphStat, Node, Papelera, ScriptRun,
-                             Section, Source)
+                             Section, Source, WatchedSource)
 import papelera
 import workbench as wb
 
@@ -87,8 +87,32 @@ async def lifespan(app: FastAPI):
     await init_db()
     _start_vault_watcher()
     _start_job_manager()
+    _start_watched_sources()
     _precalentar_busqueda()
     yield
+    _stop_watched_sources()
+
+
+def _start_watched_sources():
+    """Arranca el monitoreo de fuentes vivas. Opt-out con ALGEDI_WATCHER=0."""
+    if os.getenv("ALGEDI_WATCHER", "1") not in ("1", "true", "True"):
+        print("[watcher] Monitoreo de fuentes deshabilitado (ALGEDI_WATCHER=0)")
+        return
+    try:
+        import watcher
+        watcher.start_watcher()
+        print("[watcher] Monitoreo de fuentes vivas iniciado")
+    except Exception as e:
+        print(f"[watcher] No se pudo iniciar el monitoreo: {e}")
+
+
+def _stop_watched_sources():
+    """Detiene el monitoreo de fuentes vivas."""
+    try:
+        import watcher
+        watcher.stop_watcher()
+    except Exception:
+        pass
 
 
 def _precalentar_busqueda():
@@ -1141,12 +1165,14 @@ async def dimensiones(db: AsyncSession = Depends(get_async_session)):
         select(Node.id, Node.label, Node.dominio, Node.x3d, Node.y3d, Node.z3d, Node.fuente,
                Node.type, Node.created_at, Node.fecha_doc, Node.autor, Node.tema, Node.cluster,
                Node.fuente_path, Node.fuente_url, Node.fuente_label, Node.conceptos, Node.tags,
+               Node.known_since, Node.valid_from,
                func.left(Node.desc, 300).label("desc"))
         .where(Node.is_centroid == False, Node.is_issue == False)
     )).all()
     # De cerca, cada documento es su tarjeta (miniatura, origen, tema, autor, fecha):
     # van los campos cortos que eso necesita, no los textos. Conceptos y el comienzo de
     # la descripción, para que los filtros y la búsqueda valgan en todas las secciones.
+    # known_since y valid_from permiten el slider temporal del grafo.
     nodos = [{
         "id": f.id, "label": f.label, "dominio": f.dominio or "personal",
         "x": f.x3d, "y": f.y3d, "z": f.z3d, "fuente": f.fuente, "type": f.type,
@@ -1154,6 +1180,8 @@ async def dimensiones(db: AsyncSession = Depends(get_async_session)):
         "autor": f.autor, "tema": f.tema, "cluster": f.cluster if f.cluster is not None else -1,
         "fuente_path": f.fuente_path, "fuente_url": f.fuente_url, "fuente_label": f.fuente_label,
         "conceptos": f.conceptos or [], "tags": f.tags or [], "desc": f.desc,
+        "known_since": (f.known_since or f.created_at).isoformat() if (f.known_since or f.created_at) else None,
+        "valid_from": f.valid_from.isoformat() if f.valid_from else None,
     } for f in filas]
     ids = {n["id"] for n in nodos}
     aristas = (await db.execute(select(Edge.source, Edge.target, Edge.score))).all()
@@ -1726,12 +1754,20 @@ async def reprocesar_nodo(node_id: str, db: AsyncSession = Depends(get_async_ses
     return {"ok": True, "job": job}
 
 
+def _iso_dt(dt):
+    if dt is None:
+        return None
+    try:
+        return dt.isoformat()
+    except Exception:
+        return str(dt)
+
+
 @app.get("/api/node/{node_id}/texto")
 async def texto_de_nodo(node_id: str, db: AsyncSession = Depends(get_async_session)):
     """El texto que Algedi guardó del documento, reconstruido de sus fragmentos (sin el
-    solapamiento entre uno y otro). Para páginas web ingeridas por enlace, que no
-    tienen archivo propio: muchas no se pueden mostrar embebidas o arman su contenido
-    con JavaScript."""
+    solapamiento entre uno y otro). Para páginas web: el extracto limpio (silver) y
+    si esa URL es una fuente viva o una captura única."""
     filas = (await db.execute(text("""
         SELECT c.content, c.char_start, c.char_end, c.page
         FROM chunks c JOIN documents d ON d.id = c.document_id
@@ -1744,8 +1780,38 @@ async def texto_de_nodo(node_id: str, db: AsyncSession = Depends(get_async_sessi
             contenido = contenido[fin - f.char_start:]          # lo que ya vino en el anterior
         partes.append(contenido)
         fin = f.char_end if f.char_end is not None else None
-    return {"node_id": node_id, "texto": "".join(partes) if fin is not None or len(partes) <= 1
-            else "\n\n".join(partes), "fragmentos": len(filas)}
+    texto = "".join(partes) if fin is not None or len(partes) <= 1 else "\n\n".join(partes)
+
+    node = (await db.execute(select(Node).where(Node.id == node_id))).scalar_one_or_none()
+    fetched_at = _iso_dt(getattr(node, "created_at", None)) if node else None
+    origen = "snapshot"
+    frequency_hours = None
+    last_check = None
+    watched_label = None
+    fuente_url = getattr(node, "fuente_url", None) if node else None
+    if node is not None and fuente_url:
+        ws = (await db.execute(
+            select(WatchedSource)
+            .where(WatchedSource.url == fuente_url)
+            .order_by(WatchedSource.updated_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if ws is not None:
+            origen = "watched"
+            frequency_hours = ws.frequency_hours
+            last_check = _iso_dt(ws.last_check)
+            watched_label = ws.label
+    return {
+        "node_id": node_id,
+        "texto": texto,
+        "fragmentos": len(filas),
+        "fetched_at": fetched_at,
+        "origen": origen,
+        "frequency_hours": frequency_hours,
+        "last_check": last_check,
+        "watched_label": watched_label,
+        "fuente_url": fuente_url,
+    }
 
 
 @app.get("/api/node/{node_id}/office")
@@ -4546,7 +4612,8 @@ async def delete_node(
     if result.rowcount == 0:
         raise HTTPException(404, f"Nodo {node_id} no encontrado")
     await db.commit()
-    background_tasks.add_task(_recompute_edges_background)
+    # Edges CASCADE delete con el nodo — no es necesario recomputar todo el grafo.
+    # Si se quiere reagrupar el grafo completo, usar POST /api/recompute-relations.
     return {"ok": True}
 
 
@@ -4732,6 +4799,7 @@ async def agent_endpoint(
     messages = body.get("messages", [])
     ultima = messages[-1]["content"] if messages else ""
     contexto_id = body.get("contextoId") or body.get("contexto_id")  # UI envía contextoId
+    chat_model = body.get("model")  # Modelo seleccionado por el usuario (opcional)
 
     # JEV: antes de buscar en la biblioteca decide el camino. Un pedido de análisis se
     # propone con una herramienta (y su recibo) y la UI pide confirmar; una pregunta sobre
@@ -4898,9 +4966,9 @@ async def agent_endpoint(
         import os as _os
         from processor import query_llm
         t_llm = _time.perf_counter()
-        reply = query_llm(messages, system)
+        reply = query_llm(messages, system, model=chat_model)
         timing["llm_ms"] = int((_time.perf_counter() - t_llm) * 1000)
-        timing["llm_model"] = _os.getenv("LLM_MODEL", "") or _os.getenv("LLM_PROVIDER", "anthropic")
+        timing["llm_model"] = chat_model or _os.getenv("LLM_MODEL", "") or _os.getenv("LLM_PROVIDER", "anthropic")
     except Exception as e:
         reply = f"Error: {e}"
         timing["llm_ms"] = 0
@@ -6120,7 +6188,8 @@ def _ingest_playlist(url: str, skip_umap: bool = False, seccion: str = "personal
                 ok += 1
         except Exception as e:
             print(f"Error en video {v['url']}: {e}")
-    if not skip_umap:
+    auto_umap = os.getenv("ALGEDI_AUTO_UMAP", "1") in ("1", "true", "True")
+    if not skip_umap and auto_umap:
         _set_progress(90, "Calculando posiciones 3D (UMAP)…")
         try:
             import embeddings_engine
@@ -6203,11 +6272,18 @@ def _persistir_resultado(resultado: dict, seccion: str):
 
 def _cerrar_lote(skip_umap: bool):
     """Trabajo que se hace UNA vez por lote, no por documento: clasificar los temas
-    pendientes (en lote, una llamada cada TEMAS_LOTE docs) y recalcular la proyección 3D."""
+    pendientes (en lote, una llamada cada TEMAS_LOTE docs) y recalcular la proyección 3D.
+    
+    UMAP puede deshabilitarse con ALGEDI_AUTO_UMAP=0 para escalar a grafos grandes:
+    en ese caso las posiciones 3D se calculan solo con POST /api/umap-refresh o el
+    job periódico del watcher (si está habilitado).
+    """
     from processor import asignar_temas_pendientes
     _set_progress(88, "Clasificando temas…")
     asignar_temas_pendientes()
-    if not skip_umap:
+    # Respetar env var: ALGEDI_AUTO_UMAP=0 deshabilita UMAP automático tras ingesta.
+    auto_umap = os.getenv("ALGEDI_AUTO_UMAP", "1") in ("1", "true", "True")
+    if not skip_umap and auto_umap:
         _set_progress(94, "Calculando posición 3D (UMAP)…")
         try:
             import embeddings_engine
@@ -6652,6 +6728,185 @@ def vault_rescan():
         raise HTTPException(400, "La Ingesta Continua no está activa")
     threading.Thread(target=w.rescan, daemon=True).start()
     return {"ok": True}
+
+
+# ── Fuentes Vivas: Monitoreo de URLs ────────────────────────────────────
+
+class WatchedSourceCreate(BaseModel):
+    url: str
+    kind: str = "pdf"  # pdf | listing | html
+    label: str = None
+    frequency_hours: int = 24
+    seccion: str = "personal"
+
+
+class WatchedSourceUpdate(BaseModel):
+    label: str = None
+    frequency_hours: int = None
+    enabled: bool = None
+
+
+@app.get("/api/watched-sources")
+def list_watched_sources(seccion: str = None, limit: int = 50):
+    """Lista las fuentes vivas de una sección (o todas)."""
+    from database.models import WatchedSource
+    with get_sync_session() as session:
+        q = session.query(WatchedSource).order_by(WatchedSource.updated_at.desc())
+        if seccion:
+            q = q.filter(WatchedSource.seccion == seccion)
+        sources = q.limit(limit).all()
+        return {
+            "sources": [
+                {
+                    "id": ws.id,
+                    "url": ws.url,
+                    "kind": ws.kind,
+                    "label": ws.label,
+                    "frequency_hours": ws.frequency_hours,
+                    "enabled": ws.enabled,
+                    "status": ws.status,
+                    "seccion": ws.seccion,
+                    "last_check": ws.last_check.isoformat() if ws.last_check else None,
+                    "last_error": ws.last_error,
+                    "check_count": ws.check_count or 0,
+                    "change_count": ws.change_count or 0,
+                    "error_count": ws.error_count or 0,
+                    "node_ids": ws.node_ids or [],
+                    "version_count": len(ws.version_history or []),
+                    "created_at": ws.created_at.isoformat() if ws.created_at else None,
+                }
+                for ws in sources
+            ]
+        }
+
+
+@app.post("/api/watched-sources")
+def create_watched_source(body: WatchedSourceCreate):
+    """Crea una nueva fuente viva para monitorear."""
+    from database.models import WatchedSource
+    with get_sync_session() as session:
+        existing = session.query(WatchedSource).filter(
+            WatchedSource.url == body.url,
+            WatchedSource.seccion == body.seccion,
+        ).first()
+        if existing:
+            raise HTTPException(400, f"Esta URL ya está siendo monitoreada (id={existing.id})")
+        
+        ws = WatchedSource(
+            url=body.url,
+            kind=body.kind,
+            label=body.label or body.url.split("/")[-1][:50],
+            frequency_hours=body.frequency_hours,
+            seccion=body.seccion,
+            status="pending",
+        )
+        session.add(ws)
+        session.commit()
+        session.refresh(ws)
+        return {
+            "id": ws.id,
+            "url": ws.url,
+            "kind": ws.kind,
+            "label": ws.label,
+            "status": "pending",
+            "message": "Fuente agregada. Se revisará en el próximo ciclo."
+        }
+
+
+@app.get("/api/watched-sources/{source_id}")
+def get_watched_source(source_id: int):
+    """Detalle de una fuente viva."""
+    from database.models import WatchedSource
+    with get_sync_session() as session:
+        ws = session.query(WatchedSource).filter(WatchedSource.id == source_id).first()
+        if not ws:
+            raise HTTPException(404, "Fuente no encontrada")
+        return {
+            "id": ws.id,
+            "url": ws.url,
+            "kind": ws.kind,
+            "label": ws.label,
+            "frequency_hours": ws.frequency_hours,
+            "enabled": ws.enabled,
+            "status": ws.status,
+            "seccion": ws.seccion,
+            "last_check": ws.last_check.isoformat() if ws.last_check else None,
+            "last_hash": ws.last_hash,
+            "last_error": ws.last_error,
+            "known_links": ws.known_links or [],
+            "node_ids": ws.node_ids or [],
+            "version_history": ws.version_history or [],
+            "check_count": ws.check_count or 0,
+            "change_count": ws.change_count or 0,
+            "error_count": ws.error_count or 0,
+            "created_at": ws.created_at.isoformat() if ws.created_at else None,
+            "updated_at": ws.updated_at.isoformat() if ws.updated_at else None,
+        }
+
+
+@app.patch("/api/watched-sources/{source_id}")
+def update_watched_source(source_id: int, body: WatchedSourceUpdate):
+    """Actualiza una fuente viva (label, frecuencia, habilitada)."""
+    from database.models import WatchedSource
+    with get_sync_session() as session:
+        ws = session.query(WatchedSource).filter(WatchedSource.id == source_id).first()
+        if not ws:
+            raise HTTPException(404, "Fuente no encontrada")
+        if body.label is not None:
+            ws.label = body.label
+        if body.frequency_hours is not None:
+            ws.frequency_hours = max(1, body.frequency_hours)
+        if body.enabled is not None:
+            ws.enabled = body.enabled
+        session.commit()
+        return {"ok": True, "id": ws.id}
+
+
+@app.delete("/api/watched-sources/{source_id}")
+def delete_watched_source(source_id: int):
+    """Elimina una fuente viva (no borra los nodos ya ingeridos)."""
+    from database.models import WatchedSource
+    with get_sync_session() as session:
+        ws = session.query(WatchedSource).filter(WatchedSource.id == source_id).first()
+        if not ws:
+            raise HTTPException(404, "Fuente no encontrada")
+        session.delete(ws)
+        session.commit()
+        return {"ok": True, "deleted": source_id}
+
+
+@app.post("/api/watched-sources/{source_id}/check")
+def check_watched_source(source_id: int):
+    """Fuerza una revisión inmediata de una fuente (acción manual del usuario)."""
+    import watcher
+    result = watcher.check_source_now(source_id)
+    if "error" in result:
+        raise HTTPException(404, result["error"])
+    return result
+
+
+@app.post("/api/watched-sources/{source_id}/mark-seen")
+def mark_watched_source_seen(source_id: int):
+    """Marca una fuente como vista (quita el estado 'changed')."""
+    import watcher
+    watcher.mark_as_seen(source_id)
+    return {"ok": True}
+
+
+@app.get("/api/watched-sources/pending-count")
+def watched_sources_pending_count(seccion: str = None):
+    """Cuenta de fuentes con cambios pendientes de ver (para badge en UI)."""
+    import watcher
+    count = watcher.get_pending_updates_count(seccion)
+    return {"count": count}
+
+
+@app.get("/api/watched-sources/recent-changes")
+def watched_sources_recent_changes(seccion: str = None, limit: int = 10):
+    """Cambios recientes para mostrar en UI."""
+    import watcher
+    changes = watcher.get_recent_changes(seccion, limit)
+    return {"changes": changes}
 
 
 # ── Jobs: Ingesta en background ───────────────────────────────────────

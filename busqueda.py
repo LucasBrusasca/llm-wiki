@@ -1,4 +1,4 @@
-"""Búsqueda por PALABRAS (BM25) y su fusión con la búsqueda por SIGNIFICADO (vectores).
+"""Búsqueda por PALABRAS (BM25/tsvector) y su fusión con la búsqueda por SIGNIFICADO (vectores).
 
 Los vectores encuentran «lo que quiere decir» aunque no se usen las mismas palabras;
 las palabras encuentran siglas, nombres propios y términos técnicos que los vectores
@@ -7,10 +7,15 @@ separado (eval/evaluar_busqueda.py; antes en multi-rag-energy-ar). Para buscar
 DOCUMENTOS no: ahí gana el vector del documento entero solo. La fusión es RRF (Reciprocal Rank Fusion): sólo usa el PUESTO de
 cada resultado en cada lista, así que no hay que inventar cómo sumar un coseno con un
 puntaje BM25, que están en escalas distintas.
+
+ESCALABILIDAD: Postgres full-text (tsvector + GIN, spanish config) reemplaza el BM25
+en memoria cuando hay +10k chunks. El índice se mantiene con un trigger, no hay que
+reconstruirlo. Fallback a BM25 en memoria para bases pequeñas o tests sin Postgres.
 """
 from __future__ import annotations
 
 import math
+import os
 import re
 import threading
 import unicodedata
@@ -21,6 +26,9 @@ K_RRF = 60
 # Cuántos candidatos aporta cada lista a la fusión. Con 10 quedaban afuera documentos
 # que una sola de las dos listas encontraba bien.
 PROFUNDIDAD = 50
+# Umbral para usar Postgres full-text en vez de BM25 en memoria. Con <10k chunks
+# el índice en memoria es más rápido (no hay roundtrip a la DB).
+POSTGRES_FTS_THRESHOLD = int(os.getenv("ALGEDI_FTS_THRESHOLD", "10000"))
 
 # Palabras vacías comunes en español e inglés: no distinguen nada y en BM25 sólo meten ruido.
 STOP = set("""a al algo algunas algunos ante antes como con contra cual cuando de del desde donde dos el
@@ -112,3 +120,59 @@ def construir_indice(firma, filas) -> IndiceLexico:
     with _lock:
         _indice = (firma, idx)
     return idx
+
+
+# ── Postgres Full-Text Search (escalable) ────────────────────────────────────
+
+def buscar_postgres_fts(consulta: str, n: int = PROFUNDIDAD) -> list[tuple[str, str, float]] | None:
+    """Búsqueda léxica vía Postgres tsvector+GIN (spanish config).
+    
+    Devuelve [(chunk_id, node_id, rank)] ordenados por relevancia, o None si no hay
+    índice tsvector (la tabla no tiene la columna o está vacía).
+    
+    Usa ts_rank con normalización 32 (divide por longitud del documento) y plainto_tsquery
+    que tokeniza la consulta igual que el contenido.
+    """
+    try:
+        from database.connection import get_sync_session
+        from sqlalchemy import text
+        
+        with get_sync_session() as session:
+            # Verificar que hay chunks con tsvector
+            check = session.execute(text(
+                "SELECT EXISTS (SELECT 1 FROM chunks WHERE tsv IS NOT NULL LIMIT 1)"
+            )).scalar()
+            if not check:
+                return None
+            
+            # Buscar con ts_rank
+            query = text("""
+                SELECT c.id, d.node_id, ts_rank(c.tsv, plainto_tsquery('spanish', :q), 32) as rank
+                FROM chunks c
+                JOIN documents d ON c.document_id = d.id
+                WHERE c.tsv @@ plainto_tsquery('spanish', :q)
+                ORDER BY rank DESC
+                LIMIT :n
+            """)
+            rows = session.execute(query, {"q": consulta, "n": n}).fetchall()
+            return [(r[0], r[1], float(r[2])) for r in rows]
+    except Exception as e:
+        print(f"[busqueda] Postgres FTS failed, falling back to BM25: {e}")
+        return None
+
+
+def buscar_hibrido_postgres(consulta: str, vec_results: list, n: int = PROFUNDIDAD) -> list[str]:
+    """Fusiona resultados de vector search con Postgres FTS via RRF.
+    
+    `vec_results` es [(chunk_id, node_id, sim)] de la búsqueda vectorial.
+    Devuelve lista de chunk_ids ordenados por relevancia fusionada.
+    """
+    fts_results = buscar_postgres_fts(consulta, n)
+    if fts_results is None:
+        # Sin FTS, solo usar vectores
+        return [r[0] for r in vec_results[:n]]
+    
+    # RRF: fusionar por puesto
+    vec_ids = [r[0] for r in vec_results]
+    fts_ids = [r[0] for r in fts_results]
+    return rrf(vec_ids, fts_ids)[:n]

@@ -49,12 +49,19 @@ class OllamaTests(unittest.TestCase):
 
 
 class HtmlTests(unittest.TestCase):
-    def test_sin_trafilatura_o_poco_contenido_queda_el_texto_entero(self):
+    def test_contenido_principal_sin_menu_ni_script(self):
         from processor import _extraer_texto_html
         html = "<html><body><nav>Menú</nav><p>Hola <b>mundo</b></p><script>x()</script></body></html>"
         texto = _extraer_texto_html(html)
         self.assertIn("Hola mundo", texto)
         self.assertNotIn("x()", texto)
+        self.assertNotIn("Menú", texto)
+
+    def test_acepta_url_para_render_js(self):
+        import inspect
+        from processor import procesar_html, _extraer_texto_html
+        self.assertIn("url", inspect.signature(procesar_html).parameters)
+        self.assertIn("url", inspect.signature(_extraer_texto_html).parameters)
 
 
 class DuplicadosTests(unittest.TestCase):

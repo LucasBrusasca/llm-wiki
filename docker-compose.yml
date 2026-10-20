@@ -43,6 +43,12 @@ services:
       # ALGEDI_PG_<NOMBRE> por base; las propias van en .env. Ésta es la de prueba
       # (servicio demo-db, más abajo): datos inventados y un usuario que sólo lee.
       ALGEDI_PG_DEMO: postgresql://algedi_lector:lector_demo@demo-db:5432/algedi_demo
+      # Páginas JS: si el GET estático trae poco texto, Chromium (ya está en la imagen)
+      # renderiza antes de extraer. 0 = apagado. Para prenderlo: ALGEDI_HTML_JS=1 en
+      # .env y `docker compose up -d backend` (reinicio, no rebuild). Ver docs/INGESTA_WEB.md.
+      ALGEDI_HTML_JS: ${ALGEDI_HTML_JS:-0}
+      ALGEDI_HTML_JS_MIN_CHARS: ${ALGEDI_HTML_JS_MIN_CHARS:-400}
+      ALGEDI_HTML_JS_TIMEOUT_MS: ${ALGEDI_HTML_JS_TIMEOUT_MS:-15000}
     env_file: .env
     ports:
       - "8000:8000"

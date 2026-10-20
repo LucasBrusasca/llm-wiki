@@ -54,7 +54,7 @@ function Segmentado({ items, value, onChange, etiqueta, hint }) {
   );
 }
 
-export default function Topbar({ seccion, total, vista, onVista, onOpenPalette, onReload, loading, jobsBadge }) {
+export default function Topbar({ seccion, total, vista, onVista, onOpenPalette, onReload, loading, jobsBadge, fuentesBadge }) {
   const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
   return (
     <header className="flex items-center gap-3 hairline-b bg-surface/90 px-3 backdrop-blur">
@@ -76,6 +76,7 @@ export default function Topbar({ seccion, total, vista, onVista, onOpenPalette, 
       </button>
 
       <div className="ml-auto flex items-center gap-2">
+        {fuentesBadge}
         {jobsBadge}
         <Hint texto="Recargar sección">
           <Button variant="ghost" size="icon" onClick={onReload} aria-label="Recargar">

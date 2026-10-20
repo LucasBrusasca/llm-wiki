@@ -104,7 +104,10 @@ def generar_embedding(nodo):
 
 CHUNK_MAX_CHARS = 1400
 CHUNK_OVERLAP_CHARS = 220
-CHUNK_LIMIT = 200
+# Límite de chunks por documento. Antes fijo en 200, ahora configurable para documentos
+# largos (balances, estados contables). Con el índice HNSW y tsvector+GIN el costo de
+# más chunks es bajo. Default 500; subir si hay PDFs de cientos de páginas.
+CHUNK_LIMIT = int(os.getenv("ALGEDI_CHUNK_LIMIT", "500"))
 
 
 def _char_to_byte_offset(text: str, char_offset: int) -> int:
@@ -389,9 +392,21 @@ def _post_llm_chat(url, payload, headers, timeout, retries=6):
         raise last_exc
 
 
-def query_llm(messages: list, system: str = None) -> str:
-    provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
-    model = os.getenv("LLM_MODEL", "").strip()
+def query_llm(messages: list, system: str = None, *, model: str = None) -> str:
+    """Envía mensajes al LLM configurado. Si `model` se pasa explícitamente, lo usa
+    en lugar del de la variable de entorno (para el selector de modelo del chat)."""
+    env_model = os.getenv("LLM_MODEL", "").strip()
+    # Modelo explícito del UI tiene prioridad sobre el de .env
+    model = (model or "").strip() or env_model
+    # Detectar provider del modelo si es explícito (para el selector del UI)
+    if model.startswith("gpt-") or model.startswith("o1-"):
+        provider = "openai"
+    elif model.startswith("claude-"):
+        provider = "anthropic"
+    elif model.startswith("gemini-"):
+        provider = "gemini"
+    else:
+        provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
 
     if provider == "ollama":
         if not model:
@@ -488,8 +503,10 @@ def query_llm(messages: list, system: str = None) -> str:
         # (…/v1 o …/paas/v4); también se acepta la URL completa de /chat/completions.
         base = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
         url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+        # Para OpenAI real, OPENAI_API_KEY; para otros (Groq, Z.ai), LLM_API_KEY.
+        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
         headers = {"Content-Type": "application/json",
-                   "Authorization": f"Bearer {os.getenv('LLM_API_KEY', '')}"}
+                   "Authorization": f"Bearer {api_key}"}
         payload_messages = []
         if system:
             payload_messages.append({"role": "system", "content": system})
@@ -818,22 +835,15 @@ def procesar_excel(ruta_excel):
     return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 
-def _extraer_texto_html(html_str: str) -> str:
-    """El texto de una página. Con trafilatura, sólo el contenido principal (sin menús,
-    pie, publicidad ni barras laterales) y con sus párrafos, que después cortan mejor los
-    fragmentos. Si no está instalado o el «contenido principal» es una fracción mínima
-    de la página (portadas, índices, páginas armadas con tablas), queda el texto entero."""
-    completo = _texto_html_completo(html_str)
-    try:
-        import trafilatura
-        principal = trafilatura.extract(
-            html_str, include_tables=True, include_comments=False, include_links=False,
-            favor_recall=True, deduplicate=True) or ""
-    except Exception:
-        principal = ""
-    if len(principal) >= 200 and len(principal) >= 0.15 * len(completo):
-        return principal.strip()
-    return completo
+def _extraer_texto_html(html_str: str, url: str | None = None) -> str:
+    """Texto principal de una página (sin menús, cookies ni «Ver más»).
+
+    El HTML crudo queda en bronze (`fuente_path` / `fuente_url`). Esto es el silver
+    que busca, cita y relaciona el grafo. Si la página es un cascarón JS y
+    `ALGEDI_HTML_JS=1`, se intenta Chromium; si no está, se sigue con el estático.
+    """
+    from html_extract import extraer_texto_pagina
+    return extraer_texto_pagina(html_str or "", url=url)
 
 
 def _texto_html_completo(html_str: str) -> str:
@@ -849,11 +859,11 @@ def _texto_html_completo(html_str: str) -> str:
     return re.sub(r'\s+', ' ', texto).strip()
 
 
-def procesar_html(ruta_html):
-    """Un único nodo por archivo HTML."""
+def procesar_html(ruta_html, *, url: str | None = None):
+    """Un único nodo por archivo HTML. `url` habilita el render JS si hace falta."""
     try:
         texto = Path(ruta_html).read_text(encoding="utf-8", errors="ignore")
-        texto_completo = _extraer_texto_html(texto)
+        texto_completo = _extraer_texto_html(texto, url=url)
     except Exception:
         texto_completo = f"[Archivo HTML: {Path(ruta_html).name}]"
 
@@ -904,18 +914,38 @@ def decodificar_html(contenido: bytes, content_type: str = "") -> str:
         return contenido.decode("cp1252", errors="replace")
 
 
-def procesar_url_web(url: str):
-    """Descarga y procesa cualquier URL web (artículo, Wikipedia, GitHub, etc.)."""
+def procesar_url_web(url: str, *, allow_pdf: bool = True):
+    """Descarga y procesa cualquier URL web (artículo, Wikipedia, GitHub, etc.).
+    Si la URL apunta a un PDF y allow_pdf=True, lo descarga y procesa como PDF."""
+    import tempfile
     from security_utils import safe_http_get
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; Algedi/1.0; +https://github.com/algedi)"
     }
     try:
-        resp = safe_http_get(url, timeout=30.0, headers=headers)
+        resp = safe_http_get(url, timeout=60.0, headers=headers)
         resp.raise_for_status()
         content_type = resp.headers.get("content-type", "")
-        if "pdf" in content_type:
-            raise ValueError("URL apunta a un PDF — subilo como archivo")
+        
+        if "pdf" in content_type.lower() or url.lower().endswith(".pdf"):
+            if not allow_pdf:
+                raise ValueError("URL apunta a un PDF — subilo como archivo")
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(resp.content)
+                tmp_path = tmp.name
+            try:
+                resultado = procesar_pdf(tmp_path)
+                for nodo in resultado.get("nodos", []):
+                    nodo["fuente"] = "pdf"
+                    nodo["fuente_url"] = url
+                    nodo["fuente_label"] = nodo.get("fuente_label") or url.split("/")[-1]
+                return resultado
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        
         html = decodificar_html(resp.content, content_type)
     except httpx.HTTPStatusError as e:
         raise ValueError(f"No se pudo acceder a la URL: HTTP {e.response.status_code}")
@@ -926,7 +956,7 @@ def procesar_url_web(url: str):
     title_m = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
     page_title = re.sub(r'\s+', ' ', title_m.group(1)).strip() if title_m else ""
 
-    texto_completo = _extraer_texto_html(html)
+    texto_completo = _extraer_texto_html(html, url=url)
     if not texto_completo.strip():
         raise ValueError("No se pudo extraer texto de la página")
 

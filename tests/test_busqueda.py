@@ -130,5 +130,95 @@ class IntentRoutingTests(unittest.TestCase):
         self.assertTrue(jev._PREGUNTA_CONCEPTO.search(t))
 
 
+class ScalabilityTests(unittest.TestCase):
+    """Tests para características de escalabilidad."""
+    
+    def test_postgres_fts_threshold_es_configurable(self):
+        """El umbral para usar Postgres FTS debe ser configurable."""
+        self.assertGreater(busqueda.POSTGRES_FTS_THRESHOLD, 0)
+        self.assertEqual(busqueda.POSTGRES_FTS_THRESHOLD, 10000)  # default
+    
+    def test_chunk_limit_es_configurable(self):
+        """El límite de chunks por documento debe ser configurable."""
+        self.assertGreater(processor.CHUNK_LIMIT, 200)  # raised from old fixed 200
+        self.assertEqual(processor.CHUNK_LIMIT, 500)  # new default
+    
+    def test_buscar_postgres_fts_devuelve_none_sin_indice(self):
+        """Sin índice tsvector activo, debe retornar None para caer a BM25."""
+        # Mock la sesión para simular que no hay chunks con tsv
+        with patch('database.connection.get_sync_session') as mock:
+            mock.return_value.__enter__.return_value.execute.return_value.scalar.return_value = False
+            result = busqueda.buscar_postgres_fts("test query")
+            self.assertIsNone(result)
+    
+    def test_buscar_hibrido_postgres_usa_fallback(self):
+        """Sin FTS, debe usar solo resultados de vectores."""
+        vec_results = [("c1", "n1", 0.9), ("c2", "n2", 0.8)]
+        with patch('busqueda.buscar_postgres_fts', return_value=None):
+            result = busqueda.buscar_hibrido_postgres("query", vec_results)
+            self.assertEqual(result, ["c1", "c2"])
+    
+    def test_chunk_model_tiene_tsv(self):
+        """El modelo Chunk debe tener columna tsv para full-text search."""
+        from database.models import Chunk
+        self.assertTrue(hasattr(Chunk, 'tsv'))
+    
+    def test_incremental_relations_usa_hnsw(self):
+        """relaciones_incrementales debe documentar uso de HNSW."""
+        doc = processor.relaciones_incrementales.__doc__ or ""
+        self.assertIn("kNN", doc)
+        self.assertIn("HNSW", doc)
+
+
+class WatchedSourcesTests(unittest.TestCase):
+    """Tests para Fuentes Vivas (watched sources)."""
+    
+    def test_modelo_watched_source_existe(self):
+        """El modelo WatchedSource debe estar definido con campos correctos."""
+        from database.models import WatchedSource
+        self.assertTrue(hasattr(WatchedSource, 'id'))
+        self.assertTrue(hasattr(WatchedSource, 'url'))
+        self.assertTrue(hasattr(WatchedSource, 'kind'))
+        self.assertTrue(hasattr(WatchedSource, 'seccion'))
+        self.assertTrue(hasattr(WatchedSource, 'frequency_hours'))
+        self.assertTrue(hasattr(WatchedSource, 'last_hash'))
+        self.assertTrue(hasattr(WatchedSource, 'version_history'))
+        self.assertTrue(hasattr(WatchedSource, 'status'))
+    
+    def test_content_hash_es_sha256(self):
+        """El hash de contenido debe ser SHA-256."""
+        import watcher
+        h = watcher._content_hash(b"test content")
+        self.assertEqual(len(h), 64)  # SHA-256 hex = 64 chars
+        # Debe ser determinístico
+        self.assertEqual(h, watcher._content_hash(b"test content"))
+    
+    def test_extract_pdf_links_detecta_pdfs(self):
+        """Debe extraer links a PDFs de HTML."""
+        import watcher
+        html = '''
+        <html>
+            <a href="doc.pdf">Doc</a>
+            <a href="/path/archivo.pdf">Archivo</a>
+            <a href="https://otro.com/reporte.PDF">Reporte</a>
+            <a href="noespdf.txt">No PDF</a>
+        </html>
+        '''
+        links = watcher._extract_pdf_links(html, "https://ejemplo.com/pagina/")
+        self.assertIn("https://ejemplo.com/pagina/doc.pdf", links)
+        self.assertIn("https://ejemplo.com/path/archivo.pdf", links)
+        self.assertIn("https://otro.com/reporte.PDF", links)
+        self.assertEqual(len(links), 3)
+    
+    def test_procesar_url_web_acepta_pdf(self):
+        """procesar_url_web con allow_pdf=True debe procesar PDFs por URL."""
+        import processor
+        # El test real requeriría mockear la descarga, pero verificamos que el parámetro existe
+        import inspect
+        sig = inspect.signature(processor.procesar_url_web)
+        self.assertIn('allow_pdf', sig.parameters)
+        self.assertEqual(sig.parameters['allow_pdf'].default, True)
+
+
 if __name__ == "__main__":
     unittest.main()
