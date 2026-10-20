@@ -187,6 +187,24 @@ body {
 .agent-md pre code { border: 0; padding: 0; background: none; }
 .agent-md blockquote { border-left: 2px solid var(--color-hair-strong); padding-left: 10px; color: var(--color-ink-muted); }
 
+/* Salida de scripts con markdown (tablas de datos, reportes) */
+.script-output-md > * + * { margin-top: 0.5em; }
+.script-output-md h1, .script-output-md h2, .script-output-md h3 {
+  font-size: 12px; font-weight: 600; color: var(--color-ink); margin-top: 0.8em;
+}
+.script-output-md p { color: var(--color-ink-muted); }
+.script-output-md table {
+  width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums;
+}
+.script-output-md thead { background: var(--color-surface-2); }
+.script-output-md th, .script-output-md td {
+  border: 1px solid var(--color-hair); padding: 4px 8px; text-align: left;
+}
+.script-output-md th { font-weight: 600; color: var(--color-ink); white-space: nowrap; }
+.script-output-md td { color: var(--color-ink-muted); }
+.script-output-md tr:hover td { background: var(--color-surface-2); }
+.script-output-md code { font-size: 10.5px; background: var(--color-surface-2); padding: 0 3px; border-radius: 2px; }
+
 /* React Flow: sin chrome propio, todo lo pone el nodo */
 .algedi-flow .react-flow__node { cursor: pointer; }
 .algedi-flow .react-flow__pane { cursor: default; }

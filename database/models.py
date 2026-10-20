@@ -43,6 +43,12 @@ class Node(Base):
     tags          = Column(JSON, default=list)
     rich_html     = Column(Text)
     transcript    = Column(Text)   # transcripción completa (videos de YouTube)
+    # ── Temporalidad ──────────────────────────────────────────────────────────
+    # known_since: cuándo el sistema supo de este nodo (backfilled de created_at).
+    # valid_from: cuándo el contenido empezó a ser válido (ej. fecha de publicación).
+    # Permiten reconstruir el grafo como era en un momento dado.
+    known_since   = Column(DateTime(timezone=True))
+    valid_from    = Column(DateTime(timezone=True))
     created_at    = Column(DateTime, server_default=func.now())
     updated_at    = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -182,6 +188,10 @@ class ScriptRun(Base):
     duration_ms    = Column(Integer)
     started_at     = Column(DateTime(timezone=True))
     finished_at    = Column(DateTime(timezone=True))
+    # Artefactos persistidos: archivos declarados por el script (ARTIFACTS) que se
+    # guardaron. Cada entrada: {nombre, bytes, content_type}. El contenido vive en
+    # `uploads/runs/<id>/<nombre>`. Límite: 5 MB total por corrida.
+    artifacts      = Column(JSON, default=list)
     created_at     = Column(DateTime, server_default=func.now())
 
 

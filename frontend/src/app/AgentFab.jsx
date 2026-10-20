@@ -27,6 +27,8 @@ function citados(m) {
 function Evidencia({ m }) {
   const n = citados(m).length;
   const conducta = m.conducta || (m.evidenceMode === 'chunks' && n > 0 ? 'responder' : 'abstenerse');
+  const timing = m.timing?.total_ms ? ` · ${m.timing.total_ms} ms` : '';
+  const scope = m.doc_scoped ? ' (doc)' : '';
 
   if (conducta === 'abstenerse' || conducta === 'pedir_aclaracion') {
     const pedir = conducta === 'pedir_aclaracion';
@@ -36,6 +38,7 @@ function Evidencia({ m }) {
         <span className="text-[11.5px] leading-relaxed text-warn">
           <b>{pedir ? 'Necesito que precises' : 'Me abstengo de citar'}</b>
           {m.motivo ? <> · {m.motivo}</> : null}
+          {timing && <span className="text-warn/60">{timing}</span>}
         </span>
       </div>
     );
@@ -44,12 +47,14 @@ function Evidencia({ m }) {
     return (
       <span className="flex items-center gap-1 text-[11px] text-accent-soft">
         <Quote className="size-3" /> Citada · {n} {n === 1 ? 'pasaje' : 'pasajes'} · afinidad máx {pct(m.sim)}
+        {timing && <span className="text-ink-dim">{timing}{scope}</span>}
       </span>
     );
   }
   return (
     <span className="flex items-center gap-1 text-[11px] text-ink-muted">
       <FileText className="size-3" /> {m.motivo || 'Basada en resúmenes, sin cita por pasaje'} · {pct(m.sim)}
+      {timing && <span className="text-ink-dim/60">{timing}{scope}</span>}
     </span>
   );
 }
@@ -331,6 +336,8 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
         conducta: d.conducta,
         motivo: d.motivo,
         sim: d.max_sim,
+        timing: d.timing,
+        doc_scoped: d.doc_scoped,
       }]);
     } catch {
       setMsgs((prev) => [...prev, { role: 'assistant', text: 'No pude conectar con el agente. ¿Está arriba el backend?', error: true }]);
@@ -403,7 +410,7 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
               )))}
               {busy && (
                 <div className="flex items-center gap-2 text-[12px] text-ink-dim">
-                  <span className="size-1.5 animate-pulse rounded-full bg-accent" /> Buscando evidencia…
+                  <span className="size-1.5 animate-pulse rounded-full bg-accent" /> Buscando en {context ? 'este documento' : 'la biblioteca'}…
                 </div>
               )}
             </div>

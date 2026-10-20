@@ -50,6 +50,22 @@ class FusionTests(unittest.TestCase):
         self.assertEqual(_mejor_sim([]), 0.0)
 
 
+class DocScopedRetrievalTests(unittest.TestCase):
+    """Regresión: la búsqueda acotada a un documento debe ser más rápida que la global."""
+    
+    def test_doc_scoped_cap_es_razonable(self):
+        """El cap de chunks para doc-scoped debe ser bajo para mantener latencia baja."""
+        from main import DOC_SCOPED_MAX_CHUNKS
+        self.assertLessEqual(DOC_SCOPED_MAX_CHUNKS, 50)
+        self.assertGreaterEqual(DOC_SCOPED_MAX_CHUNKS, 10)
+    
+    def test_timeout_agente_es_razonable(self):
+        """El timeout del agente debe ser corto para buena UX."""
+        from main import AGENT_TIMEOUT_S
+        self.assertLessEqual(AGENT_TIMEOUT_S, 20.0)
+        self.assertGreaterEqual(AGENT_TIMEOUT_S, 5.0)
+
+
 class UmbralesPorModeloTests(unittest.TestCase):
     def test_cada_modelo_tiene_umbrales_coherentes(self):
         for modelo, u in processor.UMBRALES_POR_MODELO.items():

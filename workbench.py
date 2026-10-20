@@ -189,6 +189,10 @@ CAMPOS_FICHA = {"sirve para": "sirve_para", "necesita": "necesita", "entrega": "
 TIPOS_PARAMETRO = ("tabla", "columna", "columnas", "numero", "texto", "opcion")
 CLASES_COLUMNA = ("numerica", "categorica", "binaria", "fecha")
 VARIABLE_PARAMETROS = "ALGEDI_PARAMS"
+VARIABLE_ARTIFACTS = "ARTIFACTS"
+
+MAX_ARTIFACT_SIZE = 2 * 1024 * 1024  # 2 MB por artefacto
+MAX_ARTIFACTS_TOTAL = 5 * 1024 * 1024  # 5 MB total por corrida
 
 _RED = {"requests", "urllib", "urllib3", "http", "httpx", "aiohttp", "socket", "smtplib", "ftplib"}
 _ESCRIBE = {"to_csv", "to_excel", "to_parquet", "to_json", "to_sql", "write_text", "write_bytes",
@@ -288,6 +292,29 @@ def corre_directo(efectos: list[str]) -> bool:
     """Un script que sólo calcula y muestra (ni escribe, ni borra, ni usa la red, ni
     ejecuta comandos) corre con un clic, como una consulta. Si toca algo, se confirma."""
     return not efectos
+
+
+def leer_artifacts_declarados(codigo: str) -> list[str]:
+    """Lee la lista de nombres de archivo declarados en ARTIFACTS = [...] del script.
+    
+    ARTIFACTS = ["report.html", "correlation_heatmap.png"]
+    
+    Devuelve los nombres de archivo que el script declara producir. Sólo se persisten
+    los archivos declarados que efectivamente se generan y caben en el límite."""
+    try:
+        arbol = ast.parse(codigo or "")
+    except SyntaxError:
+        return []
+    for nodo in arbol.body:
+        if isinstance(nodo, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == VARIABLE_ARTIFACTS for t in nodo.targets):
+            try:
+                valor = ast.literal_eval(nodo.value)
+                if isinstance(valor, list):
+                    return [str(v) for v in valor if isinstance(v, str) and v]
+            except (ValueError, SyntaxError):
+                pass
+    return []
 
 
 def leer_ficha(codigo: str) -> dict | None:
@@ -459,12 +486,37 @@ def plan_ejecucion(archivo: str, version: str, datos: list[dict], timeout_s: int
     }
 
 
+def _content_type(nombre: str) -> str:
+    """Content-type para un archivo por su extensión."""
+    ext = Path(nombre).suffix.lower()
+    tipos = {
+        ".html": "text/html",
+        ".htm": "text/html",
+        ".json": "application/json",
+        ".csv": "text/csv",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".svg": "image/svg+xml",
+        ".pdf": "application/pdf",
+        ".txt": "text/plain",
+    }
+    return tipos.get(ext, "application/octet-stream")
+
+
 def ejecutar_en_sandbox(ruta: Path, *, datos: list[Path] = (), timeout_s: int = 25,
-                        salida_max: int = 20_000, parametros: dict | None = None) -> dict:
+                        salida_max: int = 20_000, parametros: dict | None = None,
+                        destino_artifacts: Path | None = None) -> dict:
     """Corre un .py en un proceso aparte: sin variables de entorno del servidor (ni
     claves ni DATABASE_URL), en un directorio temporal, con límite de tiempo y con copias
     de los datos que el script lee. Los parámetros de la herramienta viajan en
-    ALGEDI_PARAMS (JSON). Devuelve salida, código, horas y lo que generó."""
+    ALGEDI_PARAMS (JSON).
+    
+    Si `destino_artifacts` está definido y el script declara ARTIFACTS = [...], los
+    archivos declarados se copian a esa carpeta (con límites de tamaño). Los artefactos
+    persistidos se incluyen en la salida como `artifacts_persistidos`.
+    
+    Devuelve salida, código, horas, lo que generó y artefactos persistidos."""
     entorno = {
         "PATH": os.getenv("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": "/tmp",
@@ -474,6 +526,10 @@ def ejecutar_en_sandbox(ruta: Path, *, datos: list[Path] = (), timeout_s: int = 
     }
     if parametros:
         entorno[VARIABLE_PARAMETROS] = json.dumps(parametros, ensure_ascii=False)
+    
+    codigo = ruta.read_text(encoding="utf-8", errors="replace")
+    artifacts_declarados = set(leer_artifacts_declarados(codigo))
+    
     with tempfile.TemporaryDirectory(prefix="algedi_run_") as tmp:
         carpeta = Path(tmp)
         copiados = set()
@@ -506,18 +562,38 @@ def ejecutar_en_sandbox(ruta: Path, *, datos: list[Path] = (), timeout_s: int = 
                 "timeout": True,
             }
         generados = []
+        artifacts_persistidos = []
+        total_persistido = 0
+        
         for f in sorted(carpeta.rglob("*")):
             if f.is_file() and f.name not in copiados:
                 try:
-                    generados.append({"archivo": str(f.relative_to(carpeta)), "bytes": f.stat().st_size})
+                    size = f.stat().st_size
+                    nombre_rel = str(f.relative_to(carpeta))
+                    generados.append({"archivo": nombre_rel, "bytes": size})
+                    
+                    if (destino_artifacts and nombre_rel in artifacts_declarados
+                            and size <= MAX_ARTIFACT_SIZE
+                            and total_persistido + size <= MAX_ARTIFACTS_TOTAL):
+                        destino_artifacts.mkdir(parents=True, exist_ok=True)
+                        destino_final = destino_artifacts / nombre_rel
+                        shutil.copy2(f, destino_final)
+                        artifacts_persistidos.append({
+                            "nombre": nombre_rel,
+                            "bytes": size,
+                            "content_type": _content_type(nombre_rel),
+                        })
+                        total_persistido += size
                 except OSError:
                     continue
+        
         salida.update({
             "duration_ms": int((time.time() - inicio) * 1000),
             "inicio": inicio_iso,
             "fin": datetime.now(timezone.utc).isoformat(),
             "datos": sorted(copiados),
             "generados": generados[:50],
+            "artifacts_persistidos": artifacts_persistidos,
         })
         return salida
 

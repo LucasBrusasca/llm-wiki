@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Play, Loader2, ShieldAlert, CheckCircle2, AlertTriangle, History, Timer, Database, Bot, FileOutput,
+  Play, Loader2, ShieldAlert, CheckCircle2, AlertTriangle, History, Timer, Database, Bot, FileOutput, ExternalLink, Save,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ejecutarArchivo, fetchEjecuciones, fetchParametros } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { renderMarkdown } from '@/markdown';
 
 /** "27 sep 14:05:31": la hora importa en un log de corridas. */
 export function fechaHora(iso) {
@@ -15,6 +16,18 @@ export function fechaHora(iso) {
 }
 
 const duracion = (ms) => (ms == null ? '' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+
+/** Detecta si el texto contiene tablas markdown (empieza con | y tiene separador). */
+function contieneTablasMd(texto) {
+  if (!texto) return false;
+  const lineas = texto.split('\n');
+  for (let i = 0; i < lineas.length - 1; i++) {
+    if (lineas[i].trimStart().startsWith('|') && /^\|[-:|]+\|/.test(lineas[i + 1].trim())) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /** Cómo terminó una corrida, en una línea. */
 export function EstadoCorrida({ r, className }) {
@@ -30,10 +43,18 @@ export function EstadoCorrida({ r, className }) {
   );
 }
 
-/** Salida de una corrida: estado, versión, stdout/stderr y lo que generó (descartado). */
-export function SalidaCorrida({ r, versionActual }) {
+/**
+ * Salida de una corrida: estado, versión, stdout/stderr, artefactos persistidos y lo
+ * que generó (descartado si no declaró persistencia).
+ */
+export function SalidaCorrida({ r, versionActual, onGuardarNodo }) {
   if (!r) return null;
   const vieja = versionActual && r.version && r.version !== versionActual;
+  const esMarkdown = useMemo(() => contieneTablasMd(r.stdout), [r.stdout]);
+  const htmlSalida = useMemo(() => esMarkdown ? renderMarkdown(r.stdout) : null, [esMarkdown, r.stdout]);
+  const artefactoHtml = (r.artifacts || []).find((a) => a.nombre.endsWith('.html'));
+  const runId = r.run_id ?? r.id;
+
   return (
     <div className="overflow-hidden rounded-md border border-hair">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 hairline-b bg-surface-2 px-2 py-1 text-[11.5px]">
@@ -48,17 +69,47 @@ export function SalidaCorrida({ r, versionActual }) {
             {vieja ? 'versión anterior · ' : 'v '}{r.version.slice(0, 7)}
           </span>
         )}
-        {(r.run_id ?? r.id) != null && <span className="text-ink-dim">#{r.run_id ?? r.id}</span>}
+        {runId != null && <span className="text-ink-dim">#{runId}</span>}
       </div>
       {r.stdout ? (
-        <pre className="max-h-64 overflow-auto p-2 font-mono text-[11px] leading-relaxed text-ink-muted">{r.stdout}</pre>
+        esMarkdown ? (
+          <div
+            className="script-output-md max-h-72 overflow-auto p-2 text-[11.5px] leading-relaxed text-ink-muted"
+            dangerouslySetInnerHTML={{ __html: htmlSalida }}
+          />
+        ) : (
+          <pre className="max-h-64 overflow-auto p-2 font-mono text-[11px] leading-relaxed text-ink-muted">{r.stdout}</pre>
+        )
       ) : (
         <p className="px-2 py-1.5 text-[11px] text-ink-dim">Sin salida estándar.</p>
       )}
       {r.stderr && (
         <pre className="max-h-40 overflow-auto border-t border-hair p-2 font-mono text-[11px] leading-relaxed text-danger">{r.stderr}</pre>
       )}
-      {r.generados?.length > 0 && (
+      {(r.artifacts?.length > 0 || onGuardarNodo) && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-hair px-2 py-1.5 text-[11px]">
+          {artefactoHtml && (
+            <a
+              href={`/api/runs/${runId}/artifact/${encodeURIComponent(artefactoHtml.nombre)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 text-accent-soft hover:underline"
+            >
+              <ExternalLink className="size-3" /> Abrir resultado
+            </a>
+          )}
+          {onGuardarNodo && (
+            <button
+              type="button"
+              onClick={() => onGuardarNodo(runId)}
+              className="flex items-center gap-1 text-ink-dim hover:text-ink"
+            >
+              <Save className="size-3" /> Guardar como nodo
+            </button>
+          )}
+        </div>
+      )}
+      {r.generados?.length > 0 && !r.artifacts?.length && (
         <p className="flex items-start gap-1.5 border-t border-hair px-2 py-1.5 text-[11px] text-ink-dim">
           <FileOutput className="mt-px size-3 shrink-0" />
           <span>

@@ -448,6 +448,104 @@ async def _chunks_relevantes_scored(pregunta: str, max_n: int = 8,
         return []
 
 
+# ── Búsqueda acotada a un documento (doc-scoped chat) ──────────────────────────
+# Cuando el usuario está chateando sobre un documento específico ("Sobre: X"), no
+# tiene sentido recorrer toda la biblioteca. Se busca SOLO en los chunks de ese nodo.
+# Esto es O(n) donde n = chunks del documento, no O(N) de toda la biblioteca.
+
+DOC_SCOPED_MAX_CHUNKS = 30  # Cap de candidatos para doc-scoped (más rápido que híbrido)
+
+
+async def _chunks_for_doc_scored(pregunta: str, node_id: str, max_n: int = 8,
+                                 db: AsyncSession = None) -> list[dict]:
+    """Recupera pasajes de UN SOLO documento, ordenados por similitud con la pregunta.
+    
+    Mucho más rápido que la búsqueda global porque:
+    1. No recorre el índice HNSW global (O(log N) pero con overhead)
+    2. No construye/consulta el índice BM25 global
+    3. Sólo calcula distancias sobre los chunks del documento (típicamente <100)
+    
+    Para leyes/documentos estructurados, aprovecha la estructura (página, ordinal)
+    además de la similitud semántica."""
+    try:
+        from processor import embed_consulta
+        vec = embed_consulta(pregunta)
+        
+        result = await db.execute(
+            text("""
+                SELECT c.id, c.content, c.page, c.ordinal,
+                       n.id AS node_id, n.label, n.fuente_url, n.fuente_path,
+                       (c.embedding <=> CAST(:vec AS vector)) AS dist
+                FROM chunks c
+                JOIN documents d ON d.id = c.document_id
+                JOIN nodes n ON n.id = d.node_id
+                WHERE d.node_id = :node_id
+                  AND c.embedding IS NOT NULL
+                ORDER BY dist
+                LIMIT :lim
+            """),
+            {"vec": str(vec), "node_id": node_id, "lim": DOC_SCOPED_MAX_CHUNKS},
+        )
+        filas = result.all()
+        if not filas:
+            return []
+        
+        chunks = [{
+            "id": row.id,
+            "content": row.content,
+            "page": row.page,
+            "ordinal": row.ordinal,
+            "node_id": row.node_id,
+            "label": row.label,
+            "fuente_url": row.fuente_url,
+            "fuente_path": row.fuente_path,
+            "sim": max(0.0, 1.0 - float(row.dist)),
+        } for row in filas]
+        
+        return chunks[:max_n]
+    except Exception as exc:
+        print(f"doc-scoped chunk retrieval failed: {exc}")
+        await db.rollback()
+        return []
+
+
+async def _nodos_relevantes_for_doc(pregunta: str, node_id: str, max_n: int = 3,
+                                    db: AsyncSession = None) -> list[dict]:
+    """Nodos relacionados al documento en foco: el mismo documento + vecinos cercanos.
+    
+    Para doc-scoped chat, primero incluye el documento en foco, luego busca
+    documentos semánticamente cercanos (por si el usuario pregunta algo que
+    también está en otro documento relacionado)."""
+    try:
+        from processor import embed_consulta
+        vec = embed_consulta(pregunta)
+        
+        result = await db.execute(
+            text("""
+                SELECT id, label, "desc", fragmento,
+                       (embedding <=> CAST(:vec AS vector)) AS dist
+                FROM nodes
+                WHERE (id = :node_id OR id IN (
+                    SELECT target FROM edges WHERE source = :node_id
+                    UNION
+                    SELECT source FROM edges WHERE target = :node_id
+                ))
+                  AND embedding IS NOT NULL
+                ORDER BY CASE WHEN id = :node_id THEN 0 ELSE 1 END, dist
+                LIMIT :lim
+            """),
+            {"vec": str(vec), "node_id": node_id, "lim": max_n}
+        )
+        return [{
+            "id": r.id, "label": r.label, "desc": r.desc, "fragmento": r.fragmento,
+            "sim": max(0.0, 1.0 - float(r.dist)),
+        } for r in result]
+    except Exception as e:
+        print(f"doc-scoped node retrieval failed: {e}")
+        await db.rollback()
+        return []
+
+
 # Vecinos que trae la consulta kNN antes de filtrar. Más que RELACIONES_K a propósito:
 # el criterio de conceptos compartidos puede rescatar un vecino que no está entre los
 # primeros por coseno. Sigue siendo O(log n) por el índice HNSW.
@@ -2565,12 +2663,16 @@ async def node_table(node_id: str, hoja: str = None, limite: int = 200, stats: b
     return datos
 
 
-def _ejecutar_archivo(ruta: Path, datos: list[Path] = (), parametros: dict | None = None) -> dict:
+def _ejecutar_archivo(ruta: Path, datos: list[Path] = (), parametros: dict | None = None,
+                      destino_artifacts: Path | None = None) -> dict:
     """Corre un .py en el sandbox (workbench.ejecutar_en_sandbox): proceso aparte, sin
     variables de entorno del servidor (ni claves ni DATABASE_URL), en un directorio
-    temporal, con límite de tiempo y con copias de los datos que el script lee."""
+    temporal, con límite de tiempo y con copias de los datos que el script lee.
+    
+    Si `destino_artifacts` está definido y el script declara ARTIFACTS, se persisten
+    los archivos declarados que se generaron (con límites de tamaño)."""
     return wb.ejecutar_en_sandbox(ruta, datos=datos, timeout_s=RUN_TIMEOUT, salida_max=RUN_SALIDA_MAX,
-                                  parametros=parametros)
+                                  parametros=parametros, destino_artifacts=destino_artifacts)
 
 
 # ── Workbench: scripts y datos como nodos, corridas y proponer → confirmar ──────
@@ -2667,32 +2769,43 @@ async def run_node_file(node_id: str, request: Request, db: AsyncSession = Depen
             raise HTTPException(409, f"Este script {', '.join(efectos)}: revisá el plan y confirmá.")
     origen = body.get("origen") if body.get("origen") in ("ui", "agente") else "ui"
 
-    salida = await asyncio.to_thread(_ejecutar_archivo, p["ruta"], [d["ruta"] for d in p["datos"]],
-                                     p["parametros"])
-    estado = "completed" if salida["returncode"] == 0 else "error"
-    # Lo que pidió la persona y cómo se eligió la herramienta quedan con la corrida: es
-    # la experiencia con la que JEV va a aprender qué herramienta sirve para qué.
-    pedido = str(body.get("pedido") or "")[:1000] or None
+    # Primero insertamos la corrida para tener su ID y poder guardar artefactos.
     run = ScriptRun(
         script_id=f"node:{node_id}",
         script_version=plan["version"],
         inputs={"archivo": plan["archivo"], "label": node.label, "origen": origen,
-                "datos": plan["datos"], "plan": plan["pasos"], "parametros": plan["parametros"],
-                "pedido": pedido, "decision": body.get("decision") if pedido else None},
-        outputs=salida,
-        status=estado,
-        error_message=(salida["stderr"] or None) if estado == "error" else None,
+                "datos": plan["datos"], "plan": plan["pasos"], "parametros": plan["parametros"]},
+        status="running",
         node_id=node_id,
         context_nodes=[node_id] + [d["node_id"] for d in plan["datos"]],
-        duration_ms=salida["duration_ms"],
-        started_at=datetime.fromisoformat(salida["inicio"]),
-        finished_at=datetime.fromisoformat(salida["fin"]),
+        started_at=datetime.now(timezone.utc),
     )
     db.add(run)
     await db.commit()
     await db.refresh(run)
+    
+    destino_artifacts = VAULT / "runs" / str(run.id)
+    salida = await asyncio.to_thread(_ejecutar_archivo, p["ruta"], [d["ruta"] for d in p["datos"]],
+                                     p["parametros"], destino_artifacts)
+    estado = "completed" if salida["returncode"] == 0 else "error"
+    artifacts = salida.get("artifacts_persistidos") or []
+    
+    # Lo que pidió la persona y cómo se eligió la herramienta quedan con la corrida: es
+    # la experiencia con la que JEV va a aprender qué herramienta sirve para qué.
+    pedido = str(body.get("pedido") or "")[:1000] or None
+    run.inputs = {"archivo": plan["archivo"], "label": node.label, "origen": origen,
+                  "datos": plan["datos"], "plan": plan["pasos"], "parametros": plan["parametros"],
+                  "pedido": pedido, "decision": body.get("decision") if pedido else None}
+    run.outputs = salida
+    run.status = estado
+    run.error_message = (salida["stderr"] or None) if estado == "error" else None
+    run.duration_ms = salida["duration_ms"]
+    run.finished_at = datetime.fromisoformat(salida["fin"])
+    run.artifacts = artifacts
+    await db.commit()
+    
     return {"ok": True, "run_id": run.id, "status": estado, "archivo": plan["archivo"],
-            "version": plan["version"], "origen": origen, **salida}
+            "version": plan["version"], "origen": origen, "artifacts": artifacts, **salida}
 
 
 def _iso(dt) -> str | None:
@@ -4337,15 +4450,22 @@ def _conducta_agente(max_sim: float, pregunta: str, hay_citas: bool, umbral: flo
                        "tu biblioteca no respalda esta respuesta. Lo que sigue es conocimiento general.")}
 
 
+AGENT_TIMEOUT_S = 15.0  # Timeout duro para retrieval del agente
+
+
 @app.post("/api/agent")
 async def agent_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_async_session),
 ):
+    import time as _time
+    t0 = _time.perf_counter()
+    
     body = await request.json()
     system = body.get("system", "Sos el agente de Algedi.")
     messages = body.get("messages", [])
     ultima = messages[-1]["content"] if messages else ""
+    contexto_id = body.get("contextoId") or body.get("contexto_id")  # UI envía contextoId
 
     # JEV: antes de buscar en la biblioteca decide el camino. Un pedido de análisis se
     # propone con una herramienta (y su recibo) y la UI pide confirmar; una pregunta sobre
@@ -4358,7 +4478,7 @@ async def agent_endpoint(
     if ultima and seccion_agente:
         try:
             propuesta, decision_jev = await _proponer_accion(
-                db, ultima, seccion_agente, body.get("contexto_id"), forzado)
+                db, ultima, seccion_agente, contexto_id, forzado)
         except Exception as e:                   # JEV nunca deja al agente sin responder
             print(f"[jev] {e}")
             await db.rollback()
@@ -4378,8 +4498,56 @@ async def agent_endpoint(
                 "max_sim": None, "umbral": AGENT_CITA_UMBRAL,
             }
 
-    chunks = await _chunks_relevantes_scored(ultima, max_n=8, db=db) if ultima else []
-    scored = await _nodos_relevantes_scored(ultima, max_n=6, db=db) if ultima else []
+    # ── Retrieval: doc-scoped (rápido) vs global (más lento) ──────────────────
+    # Si el usuario está chateando sobre un documento específico (contexto_id),
+    # buscamos SOLO en ese documento. Esto es O(n) donde n = chunks del doc,
+    # no O(N) de toda la biblioteca. Típicamente <100 chunks vs miles.
+    timing = {}
+    try:
+        if contexto_id and ultima:
+            # Doc-scoped: búsqueda acotada al documento en foco
+            t1 = _time.perf_counter()
+            chunks = await asyncio.wait_for(
+                _chunks_for_doc_scored(ultima, contexto_id, max_n=8, db=db),
+                timeout=AGENT_TIMEOUT_S
+            )
+            timing["chunks_ms"] = int((_time.perf_counter() - t1) * 1000)
+            
+            t2 = _time.perf_counter()
+            scored = await asyncio.wait_for(
+                _nodos_relevantes_for_doc(ultima, contexto_id, max_n=3, db=db),
+                timeout=max(1.0, AGENT_TIMEOUT_S - (_time.perf_counter() - t0))
+            )
+            timing["nodes_ms"] = int((_time.perf_counter() - t2) * 1000)
+        elif ultima:
+            # Global: búsqueda en toda la biblioteca
+            t1 = _time.perf_counter()
+            chunks = await asyncio.wait_for(
+                _chunks_relevantes_scored(ultima, max_n=8, db=db),
+                timeout=AGENT_TIMEOUT_S
+            )
+            timing["chunks_ms"] = int((_time.perf_counter() - t1) * 1000)
+            
+            t2 = _time.perf_counter()
+            scored = await asyncio.wait_for(
+                _nodos_relevantes_scored(ultima, max_n=6, db=db),
+                timeout=max(1.0, AGENT_TIMEOUT_S - (_time.perf_counter() - t0))
+            )
+            timing["nodes_ms"] = int((_time.perf_counter() - t2) * 1000)
+        else:
+            chunks, scored = [], []
+    except asyncio.TimeoutError:
+        print(f"[agent] retrieval timeout after {_time.perf_counter() - t0:.1f}s")
+        return {
+            "conducta": "abstenerse",
+            "motivo": "La búsqueda tardó demasiado. Probá con una pregunta más específica.",
+            "reply": "La búsqueda en la biblioteca tardó más de lo esperado. "
+                     "Esto puede pasar con bibliotecas muy grandes o preguntas muy amplias. "
+                     "Probá reformulando la pregunta de forma más específica.",
+            "citations": [], "fundamentos": [], "nodos_relevantes": [],
+            "veto": True, "general_knowledge": False, "evidence_mode": "timeout",
+            "max_sim": None, "umbral": AGENT_CITA_UMBRAL, "timing": timing,
+        }
     max_sim = _mejor_sim(chunks) if chunks else _mejor_sim(scored)
     evidence_sufficient = bool(ultima and max_sim >= AGENT_VETO_UMBRAL)
     # Citable sólo si el mejor pasaje pasa el piso de citas: si no, no se le ofrecen
@@ -4469,6 +4637,7 @@ async def agent_endpoint(
     await db.commit()
 
     conducta = _conducta_agente(max_sim, ultima, bool(citations), AGENT_CITA_UMBRAL)
+    timing["total_ms"] = int((_time.perf_counter() - t0) * 1000)
     return {
         **conducta,
         "umbral": AGENT_CITA_UMBRAL,
@@ -4482,6 +4651,8 @@ async def agent_endpoint(
                           "summaries" if evidence_sufficient else "general"),
         "max_sim": round(max_sim, 2),
         "jev": decision_jev,
+        "timing": timing,
+        "doc_scoped": bool(contexto_id),
     }
 
 
