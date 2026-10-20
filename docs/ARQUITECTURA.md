@@ -63,7 +63,7 @@ Un conector recibe una **entrada** (ruta de archivo o URL) y devuelve:
 | Word `.docx` | `procesar_word` | ✅ |
 | PowerPoint `.pptx` | `procesar_pptx` | ✅ |
 | Excel `.xlsx/.xls` | `procesar_excel` | ✅ |
-| HTML / Web | `procesar_html` / `procesar_url_web` | ✅ |
+| HTML / Web | `procesar_html` / `procesar_url_web` (`html_extract.py`: trafilatura + limpieza; Playwright opcional) | ✅ |
 | YouTube (metadatos) | `procesar_youtube` | ✅ (hoy solo título; ver roadmap) |
 | Texto / Markdown | `procesar_txt` | ✅ |
 

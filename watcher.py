@@ -193,14 +193,15 @@ def _ingest_new_content(url: str, seccion: str, content: bytes | None, kind: str
                 nodo["dominio"] = seccion
                 nodo["known_since"] = datetime.now(timezone.utc).isoformat()
         elif kind == "html" and content:
-            from processor import decodificar_html, procesar_html, _extraer_texto_html
-            import tempfile
+            from processor import decodificar_html, procesar_html
             html = decodificar_html(content, "text/html")
             with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as tmp:
                 tmp.write(html)
                 tmp_path = tmp.name
             try:
-                resultado = procesar_html(tmp_path)
+                # url= para que, si el HTML estático es un cascarón, Playwright
+                # (ALGEDI_HTML_JS) renderice la página viva antes de extraer.
+                resultado = procesar_html(tmp_path, url=url)
                 for nodo in resultado.get("nodos", []):
                     nodo["fuente_url"] = url
                     nodo["dominio"] = seccion

@@ -76,8 +76,40 @@ function VisorImagen({ node }) {
   );
 }
 
-/** El texto que Algedi guardó de una página web (muchas no se dejan embeber o arman
- *  su contenido con JavaScript, así que se muestra lo que se extrajo). */
+function cuandoPagina(iso) {
+  if (!iso) return null;
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return null;
+  return t.toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+/** Pie del preview: captura única vs fuente viva (auto-refresh). */
+export function pieCapturaWeb(d) {
+  const n = (d?.texto || '').length.toLocaleString('es-AR');
+  if (d?.origen === 'watched') {
+    const horas = d.frequency_hours || 24;
+    const cap = cuandoPagina(d.fetched_at);
+    const rev = cuandoPagina(d.last_check);
+    return [
+      `Fuente viva (se actualiza sola cada ${horas} h)`,
+      cap ? `Esta captura: ${cap}` : null,
+      rev ? `Última revisión: ${rev}` : null,
+      `${n} caracteres`,
+    ].filter(Boolean).join(' · ');
+  }
+  if (d?.origen === 'snapshot' || d?.fetched_at) {
+    const cap = cuandoPagina(d.fetched_at);
+    return [
+      'Captura única (no se refresca sola)',
+      cap ? `Bajada el ${cap}` : null,
+      `${n} caracteres`,
+    ].filter(Boolean).join(' · ');
+  }
+  return `Texto extraído de la página · ${n} caracteres`;
+}
+
+/** El texto limpio que Algedi guardó de una página (lo que busca el RAG).
+ *  El HTML original se abre con «Abrir original». */
 function VistaTextoWeb({ node }) {
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
@@ -91,11 +123,11 @@ function VistaTextoWeb({ node }) {
   }, [node.id]);
   if (error) return <p className="text-[12px] text-ink-dim">No se pudo leer el texto guardado: {error}</p>;
   if (!d) return <p className="flex items-center gap-1.5 text-[12px] text-ink-dim"><Loader2 className="size-3.5 animate-spin" /> Leyendo…</p>;
-  if (!d.texto.trim()) return <p className="text-[12px] text-ink-dim">De esta página no se guardó texto (probablemente arma su contenido con JavaScript).</p>;
+  if (!d.texto.trim()) return <p className="text-[12px] text-ink-dim">De esta página no se guardó texto (probablemente arma su contenido con JavaScript; activá ALGEDI_HTML_JS=1 y volvé a ingerir).</p>;
   const parrafos = d.texto.split(/\n{2,}|(?<=[.:;])\s{2,}/).map((p) => p.trim()).filter(Boolean);
   return (
     <div className="flex flex-col gap-1.5">
-      <p className="text-[11px] text-ink-dim">Texto guardado de la página · {d.texto.length.toLocaleString('es-AR')} caracteres</p>
+      <p className="text-[11px] text-ink-dim">{pieCapturaWeb(d)}</p>
       <article className="max-h-[70vh] overflow-y-auto rounded-md border border-hair bg-surface-2 px-4 py-3 text-[12.5px] leading-relaxed text-ink-muted">
         {parrafos.map((p, i) => <p key={i} className="mb-2 whitespace-pre-wrap">{p}</p>)}
       </article>
@@ -191,22 +223,7 @@ export default function MediaPreview({ node, onAbrirOriginal }) {
       </div>
     );
   }
-  if (tipo === 'html') {
-    return (
-      <div className="flex h-full min-h-[420px] flex-col gap-2">
-        {/* sandbox sin allow-scripts: es HTML de terceros ya ingerido. */}
-        <iframe
-          title={node.label}
-          src={archivo(node)}
-          sandbox=""
-          className="min-h-[380px] flex-1 rounded-md border border-hair bg-white"
-          loading="lazy"
-        />
-        <div className="flex gap-1.5">{original}</div>
-      </div>
-    );
-  }
-  if (tipo === 'web') {
+  if (tipo === 'html' || tipo === 'web') {
     return (
       <div className="flex flex-col gap-2">
         <VistaTextoWeb node={node} />

@@ -835,22 +835,15 @@ def procesar_excel(ruta_excel):
     return {"nodos": [nodo], "relaciones": [], "chunks": chunks}
 
 
-def _extraer_texto_html(html_str: str) -> str:
-    """El texto de una página. Con trafilatura, sólo el contenido principal (sin menús,
-    pie, publicidad ni barras laterales) y con sus párrafos, que después cortan mejor los
-    fragmentos. Si no está instalado o el «contenido principal» es una fracción mínima
-    de la página (portadas, índices, páginas armadas con tablas), queda el texto entero."""
-    completo = _texto_html_completo(html_str)
-    try:
-        import trafilatura
-        principal = trafilatura.extract(
-            html_str, include_tables=True, include_comments=False, include_links=False,
-            favor_recall=True, deduplicate=True) or ""
-    except Exception:
-        principal = ""
-    if len(principal) >= 200 and len(principal) >= 0.15 * len(completo):
-        return principal.strip()
-    return completo
+def _extraer_texto_html(html_str: str, url: str | None = None) -> str:
+    """Texto principal de una página (sin menús, cookies ni «Ver más»).
+
+    El HTML crudo queda en bronze (`fuente_path` / `fuente_url`). Esto es el silver
+    que busca, cita y relaciona el grafo. Si la página es un cascarón JS y
+    `ALGEDI_HTML_JS=1`, se intenta Chromium; si no está, se sigue con el estático.
+    """
+    from html_extract import extraer_texto_pagina
+    return extraer_texto_pagina(html_str or "", url=url)
 
 
 def _texto_html_completo(html_str: str) -> str:
@@ -866,11 +859,11 @@ def _texto_html_completo(html_str: str) -> str:
     return re.sub(r'\s+', ' ', texto).strip()
 
 
-def procesar_html(ruta_html):
-    """Un único nodo por archivo HTML."""
+def procesar_html(ruta_html, *, url: str | None = None):
+    """Un único nodo por archivo HTML. `url` habilita el render JS si hace falta."""
     try:
         texto = Path(ruta_html).read_text(encoding="utf-8", errors="ignore")
-        texto_completo = _extraer_texto_html(texto)
+        texto_completo = _extraer_texto_html(texto, url=url)
     except Exception:
         texto_completo = f"[Archivo HTML: {Path(ruta_html).name}]"
 
@@ -963,7 +956,7 @@ def procesar_url_web(url: str, *, allow_pdf: bool = True):
     title_m = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
     page_title = re.sub(r'\s+', ' ', title_m.group(1)).strip() if title_m else ""
 
-    texto_completo = _extraer_texto_html(html)
+    texto_completo = _extraer_texto_html(html, url=url)
     if not texto_completo.strip():
         raise ValueError("No se pudo extraer texto de la página")
 

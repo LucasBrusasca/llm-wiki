@@ -1754,12 +1754,20 @@ async def reprocesar_nodo(node_id: str, db: AsyncSession = Depends(get_async_ses
     return {"ok": True, "job": job}
 
 
+def _iso_dt(dt):
+    if dt is None:
+        return None
+    try:
+        return dt.isoformat()
+    except Exception:
+        return str(dt)
+
+
 @app.get("/api/node/{node_id}/texto")
 async def texto_de_nodo(node_id: str, db: AsyncSession = Depends(get_async_session)):
     """El texto que Algedi guardó del documento, reconstruido de sus fragmentos (sin el
-    solapamiento entre uno y otro). Para páginas web ingeridas por enlace, que no
-    tienen archivo propio: muchas no se pueden mostrar embebidas o arman su contenido
-    con JavaScript."""
+    solapamiento entre uno y otro). Para páginas web: el extracto limpio (silver) y
+    si esa URL es una fuente viva o una captura única."""
     filas = (await db.execute(text("""
         SELECT c.content, c.char_start, c.char_end, c.page
         FROM chunks c JOIN documents d ON d.id = c.document_id
@@ -1772,8 +1780,38 @@ async def texto_de_nodo(node_id: str, db: AsyncSession = Depends(get_async_sessi
             contenido = contenido[fin - f.char_start:]          # lo que ya vino en el anterior
         partes.append(contenido)
         fin = f.char_end if f.char_end is not None else None
-    return {"node_id": node_id, "texto": "".join(partes) if fin is not None or len(partes) <= 1
-            else "\n\n".join(partes), "fragmentos": len(filas)}
+    texto = "".join(partes) if fin is not None or len(partes) <= 1 else "\n\n".join(partes)
+
+    node = (await db.execute(select(Node).where(Node.id == node_id))).scalar_one_or_none()
+    fetched_at = _iso_dt(getattr(node, "created_at", None)) if node else None
+    origen = "snapshot"
+    frequency_hours = None
+    last_check = None
+    watched_label = None
+    fuente_url = getattr(node, "fuente_url", None) if node else None
+    if node is not None and fuente_url:
+        ws = (await db.execute(
+            select(WatchedSource)
+            .where(WatchedSource.url == fuente_url)
+            .order_by(WatchedSource.updated_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if ws is not None:
+            origen = "watched"
+            frequency_hours = ws.frequency_hours
+            last_check = _iso_dt(ws.last_check)
+            watched_label = ws.label
+    return {
+        "node_id": node_id,
+        "texto": texto,
+        "fragmentos": len(filas),
+        "fetched_at": fetched_at,
+        "origen": origen,
+        "frequency_hours": frequency_hours,
+        "last_check": last_check,
+        "watched_label": watched_label,
+        "fuente_url": fuente_url,
+    }
 
 
 @app.get("/api/node/{node_id}/office")
