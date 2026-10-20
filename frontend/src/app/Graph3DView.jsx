@@ -130,6 +130,7 @@ export default function Graph3DView({
   const firmaRef = useRef('');
   const hudRef = useRef({ t: -Infinity, rects: [] });
   const hoverRef = useRef(null);
+  const lodLejosRef = useRef(false);  // LOD: cámara lejos → sin labels finos, aristas débiles off
   const mouseRef = useRef({ x: 0, y: 0, ancho: 0, alto: 0 });
   // El motor sigue haciendo raycast en la última posición conocida del puntero aunque
   // el mouse ya esté en la lista o el panel: al volar la cámara, un nodo que "pasa por
@@ -275,6 +276,8 @@ export default function Graph3DView({
     const cam = fg.camera();
     cam.updateMatrixWorld();   // el evento 'change' llega antes del render que la actualiza
     const focal = (H / 2) / Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
+    // Lejos: el encuadre inicial de nubes grandes. Sin chips ni aristas débiles.
+    lodLejosRef.current = cam.position.length() > 1400;
 
     // 1) Cada nodo: esfera acotada en pantalla y, si le corresponde, candidato a detalle.
     const cands = [];
@@ -302,7 +305,9 @@ export default function Graph3DView({
     }
 
     // 2) Por prioridad: tarjeta si está cerca y entra; si no, chip; si no, punto.
-    const puestas = colocarPiezas(cands, { W, H, ocupadas: rectsHud() });
+    const puestas = lodLejosRef.current
+      ? new Map()
+      : colocarPiezas(cands, { W, H, ocupadas: rectsHud() });
     for (const [id, p] of puestas) Object.assign(objs.current.get(id), p);
 
     // 3) Aplicar. La tarjeta reemplaza a la esfera; el hit-box copia lo que se ve.
@@ -366,7 +371,10 @@ export default function Graph3DView({
     (l) => estiloArista(l, { selectedId, pin, ego, hoverId }),
     [selectedId, pin, ego, hoverId],
   );
-  const linkVisible = useCallback((l) => estiloDe(l).visible, [estiloDe]);
+  const linkVisible = useCallback((l) => {
+    if (lodLejosRef.current && !l.fuerte) return false;
+    return estiloDe(l).visible;
+  }, [estiloDe]);
   const linkColor = useCallback((l) => {
     const e = estiloDe(l);
     return rgba(e.acento ? paleta.acento : paleta.arista, e.alfa);
@@ -376,7 +384,8 @@ export default function Graph3DView({
   // se ve desde el encuadre inicial. El grosor sigue al score (lib/aristas).
   const linkWidth = useCallback((l) => {
     const e = estiloArista(l, { pin });   // el grosor no depende del hover
-    return e.fijada ? 1.4 : e.grosor * 0.55;
+    const w = e.fijada ? 1.4 : e.grosor * 0.55;
+    return lodLejosRef.current ? w * 0.45 : w;
   }, [pin]);
 
 
@@ -525,7 +534,7 @@ export default function Graph3DView({
             controlType="orbit"
             extraRenderers={extraRenderers}
             enableNodeDrag={false}
-            cooldownTicks={1}
+            cooldownTicks={1}   // posiciones fijas (UMAP): la simulación se apaga al primer tick
             warmupTicks={0}
             nodeThreeObject={nodeObject}
             onNodeHover={(n) => {

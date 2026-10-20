@@ -133,12 +133,18 @@ def _start_vault_watcher():
 
     def _vault_ingest(path: str, skip_umap: bool, seccion: str):
         global _ingest_source, _ingest
-        _ingest_source = "vault"
-        with _ingest_lock:
-            _ingest = {"state": "processing", "message": "Ingesta continua…",
-                       "label": Path(path).name if not path.startswith("http") else path[:60],
-                       "progress": 5}
-        return _run_ingest(path, skip_umap, seccion)
+        if not _reservar_slot_ingest():
+            print("[vault] slot de ingesta ocupado; se reintenta en el próximo ciclo")
+            return False
+        try:
+            _ingest_source = "vault"
+            with _ingest_lock:
+                _ingest = {"state": "processing", "message": "Ingesta continua…",
+                           "label": Path(path).name if not path.startswith("http") else path[:60],
+                           "progress": 5}
+            return _run_ingest(path, skip_umap, seccion)
+        finally:
+            _liberar_slot_ingest()
 
     def _vault_umap():
         import embeddings_engine
@@ -171,9 +177,29 @@ _ingest = {"state": "idle", "message": "", "label": "", "progress": 0}
 _ingest_lock = threading.Lock()
 # Serializa la EJECUCIÓN de ingestas (subida manual + Ingesta Continua del vault)
 # para que nunca corran dos a la vez y no se pisen el estado/UMAP.
-_INGEST_GATE = threading.Lock()
+_INGEST_GATE = threading.Lock()  # legacy; la extracción ya no lo usa
 # Quién disparó la ingesta en curso: 'user' (subida manual) | 'vault' (carpeta mágica).
 _ingest_source = "user"
+# Tope de lotes que pueden extraer/embeber a la vez. El write a DB (nodos + aristas)
+# sigue serializado: dos persistencias a la vez se pisan las relaciones incrementales.
+INGEST_PARALLEL = max(1, int(os.getenv("ALGEDI_INGEST_PARALLEL", "4")))
+_DB_WRITE_GATE = threading.Lock()
+_ingest_inflight = 0
+
+
+def _reservar_slot_ingest() -> bool:
+    global _ingest_inflight
+    with _ingest_lock:
+        if _ingest_inflight >= INGEST_PARALLEL:
+            return False
+        _ingest_inflight += 1
+        return True
+
+
+def _liberar_slot_ingest():
+    global _ingest_inflight
+    with _ingest_lock:
+        _ingest_inflight = max(0, _ingest_inflight - 1)
 
 # ── Issue state ────────────────────────────────────────────────────────
 _issue_state = {"state": "idle", "message": "", "progress": 0, "result": None}
@@ -255,6 +281,11 @@ def node_to_dict(n, con_embedding: bool = True) -> dict:
         # rich_html NO viaja acá: puede pesar cientos de KB por nodo y el frontend
         # lo pide on-demand vía /api/node/{id}/rich-preview. Sacarlo aliviana /api/graph.
         "created_at": n.created_at.isoformat() if n.created_at else None,
+        "creado": n.created_at.isoformat() if n.created_at else None,
+        "known_since": (getattr(n, "known_since", None) or n.created_at).isoformat()
+            if (getattr(n, "known_since", None) or n.created_at) else None,
+        "valid_from": getattr(n, "valid_from", None).isoformat()
+            if getattr(n, "valid_from", None) else None,
     }
 
 
@@ -291,10 +322,62 @@ def _mejor_sim(items: list) -> float:
     return max((x["sim"] for x in items), default=0.0)
 
 
+def _aplicar_hnsw_settings(execute, n: int):
+    """Sube ef_search y activa iterative_scan para que un WHERE (sección/doc) no recorte k.
+
+    `execute` es session.execute o awaitable db.execute. iterative_scan no existe en
+    pgvector < 0.8: se ignora y el caller puede caer al prefilter por ids.
+    """
+    from graph_payload import hnsw_settings_sql
+    stmts = hnsw_settings_sql(n)
+    execute(text(stmts[0]))
+    try:
+        execute(text("SAVEPOINT hnsw_scan"))
+        execute(text(stmts[1]))
+        execute(text("RELEASE SAVEPOINT hnsw_scan"))
+        return True
+    except Exception:
+        try:
+            execute(text("ROLLBACK TO SAVEPOINT hnsw_scan"))
+        except Exception:
+            pass
+        return False
+
+
 async def _preparar_knn(db: AsyncSession, n: int):
     """El índice HNSW devuelve como mucho `ef_search` vecinos (40 por defecto): pedirle
-    50 devolvía 40 sin avisar."""
-    await db.execute(text(f"SET LOCAL hnsw.ef_search = {max(40, int(n) * 2)}"))
+    50 devolvía 40 sin avisar. Con filtro de sección, iterative_scan rellena k."""
+    from graph_payload import hnsw_settings_sql
+    stmts = hnsw_settings_sql(n)
+    await db.execute(text(stmts[0]))
+    try:
+        await db.execute(text("SAVEPOINT hnsw_scan"))
+        await db.execute(text(stmts[1]))
+        await db.execute(text("RELEASE SAVEPOINT hnsw_scan"))
+    except Exception:
+        try:
+            await db.execute(text("ROLLBACK TO SAVEPOINT hnsw_scan"))
+        except Exception:
+            pass
+
+
+def _preparar_knn_sync(session, n: int):
+    """Versión síncrona de `_preparar_knn` para la ingesta. SAVEPOINT: no abortar el INSERT."""
+    from graph_payload import hnsw_settings_sql
+    stmts = hnsw_settings_sql(n)
+    session.execute(text("SAVEPOINT hnsw_ef"))
+    try:
+        session.execute(text(stmts[0]))
+        session.execute(text("RELEASE SAVEPOINT hnsw_ef"))
+    except Exception:
+        session.execute(text("ROLLBACK TO SAVEPOINT hnsw_ef"))
+        return
+    session.execute(text("SAVEPOINT hnsw_scan"))
+    try:
+        session.execute(text(stmts[1]))
+        session.execute(text("RELEASE SAVEPOINT hnsw_scan"))
+    except Exception:
+        session.execute(text("ROLLBACK TO SAVEPOINT hnsw_scan"))
 
 
 async def _indice_lexico(db: AsyncSession):
@@ -315,19 +398,23 @@ async def _indice_lexico(db: AsyncSession):
     return idx
 
 
-async def _fragmentos_candidatos(pregunta: str, vec: list, db: AsyncSession, n: int):
-    """Los `n` fragmentos más cercanos por significado y los `n` mejores por palabras."""
+async def _fragmentos_candidatos(pregunta: str, vec: list, db: AsyncSession, n: int,
+                                 seccion: str | None = None, node_id: str | None = None):
+    """Los `n` fragmentos más cercanos por significado y los `n` mejores por palabras.
+
+    Con `seccion` o `node_id` el kNN lleva WHERE + iterative_scan/ef_search altos
+    para devolver k completos (HNSW no recorta en silencio).
+    """
+    from graph_payload import sql_knn_chunks
     await _preparar_knn(db, n)
-    densos = (await db.execute(text("""
-        SELECT c.id, n.id AS node_id, (c.embedding <=> CAST(:vec AS vector)) AS dist
-        FROM chunks c
-        JOIN documents d ON d.id = c.document_id
-        JOIN nodes n ON n.id = d.node_id
-        WHERE c.embedding IS NOT NULL
-          AND NOT COALESCE(n.is_issue, false)
-        ORDER BY dist
-        LIMIT :lim
-    """), {"vec": str(vec), "lim": n})).all()
+    params = {"vec": str(vec), "lim": n}
+    if seccion:
+        params["seccion"] = seccion
+    if node_id:
+        params["node_id"] = node_id
+    densos = (await db.execute(text(
+        sql_knn_chunks(seccion=seccion, node_id=bool(node_id))
+    ), params)).all()
     lexicos = (await _indice_lexico(db)).buscar(pregunta, n)
     return densos, lexicos
 
@@ -719,23 +806,14 @@ def _vecinos_candidatos(session, node_id: str, embedding, dominio: str,
     if not embedding:
         return []
     vec = str(list(embedding))
+    from graph_payload import sql_knn_nodos
+    _preparar_knn_sync(session, VECINOS_CANDIDATOS)
     # Las secciones están vinculadas entre sí: los vecinos se buscan en todas.
-    filtro = """
-          AND id != :nid
-          AND NOT COALESCE(is_centroid, false)
-          AND NOT COALESCE(is_issue, false)
-          AND embedding IS NOT NULL
-    """
     encontrados = {}
 
-    filas = session.execute(text(f"""
-        SELECT id, label, conceptos, dominio,
-               1 - (embedding <=> CAST(:vec AS vector)) AS sim
-        FROM nodes
-        WHERE true {filtro}
-        ORDER BY embedding <=> CAST(:vec AS vector)
-        LIMIT :lim
-    """), {"vec": vec, "nid": node_id,
+    filas = session.execute(text(
+        sql_knn_nodos(exclude_id=True)
+    ), {"vec": vec, "nid": node_id,
            "lim": VECINOS_CANDIDATOS}).all()
     for fila in filas:
         encontrados[fila.id] = {"id": fila.id, "label": fila.label,
@@ -749,7 +827,10 @@ def _vecinos_candidatos(session, node_id: str, embedding, dominio: str,
                        1 - (embedding <=> CAST(:vec AS vector)) AS sim
                 FROM nodes
                 WHERE jsonb_exists_any(conceptos::jsonb, CAST(:conceptos AS text[]))
-                      {filtro}
+                  AND id != :nid
+                  AND NOT COALESCE(is_centroid, false)
+                  AND NOT COALESCE(is_issue, false)
+                  AND embedding IS NOT NULL
                 LIMIT :lim
             """), {"vec": vec, "nid": node_id,
                    "conceptos": list(conceptos)[:20],
@@ -1318,22 +1399,65 @@ async def _vigencia_por_nodo(db: AsyncSession, node_ids: set[str]) -> dict:
 
 
 @app.get("/api/graph")
-async def get_graph(seccion: str = None, db: AsyncSession = Depends(get_async_session)):
-    # Filtro por sección: cada sección tiene su grafo (vinculado a las demás por las
-    # relaciones que cruzan, ver abajo). Los issues NO se filtran
-    # (viven en su módulo, fuera del grafo). Sin 'seccion' → todo (compat / vista global).
-    stmt = select(Node)
+async def get_graph(
+    seccion: str = None,
+    expand: str = None,
+    cluster: bool | None = None,
+    limit: int = None,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Grafo de una sección: nodos de ESA sección y aristas ENTRE ellos.
+
+    Antes se traía TODA la tabla `edges` y se filtraba en Python. Con 20k docs eso
+    era el payload entero de la base. Ahora:
+    - nodos filtrados por sección (tope `limit`, default ALGEDI_GRAPH_NODE_CAP)
+    - aristas con `source IN ids AND target IN ids` (SQL)
+    - tope de aristas por nodo
+    - si hay más de ALGEDI_GRAPH_CLUSTER_THRESHOLD nodos, resume por tema
+      (salvo `cluster=false` o `expand=<tema>`)
+    """
+    from graph_payload import (
+        GRAPH_NODE_CAP, GRAPH_CLUSTER_THRESHOLD, GRAPH_EDGES_PER_NODE,
+        agrupar_por_tema, cap_edges_per_node,
+    )
+
+    stmt = select(Node).where(Node.is_centroid == False)
     if seccion:
         stmt = stmt.where((Node.dominio == seccion) | (Node.is_issue == True))
+    if expand:
+        if expand.startswith("cluster_"):
+            try:
+                stmt = stmt.where(Node.cluster == int(expand.replace("cluster_", "")))
+            except ValueError:
+                stmt = stmt.where(Node.tema == expand)
+        else:
+            stmt = stmt.where(Node.tema == expand)
+
+    count_q = select(func.count()).select_from(Node).where(Node.is_centroid == False)
+    if seccion:
+        count_q = count_q.where((Node.dominio == seccion) | (Node.is_issue == True))
+    if expand:
+        if expand.startswith("cluster_"):
+            try:
+                count_q = count_q.where(Node.cluster == int(expand.replace("cluster_", "")))
+            except ValueError:
+                count_q = count_q.where(Node.tema == expand)
+        else:
+            count_q = count_q.where(Node.tema == expand)
+    total = (await db.execute(count_q)).scalar_one()
+
+    effective_limit = GRAPH_NODE_CAP if limit is None else max(1, min(limit, GRAPH_NODE_CAP))
+    auto_cluster = (cluster is True) or (
+        cluster is not False and not expand and total > GRAPH_CLUSTER_THRESHOLD
+    )
+    stmt = stmt.offset(offset).limit(effective_limit)
     nodes_rows = (await db.execute(stmt)).scalars().all()
-    edges_rows = (await db.execute(select(Edge))).scalars().all()
 
     rng = random.Random(42)
     nodes_list = []
     node_ids = set()
     for n in nodes_rows:
-        # Sin embedding: la UI no lo usa (api.js lo descartaba al llegar) y era ~40 % del
-        # peso de la respuesta, que viaja entera en cada carga y cambio de sección.
         nd = node_to_dict(n, con_embedding=False)
         nd.pop("embedding", None)
         if nd["x3d"] is None:
@@ -1343,36 +1467,59 @@ async def get_graph(seccion: str = None, db: AsyncSession = Depends(get_async_se
         nodes_list.append(nd)
         node_ids.add(n.id)
 
-    # Vigencia por nodo: una sola consulta con join, no una por nodo.
-    vigencias = await _vigencia_por_nodo(db, node_ids)
-    for nd in nodes_list:
-        nd["vigencia"] = vigencias.get(nd["id"])
+    clustered = False
+    if auto_cluster:
+        nodes_list, clustered = agrupar_por_tema(nodes_list)
+        node_ids = {n["id"] for n in nodes_list}
 
-    # Las de adentro de la sección y también las que van a OTRA sección (están vinculadas
-    # entre sí). Del otro extremo viaja lo mínimo para nombrarlo y abrirlo en el panel; el
-    # grafo de la sección sólo dibuja las de adentro.
+    if not clustered:
+        vigencias = await _vigencia_por_nodo(db, node_ids)
+        for nd in nodes_list:
+            nd["vigencia"] = vigencias.get(nd["id"])
+
     relaciones = []
-    externos_ids = set()
-    for e in edges_rows:
-        s_adentro, t_adentro = e.source in node_ids, e.target in node_ids
-        if s_adentro and t_adentro:
-            relaciones.append(edge_to_dict(e))
-        elif seccion and (s_adentro or t_adentro):
-            relaciones.append(edge_to_dict(e))
-            externos_ids.add(e.target if s_adentro else e.source)
     externos = []
-    if externos_ids:
-        filas = (await db.execute(
-            select(Node.id, Node.label, Node.dominio, Node.type, Node.fuente, Node.fuente_path,
-                   Node.fuente_url, Node.autor, Node.fecha_doc)
-            .where(Node.id.in_(externos_ids))
-        )).all()
-        externos = [{
-            "id": f.id, "label": f.label, "dominio": f.dominio or "personal", "type": f.type,
-            "fuente": f.fuente, "fuente_path": f.fuente_path, "fuente_url": f.fuente_url,
-            "autor": f.autor, "fecha_doc": f.fecha_doc,
-        } for f in filas]
-    return {"nodos": nodes_list, "relaciones": relaciones, "externos": externos}
+    if node_ids and not clustered:
+        edges_rows = (await db.execute(
+            select(Edge).where(Edge.source.in_(node_ids), Edge.target.in_(node_ids))
+            .order_by(Edge.score.desc())
+        )).scalars().all()
+        edges_rows = cap_edges_per_node(list(edges_rows), GRAPH_EDGES_PER_NODE)
+        relaciones = [edge_to_dict(e) for e in edges_rows]
+
+        # Cruces a otras secciones: tope chico, sólo para nombrarlos en el panel.
+        # Ya no viajan en `relaciones` (el lienzo no los dibuja).
+        if seccion:
+            cruzadas = (await db.execute(
+                select(Edge).where(
+                    ((Edge.source.in_(node_ids)) & (~Edge.target.in_(node_ids)))
+                    | ((Edge.target.in_(node_ids)) & (~Edge.source.in_(node_ids)))
+                ).order_by(Edge.score.desc()).limit(40)
+            )).scalars().all()
+            externos_ids = set()
+            for e in cruzadas:
+                externos_ids.add(e.target if e.source in node_ids else e.source)
+            if externos_ids:
+                filas = (await db.execute(
+                    select(Node.id, Node.label, Node.dominio, Node.type, Node.fuente,
+                           Node.fuente_path, Node.fuente_url, Node.autor, Node.fecha_doc)
+                    .where(Node.id.in_(externos_ids))
+                )).all()
+                externos = [{
+                    "id": f.id, "label": f.label, "dominio": f.dominio or "personal",
+                    "type": f.type, "fuente": f.fuente, "fuente_path": f.fuente_path,
+                    "fuente_url": f.fuente_url, "autor": f.autor, "fecha_doc": f.fecha_doc,
+                } for f in filas]
+
+    return {
+        "nodos": nodes_list,
+        "relaciones": relaciones,
+        "externos": externos,
+        "total": total,
+        "offset": offset,
+        "limit": effective_limit,
+        "clustered": clustered,
+    }
 
 
 # ── File serving ──────────────────────────────────────────────────────
@@ -6260,21 +6407,20 @@ def _run_ingest_batch(entradas: list, seccion: str = "personal"):
     global _ingest
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    _INGEST_GATE.acquire()
-    try:
-        total = len(entradas)
-        with _ingest_lock:
-            _ingest.update({"state": "processing", "progress": 5,
-                            "label": f"{total} documentos",
-                            "message": f"Analizando {total} documentos…"})
+    total = len(entradas)
+    with _ingest_lock:
+        _ingest.update({"state": "processing", "progress": 5,
+                        "label": f"{total} documentos",
+                        "message": f"Analizando {total} documentos…"})
 
-        listos, fallidos = [], []
-        # Lo que ya está (mismo video, misma página, mismos bytes) no se procesa de nuevo.
-        repetidos = [e for e in entradas if _ya_ingerido(e)]
-        entradas = [e for e in entradas if e not in repetidos]
-        total = max(1, len(entradas))
-        completados = 0
-        workers = max(1, min(INGEST_WORKERS, len(entradas)))
+    listos, fallidos = [], []
+    # Lo que ya está (mismo video, misma página, mismos bytes) no se procesa de nuevo.
+    repetidos = [e for e in entradas if _ya_ingerido(e)]
+    entradas = [e for e in entradas if e not in repetidos]
+    total = max(1, len(entradas))
+    completados = 0
+    workers = max(1, min(INGEST_WORKERS, len(entradas)))
+    try:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futuros = {pool.submit(_extraer_documento, e): e for e in entradas}
             for futuro in as_completed(futuros):
@@ -6292,17 +6438,19 @@ def _run_ingest_batch(entradas: list, seccion: str = "personal"):
 
         _set_progress(78, "Guardando en el grafo…")
         guardados = 0
-        for resultado in listos:
-            try:
-                _persistir_resultado(resultado, seccion)
-                guardados += 1
-            except Exception as exc:
-                etiqueta = (resultado.get("nodos") or [{}])[0].get("label", "?")
-                fallidos.append((etiqueta, str(exc)))
-                print(f"Error guardando '{etiqueta}': {exc}")
+        # Persistencia + relaciones: un lote a la vez.
+        with _DB_WRITE_GATE:
+            for resultado in listos:
+                try:
+                    _persistir_resultado(resultado, seccion)
+                    guardados += 1
+                except Exception as exc:
+                    etiqueta = (resultado.get("nodos") or [{}])[0].get("label", "?")
+                    fallidos.append((etiqueta, str(exc)))
+                    print(f"Error guardando '{etiqueta}': {exc}")
 
-        if guardados:
-            _cerrar_lote(skip_umap=False)
+            if guardados:
+                _cerrar_lote(skip_umap=False)
 
         # Se informa lo que quedó EN EL GRAFO, no lo que se logró leer: un documento
         # extraído que después no se pudo guardar no está incorporado.
@@ -6322,13 +6470,10 @@ def _run_ingest_batch(entradas: list, seccion: str = "personal"):
         with _ingest_lock:
             _ingest = {"state": "error", "message": str(exc), "label": "", "progress": 0}
         return False
-    finally:
-        _INGEST_GATE.release()
 
 
 def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"):
     global _ingest
-    _INGEST_GATE.acquire()   # una ingesta a la vez (manual o del vault)
     try:
         with _ingest_lock:
             _ingest.update({"state": "processing", "message": "Iniciando…",
@@ -6337,7 +6482,8 @@ def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"
                             "progress": 5})
         # Playlist de YouTube → un nodo por video (camino propio, sale temprano).
         if entrada.startswith("http") and _es_playlist_youtube(entrada):
-            return _ingest_playlist(entrada, skip_umap, seccion)
+            with _DB_WRITE_GATE:
+                return _ingest_playlist(entrada, skip_umap, seccion)
 
         previo = _ya_ingerido(entrada)
         if previo:
@@ -6381,8 +6527,9 @@ def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"
         # GET /api/node/{id}/rich-preview la primera vez que alguien lo pide.
 
         # Guardar cada nodo en PostgreSQL, etiquetado con la sección activa.
-        _persistir_resultado(resultado, seccion)
-        _cerrar_lote(skip_umap)
+        with _DB_WRITE_GATE:
+            _persistir_resultado(resultado, seccion)
+            _cerrar_lote(skip_umap)
 
         label = resultado["nodos"][0]["label"] if resultado["nodos"] else "Nodo"
         msg = f'"{label}" guardado.' if skip_umap else f'"{label}" incorporado al grafo.'
@@ -6394,8 +6541,6 @@ def _run_ingest(entrada: str, skip_umap: bool = False, seccion: str = "personal"
         with _ingest_lock:
             _ingest = {"state": "error", "message": str(exc), "label": "", "progress": 0}
         return False
-    finally:
-        _INGEST_GATE.release()
 
 
 @app.post("/api/ingest")
@@ -6408,9 +6553,9 @@ async def ingest(
 ):
     global _ingest_source
     seccion = (seccion or "personal").strip() or "personal"
+    if not _reservar_slot_ingest():
+        raise HTTPException(409, f"Hay {INGEST_PARALLEL} ingestas extrayendo. Reintentá en un momento.")
     with _ingest_lock:
-        if _ingest["state"] == "processing":
-            raise HTTPException(409, "Ya hay una ingesta en progreso")
         _ingest.update({"state": "processing", "message": "Iniciando…", "label": "", "progress": 5})
     _ingest_source = "user"
 
@@ -6420,6 +6565,7 @@ async def ingest(
             save_path = await _save_upload(file, INGEST_EXTENSIONS)
             entradas.append(str(save_path))
         except HTTPException:
+            _liberar_slot_ingest()
             with _ingest_lock:
                 _ingest.update({"state": "idle", "message": "", "label": "", "progress": 0})
             raise
@@ -6428,18 +6574,25 @@ async def ingest(
         entradas = [u.strip() for u in raw_urls if u.strip().startswith("http")]
 
     if not entradas:
+        _liberar_slot_ingest()
         with _ingest_lock:
             _ingest.update({"state": "idle", "message": "", "label": ""})
         raise HTTPException(400, "Enviá un archivo o al menos una URL válida (http/https)")
 
+    def _con_slot(fn, *args):
+        try:
+            fn(*args)
+        finally:
+            _liberar_slot_ingest()
+
     if len(entradas) == 1:
-        background_tasks.add_task(_run_ingest, entradas[0], skip_umap, seccion)
+        background_tasks.add_task(_con_slot, _run_ingest, entradas[0], skip_umap, seccion)
     else:
         # Varias URLs: extracción en paralelo y un solo cierre (temas + UMAP) al final,
         # en vez de una tarea completa por documento.
-        background_tasks.add_task(_run_ingest_batch, entradas, seccion)
+        background_tasks.add_task(_con_slot, _run_ingest_batch, entradas, seccion)
 
-    return {"ok": True, "count": len(entradas)}
+    return {"ok": True, "count": len(entradas), "slots": INGEST_PARALLEL}
 
 
 @app.post("/api/umap-refresh")
