@@ -1,21 +1,15 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MessageSquare, X, ArrowUp, Plus, Quote, ShieldAlert, FileText, Crosshair, HelpCircle, Wrench } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { MessageSquare, X, ArrowUp, Plus, Quote, ShieldAlert, FileText, Crosshair, HelpCircle, Wrench, History, Trash2, Pencil, Check, Link2, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Hint } from '@/components/ui/tooltip';
-import { askAgent, ejecutarArchivo } from '@/lib/api';
+import {
+  askAgent, ejecutarArchivo, fetchConversations, createConversation, fetchConversation,
+  updateConversation, deleteConversation, addConversationMessage, saveRelationsFromAnswer,
+} from '@/lib/api';
 import { PlanCorrida, SalidaCorrida } from '@/app/EjecutarArchivo';
 import { renderMarkdown } from '@/markdown';
-import { cn, pct, truncar } from '@/lib/utils';
+import { cn, pct, truncar, fechaCorta } from '@/lib/utils';
 import { nombreSeccion } from '@/lib/nodes';
-
-const claveConv = (seccion) => `algedi_fab_conv_${seccion}`;
-
-function cargar(seccion) {
-  try {
-    const v = JSON.parse(localStorage.getItem(claveConv(seccion)) || '[]');
-    return Array.isArray(v) ? v : [];
-  } catch { return []; }
-}
 
 /** Pasajes que la respuesta realmente cita (aparece su marcador [Cn] en el texto). */
 function citados(m) {
@@ -275,39 +269,272 @@ function Respuesta({ m, nodesById, onSelect, onHighlight, onAccion, onOpcion, bu
   );
 }
 
+/** Botón para guardar relaciones entre documentos co-citados en una respuesta. */
+function GuardarRelacion({ convId, msgId, pregunta, citations, onDone }) {
+  const [guardando, setGuardando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+
+  const nodeIds = useMemo(() => {
+    const ids = new Set();
+    (citations || []).forEach((c) => c.node_id && ids.add(c.node_id));
+    return [...ids];
+  }, [citations]);
+
+  if (nodeIds.length < 2) return null;
+  if (resultado) {
+    return (
+      <div className="flex items-center gap-1.5 text-[11px] text-accent-soft">
+        <Check className="size-3" />
+        {resultado.edges_created > 0
+          ? `${resultado.edges_created} relación${resultado.edges_created > 1 ? 'es' : ''} guardada${resultado.edges_created > 1 ? 's' : ''}`
+          : 'Ya existían las relaciones'}
+      </div>
+    );
+  }
+
+  async function guardar() {
+    setGuardando(true);
+    try {
+      const r = await saveRelationsFromAnswer(convId, { message_id: msgId, pregunta });
+      setResultado(r);
+      onDone?.(r);
+    } catch (e) {
+      console.error('Error guardando relaciones:', e);
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={guardar}
+      disabled={guardando}
+      className="flex items-center gap-1.5 text-[11px] text-ink-dim hover:text-accent disabled:opacity-50"
+      title={`Guardar relación CO_CITADO entre ${nodeIds.length} documentos`}
+    >
+      {guardando ? <Loader2 className="size-3 animate-spin" /> : <Link2 className="size-3" />}
+      Guardar relación
+    </button>
+  );
+}
+
+/** Panel de historial de conversaciones. */
+function HistorialPanel({ seccion, onSelect, onClose, convActual }) {
+  const [convs, setConvs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editando, setEditando] = useState(null);
+  const [nuevoTitulo, setNuevoTitulo] = useState('');
+
+  useEffect(() => {
+    setLoading(true);
+    fetchConversations(seccion, 50)
+      .then(setConvs)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [seccion]);
+
+  async function borrar(id, e) {
+    e.stopPropagation();
+    if (!window.confirm('¿Eliminar esta conversación?')) return;
+    try {
+      await deleteConversation(id);
+      setConvs((prev) => prev.filter((c) => c.id !== id));
+      if (convActual === id) onSelect(null);
+    } catch (e) {
+      console.error('Error eliminando:', e);
+    }
+  }
+
+  async function renombrar(id, e) {
+    e?.preventDefault();
+    if (!nuevoTitulo.trim()) return;
+    try {
+      await updateConversation(id, { titulo: nuevoTitulo.trim() });
+      setConvs((prev) => prev.map((c) => (c.id === id ? { ...c, titulo: nuevoTitulo.trim() } : c)));
+      setEditando(null);
+    } catch (e) {
+      console.error('Error renombrando:', e);
+    }
+  }
+
+  return (
+    <div className="flex h-full flex-col">
+      <header className="flex h-10 shrink-0 items-center gap-2 hairline-b pl-3 pr-1.5">
+        <History className="size-4 text-ink-dim" />
+        <span className="text-[12.5px] font-semibold">Historial</span>
+        <span className="text-[11px] text-ink-dim">{convs.length} conversaciones</span>
+        <Button variant="ghost" size="icon-sm" onClick={onClose} className="ml-auto" aria-label="Volver"><X /></Button>
+      </header>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {loading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="size-5 animate-spin text-ink-dim" />
+          </div>
+        ) : convs.length === 0 ? (
+          <p className="px-4 py-8 text-center text-[12px] text-ink-dim">Sin conversaciones guardadas</p>
+        ) : (
+          <ul className="py-2">
+            {convs.map((c) => (
+              <li key={c.id}>
+                {editando === c.id ? (
+                  <form onSubmit={(e) => renombrar(c.id, e)} className="flex items-center gap-1.5 px-3 py-1.5">
+                    <input
+                      type="text"
+                      value={nuevoTitulo}
+                      onChange={(e) => setNuevoTitulo(e.target.value)}
+                      autoFocus
+                      className="min-w-0 flex-1 rounded-xs border border-hair bg-surface-2 px-2 py-1 text-[12px]"
+                      onKeyDown={(e) => e.key === 'Escape' && setEditando(null)}
+                    />
+                    <Button type="submit" variant="ghost" size="icon-sm"><Check /></Button>
+                    <Button type="button" variant="ghost" size="icon-sm" onClick={() => setEditando(null)}><X /></Button>
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onSelect(c.id)}
+                    className={cn(
+                      'group flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-surface-2',
+                      convActual === c.id && 'bg-accent/[0.08]',
+                    )}
+                  >
+                    <MessageSquare className="mt-0.5 size-3.5 shrink-0 text-ink-dim" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[12.5px] text-ink">{c.titulo || '(sin título)'}</p>
+                      <p className="text-[10.5px] text-ink-dim">{fechaCorta(c.updated_at || c.created_at)}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setEditando(c.id); setNuevoTitulo(c.titulo || ''); }}
+                        className="rounded-xs p-1 hover:bg-surface-3"
+                        title="Renombrar"
+                      >
+                        <Pencil className="size-3 text-ink-dim" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => borrar(c.id, e)}
+                        className="rounded-xs p-1 hover:bg-surface-3 hover:text-danger"
+                        title="Eliminar"
+                      >
+                        <Trash2 className="size-3 text-ink-dim" />
+                      </button>
+                    </div>
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function AgentFab({
   open, onOpenChange, seccion, context, onClearContext, nodesById, onSelect, onHighlight,
 }) {
-  const [msgs, setMsgs] = useState(() => cargar(seccion));
+  const [convId, setConvId] = useState(null);
+  const [msgs, setMsgs] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const fin = useRef(null);
   const inputRef = useRef(null);
+  const ultimaPregunta = useRef('');
 
-  useEffect(() => { setMsgs(cargar(seccion)); }, [seccion]);
+  // Cargar conversación cuando cambia convId
   useEffect(() => {
-    try { localStorage.setItem(claveConv(seccion), JSON.stringify(msgs.slice(-40))); } catch { /* sin storage */ }
-  }, [msgs, seccion]);
+    if (!convId) {
+      setMsgs([]);
+      return;
+    }
+    fetchConversation(convId)
+      .then((data) => setMsgs(data.messages || []))
+      .catch((e) => {
+        console.error('Error cargando conversación:', e);
+        setMsgs([]);
+      });
+  }, [convId]);
+
+  // Reset al cambiar de sección
+  useEffect(() => {
+    setConvId(null);
+    setMsgs([]);
+    setShowHistory(false);
+  }, [seccion]);
+
   useEffect(() => { fin.current?.scrollIntoView({ block: 'end' }); }, [msgs, busy, open]);
-  useEffect(() => { if (open) setTimeout(() => inputRef.current?.focus(), 30); }, [open, context]);
+  useEffect(() => { if (open && !showHistory) setTimeout(() => inputRef.current?.focus(), 30); }, [open, context, showHistory]);
+
+  // Resaltar nodos citados cuando hay una nueva respuesta del asistente
+  useEffect(() => {
+    const lastMsg = msgs[msgs.length - 1];
+    if (lastMsg?.role === 'assistant' && lastMsg.citations?.length > 0) {
+      const nodeIds = [...new Set(lastMsg.citations.map((c) => c.node_id).filter(Boolean))];
+      if (nodeIds.length > 0) {
+        onHighlight(nodeIds);
+      }
+    }
+  }, [msgs, onHighlight]);
+
+  async function nuevaConversacion() {
+    setConvId(null);
+    setMsgs([]);
+    onHighlight([]);
+  }
 
   async function enviar(e) {
     e?.preventDefault();
     const texto = input.trim();
     if (!texto || busy) return;
+    ultimaPregunta.current = texto;
     setInput('');
-    await preguntar([...msgs, { role: 'user', text: texto }]);
+
+    // Crear conversación si no existe
+    let cid = convId;
+    if (!cid) {
+      try {
+        const conv = await createConversation({
+          seccion,
+          context_id: context?.id,
+        });
+        cid = conv.id;
+        setConvId(cid);
+      } catch (e) {
+        console.error('Error creando conversación:', e);
+        return;
+      }
+    }
+
+    // Guardar mensaje del usuario
+    const userMsg = { role: 'user', text: texto };
+    setMsgs((prev) => [...prev, userMsg]);
+    try {
+      await addConversationMessage(cid, userMsg);
+    } catch (e) {
+      console.error('Error guardando mensaje:', e);
+    }
+
+    await preguntar(cid, [...msgs, userMsg]);
   }
 
-  /** Tocar una opción de una pregunta del agente: la elección viaja tipada (`jev`). */
   async function elegirOpcion(i, opcion) {
-    if (busy) return;
+    if (busy || !convId) return;
     const marcados = msgs.map((x, j) => (j === i ? { ...x, elegida: opcion.etiqueta } : x));
-    await preguntar([...marcados, { role: 'user', text: `→ ${opcion.etiqueta}` }], opcion.jev);
+    const userMsg = { role: 'user', text: `→ ${opcion.etiqueta}` };
+    setMsgs([...marcados, userMsg]);
+    try {
+      await addConversationMessage(convId, userMsg);
+    } catch (e) {
+      console.error('Error guardando mensaje:', e);
+    }
+    await preguntar(convId, [...marcados, userMsg], opcion.jev);
   }
 
-  async function preguntar(historial, jev) {
-    setMsgs(historial);
+  async function preguntar(cid, historial, jev) {
     setBusy(true);
 
     const system = context
@@ -325,7 +552,8 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
         contextoId: context?.id,
         jev,
       });
-      setMsgs((prev) => [...prev, {
+
+      const assistantMsg = {
         role: 'assistant',
         text: d.reply || 'Sin respuesta.',
         accion: d.accion ? { ...d.accion, estado: 'pendiente' } : null,
@@ -335,15 +563,31 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
         evidenceMode: d.evidence_mode || (d.general_knowledge ? 'general' : null),
         conducta: d.conducta,
         motivo: d.motivo,
-        sim: d.max_sim,
+        max_sim: d.max_sim,
         timing: d.timing,
         doc_scoped: d.doc_scoped,
-      }]);
+      };
+
+      // Guardar en BD
+      try {
+        const saved = await addConversationMessage(cid, assistantMsg);
+        assistantMsg.id = saved.id;
+      } catch (e) {
+        console.error('Error guardando respuesta:', e);
+      }
+
+      setMsgs((prev) => [...prev, assistantMsg]);
     } catch {
-      setMsgs((prev) => [...prev, { role: 'assistant', text: 'No pude conectar con el agente. ¿Está arriba el backend?', error: true }]);
+      const errorMsg = { role: 'assistant', text: 'No pude conectar con el agente. ¿Está arriba el backend?', error: true };
+      setMsgs((prev) => [...prev, errorMsg]);
     } finally {
       setBusy(false);
     }
+  }
+
+  function abrirHistorial(id) {
+    setConvId(id);
+    setShowHistory(false);
   }
 
   return (
@@ -367,82 +611,107 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
           aria-label="Agente"
           className="fixed bottom-4 right-4 z-30 flex h-[min(620px,calc(100vh-80px))] w-[min(420px,calc(100vw-32px))] flex-col overflow-hidden rounded-md border border-hair-strong bg-surface shadow-2xl shadow-black/70"
         >
-          <header className="flex h-10 shrink-0 items-center gap-2 hairline-b pl-3 pr-1.5">
-            <span className="size-1.5 rounded-full bg-accent" />
-            <span className="text-[12.5px] font-semibold">Agente</span>
-            <span className="text-[11.5px] capitalize text-ink-dim">· {nombreSeccion(seccion)}</span>
-            <span className="text-[10.5px] text-ink-dim">cita o se abstiene</span>
-            <div className="ml-auto flex items-center">
-              <Hint texto="Nueva conversación">
-                <Button variant="ghost" size="icon-sm" onClick={() => { setMsgs([]); onHighlight([]); }} aria-label="Nueva conversación"><Plus /></Button>
-              </Hint>
-              <Button variant="ghost" size="icon-sm" onClick={() => onOpenChange(false)} aria-label="Cerrar agente"><X /></Button>
-            </div>
-          </header>
+          {showHistory ? (
+            <HistorialPanel
+              seccion={seccion}
+              convActual={convId}
+              onSelect={abrirHistorial}
+              onClose={() => setShowHistory(false)}
+            />
+          ) : (
+            <>
+              <header className="flex h-10 shrink-0 items-center gap-2 hairline-b pl-3 pr-1.5">
+                <span className="size-1.5 rounded-full bg-accent" />
+                <span className="text-[12.5px] font-semibold">Agente</span>
+                <span className="text-[11.5px] capitalize text-ink-dim">· {nombreSeccion(seccion)}</span>
+                <span className="text-[10.5px] text-ink-dim">cita o se abstiene</span>
+                <div className="ml-auto flex items-center">
+                  <Hint texto="Historial">
+                    <Button variant="ghost" size="icon-sm" onClick={() => setShowHistory(true)} aria-label="Ver historial"><History /></Button>
+                  </Hint>
+                  <Hint texto="Nueva conversación">
+                    <Button variant="ghost" size="icon-sm" onClick={nuevaConversacion} aria-label="Nueva conversación"><Plus /></Button>
+                  </Hint>
+                  <Button variant="ghost" size="icon-sm" onClick={() => onOpenChange(false)} aria-label="Cerrar agente"><X /></Button>
+                </div>
+              </header>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-            {msgs.length === 0 && (
-              <div className="px-1 pt-6 text-center">
-                <p className="text-[13px] font-medium">Preguntale a tu biblioteca</p>
-                <p className="mx-auto mt-1 max-w-[300px] text-[12px] text-ink-dim">
-                  Responde citando pasajes de tus documentos. Si no hay evidencia suficiente, lo dice en vez de inventar.
-                </p>
-                <p className="mx-auto mt-2 max-w-[300px] text-[12px] text-ink-dim">
-                  Con un dato seleccionado, pedile un análisis («¿qué explica el abandono?»): elige la herramienta y te la propone antes de correrla.
-                </p>
+              <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+                {msgs.length === 0 && (
+                  <div className="px-1 pt-6 text-center">
+                    <p className="text-[13px] font-medium">Preguntale a tu biblioteca</p>
+                    <p className="mx-auto mt-1 max-w-[300px] text-[12px] text-ink-dim">
+                      Responde citando pasajes de tus documentos. Si no hay evidencia suficiente, lo dice en vez de inventar.
+                    </p>
+                    <p className="mx-auto mt-2 max-w-[300px] text-[12px] text-ink-dim">
+                      Con un dato seleccionado, pedile un análisis («¿qué explica el abandono?»): elige la herramienta y te la propone antes de correrla.
+                    </p>
+                  </div>
+                )}
+                <div className="flex flex-col gap-4">
+                  {msgs.map((m, i) => (m.role === 'user' ? (
+                    <div key={m.id || i} className="self-end rounded-md bg-surface-3 px-2.5 py-1.5 text-[12.5px] text-ink">{m.text}</div>
+                  ) : (
+                    <div key={m.id || i} className={cn(m.error && 'text-danger')}>
+                      <Respuesta
+                        m={m}
+                        nodesById={nodesById}
+                        onSelect={onSelect}
+                        onHighlight={onHighlight}
+                        onAccion={(cambios) => setMsgs((prev) => prev.map((x, j) => (j === i ? { ...x, accion: { ...x.accion, ...cambios } } : x)))}
+                        onOpcion={(o) => elegirOpcion(i, o)}
+                        busy={busy}
+                      />
+                      {/* Guardar relación: solo si hay citaciones de múltiples documentos */}
+                      {m.id && convId && citados(m).length >= 2 && m.conducta !== 'abstenerse' && (
+                        <div className="mt-2">
+                          <GuardarRelacion
+                            convId={convId}
+                            msgId={m.id}
+                            pregunta={ultimaPregunta.current || msgs.find((x) => x.role === 'user')?.text || ''}
+                            citations={citados(m)}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )))}
+                  {busy && (
+                    <div className="flex items-center gap-2 text-[12px] text-ink-dim">
+                      <span className="size-1.5 animate-pulse rounded-full bg-accent" /> Buscando en {context ? 'este documento' : 'la biblioteca'}…
+                    </div>
+                  )}
+                </div>
+                <div ref={fin} />
               </div>
-            )}
-            <div className="flex flex-col gap-4">
-              {msgs.map((m, i) => (m.role === 'user' ? (
-                <div key={i} className="self-end rounded-md bg-surface-3 px-2.5 py-1.5 text-[12.5px] text-ink">{m.text}</div>
-              ) : (
-                <div key={i} className={cn(m.error && 'text-danger')}>
-                  <Respuesta
-                    m={m}
-                    nodesById={nodesById}
-                    onSelect={onSelect}
-                    onHighlight={onHighlight}
-                    onAccion={(cambios) => setMsgs((prev) => prev.map((x, j) => (j === i ? { ...x, accion: { ...x.accion, ...cambios } } : x)))}
-                    onOpcion={(o) => elegirOpcion(i, o)}
-                    busy={busy}
+
+              <form onSubmit={enviar} className="shrink-0 border-t border-hair p-2">
+                {context && (
+                  <div className="mb-1.5 flex items-center gap-1.5 rounded-xs bg-surface-2 px-2 py-1 text-[11px] text-ink-muted">
+                    <FileText className="size-3 text-ink-dim" />
+                    <span className="truncate">Sobre: {truncar(context.label, 48)}</span>
+                    <button type="button" onClick={onClearContext} className="ml-auto text-ink-dim hover:text-ink" aria-label="Quitar contexto">
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                )}
+                <div className="flex items-end gap-1.5">
+                  <textarea
+                    ref={inputRef}
+                    value={input}
+                    rows={1}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) enviar(e); }}
+                    placeholder={context ? 'Preguntá sobre este documento…' : 'Preguntá algo a la sección…'}
+                    className="max-h-28 min-h-[30px] flex-1 resize-none rounded-sm border border-hair bg-surface-2 px-2 py-1.5 text-[12.5px] text-ink placeholder:text-ink-dim focus:border-accent/60 focus:outline-none"
+                    disabled={busy}
                   />
+                  <Button type="submit" variant="default" size="icon" disabled={busy || !input.trim()} aria-label="Enviar">
+                    <ArrowUp />
+                  </Button>
                 </div>
-              )))}
-              {busy && (
-                <div className="flex items-center gap-2 text-[12px] text-ink-dim">
-                  <span className="size-1.5 animate-pulse rounded-full bg-accent" /> Buscando en {context ? 'este documento' : 'la biblioteca'}…
-                </div>
-              )}
-            </div>
-            <div ref={fin} />
-          </div>
-
-          <form onSubmit={enviar} className="shrink-0 border-t border-hair p-2">
-            {context && (
-              <div className="mb-1.5 flex items-center gap-1.5 rounded-xs bg-surface-2 px-2 py-1 text-[11px] text-ink-muted">
-                <FileText className="size-3 text-ink-dim" />
-                <span className="truncate">Sobre: {truncar(context.label, 48)}</span>
-                <button type="button" onClick={onClearContext} className="ml-auto text-ink-dim hover:text-ink" aria-label="Quitar contexto">
-                  <X className="size-3" />
-                </button>
-              </div>
-            )}
-            <div className="flex items-end gap-1.5">
-              <textarea
-                ref={inputRef}
-                value={input}
-                rows={1}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) enviar(e); }}
-                placeholder={context ? 'Preguntá sobre este documento…' : 'Preguntá algo a la sección…'}
-                className="max-h-28 min-h-[30px] flex-1 resize-none rounded-sm border border-hair bg-surface-2 px-2 py-1.5 text-[12.5px] text-ink placeholder:text-ink-dim focus:border-accent/60 focus:outline-none"
-                disabled={busy}
-              />
-              <Button type="submit" variant="default" size="icon" disabled={busy || !input.trim()} aria-label="Enviar">
-                <ArrowUp />
-              </Button>
-            </div>
-          </form>
+              </form>
+            </>
+          )}
         </div>
       )}
     </>

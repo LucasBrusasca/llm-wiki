@@ -213,6 +213,38 @@ class Papelera(Base):
     eliminado_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class AgentConversation(Base):
+    """Conversación del agente: historial persistido por sección."""
+    __tablename__ = "agent_conversations"
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    seccion     = Column(String, nullable=False, index=True)
+    titulo      = Column(String)  # título editable (por defecto, primera pregunta)
+    context_id  = Column(String, ForeignKey("nodes.id", ondelete="SET NULL"))  # doc en scope
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AgentMessage(Base):
+    """Mensaje de una conversación del agente."""
+    __tablename__ = "agent_messages"
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(Integer, ForeignKey("agent_conversations.id", ondelete="CASCADE"), nullable=False)
+    role            = Column(String, nullable=False)  # user | assistant
+    text            = Column(Text, nullable=False)
+    # Metadatos de respuestas del agente
+    citations       = Column(JSON, default=list)   # pasajes citados
+    fundamentos     = Column(JSON, default=list)   # nodos usados
+    conducta        = Column(String)               # responder | abstenerse | pedir_aclaracion
+    motivo          = Column(String)
+    evidence_mode   = Column(String)
+    max_sim         = Column(Float)
+    timing          = Column(JSON)
+    doc_scoped      = Column(Boolean, default=False)
+    accion          = Column(JSON)                 # propuesta de acción (script)
+    opciones        = Column(JSON, default=list)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class IngestJob(Base):
     """Trabajo de ingesta en background. Permite que el usuario siga usando la UI
     mientras se procesa el documento/URL."""

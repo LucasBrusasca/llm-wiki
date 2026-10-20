@@ -503,3 +503,51 @@ export async function saveRunAsNode(runId, { label, seccion } = {}) {
     body: JSON.stringify({ label, seccion }),
   }).then(jsonOrThrow);
 }
+
+// ── Conversaciones del agente ─────────────────────────────────────────
+export async function fetchConversations(seccion, limit = 50) {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (seccion) q.set('seccion', seccion);
+  const d = await fetch(`/api/conversations?${q}`).then(jsonOrThrow);
+  return d.conversations || [];
+}
+
+export async function createConversation({ seccion, titulo, context_id }) {
+  return fetch('/api/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seccion, titulo, context_id }),
+  }).then(jsonOrThrow);
+}
+
+export async function fetchConversation(convId) {
+  return fetch(`/api/conversations/${convId}`).then(jsonOrThrow);
+}
+
+export async function updateConversation(convId, { titulo }) {
+  return fetch(`/api/conversations/${convId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ titulo }),
+  }).then(jsonOrThrow);
+}
+
+export async function deleteConversation(convId) {
+  return fetch(`/api/conversations/${convId}`, { method: 'DELETE' }).then(jsonOrThrow);
+}
+
+export async function addConversationMessage(convId, message) {
+  return fetch(`/api/conversations/${convId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(message),
+  }).then(jsonOrThrow);
+}
+
+export async function saveRelationsFromAnswer(convId, { message_id, pregunta }) {
+  return fetch(`/api/conversations/${convId}/save-relations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message_id, pregunta }),
+  }).then(jsonOrThrow);
+}

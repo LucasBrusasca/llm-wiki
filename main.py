@@ -15,7 +15,7 @@ from urllib.parse import unquote
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -4757,6 +4757,275 @@ async def agent_endpoint(
         "timing": timing,
         "doc_scoped": bool(contexto_id),
     }
+
+
+# ── Historial de conversaciones del agente ─────────────────────────────────────
+
+from database.models import AgentConversation, AgentMessage
+
+
+@app.get("/api/conversations")
+async def list_conversations(
+    seccion: str = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Lista las conversaciones de una sección, más recientes primero."""
+    q = select(AgentConversation).order_by(AgentConversation.updated_at.desc()).limit(limit)
+    if seccion:
+        q = q.where(AgentConversation.seccion == seccion)
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "conversations": [
+            {
+                "id": c.id,
+                "seccion": c.seccion,
+                "titulo": c.titulo,
+                "context_id": c.context_id,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+            }
+            for c in rows
+        ]
+    }
+
+
+@app.post("/api/conversations")
+async def create_conversation(
+    request: Request,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Crea una nueva conversación."""
+    body = await request.json()
+    seccion = body.get("seccion") or "personal"
+    titulo = body.get("titulo")
+    context_id = body.get("context_id")
+    conv = AgentConversation(seccion=seccion, titulo=titulo, context_id=context_id)
+    db.add(conv)
+    await db.commit()
+    await db.refresh(conv)
+    return {
+        "id": conv.id,
+        "seccion": conv.seccion,
+        "titulo": conv.titulo,
+        "context_id": conv.context_id,
+        "created_at": conv.created_at.isoformat() if conv.created_at else None,
+    }
+
+
+@app.get("/api/conversations/{conv_id}")
+async def get_conversation(conv_id: int, db: AsyncSession = Depends(get_async_session)):
+    """Obtiene una conversación con todos sus mensajes."""
+    conv = (await db.execute(
+        select(AgentConversation).where(AgentConversation.id == conv_id)
+    )).scalar_one_or_none()
+    if not conv:
+        raise HTTPException(404, "Conversación no encontrada")
+    
+    msgs = (await db.execute(
+        select(AgentMessage)
+        .where(AgentMessage.conversation_id == conv_id)
+        .order_by(AgentMessage.created_at)
+    )).scalars().all()
+    
+    return {
+        "id": conv.id,
+        "seccion": conv.seccion,
+        "titulo": conv.titulo,
+        "context_id": conv.context_id,
+        "created_at": conv.created_at.isoformat() if conv.created_at else None,
+        "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+        "messages": [
+            {
+                "id": m.id,
+                "role": m.role,
+                "text": m.text,
+                "citations": m.citations or [],
+                "fundamentos": m.fundamentos or [],
+                "conducta": m.conducta,
+                "motivo": m.motivo,
+                "evidence_mode": m.evidence_mode,
+                "max_sim": m.max_sim,
+                "timing": m.timing,
+                "doc_scoped": m.doc_scoped,
+                "accion": m.accion,
+                "opciones": m.opciones or [],
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in msgs
+        ],
+    }
+
+
+@app.put("/api/conversations/{conv_id}")
+async def update_conversation(
+    conv_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Actualiza título de una conversación."""
+    body = await request.json()
+    conv = (await db.execute(
+        select(AgentConversation).where(AgentConversation.id == conv_id)
+    )).scalar_one_or_none()
+    if not conv:
+        raise HTTPException(404, "Conversación no encontrada")
+    
+    if "titulo" in body:
+        conv.titulo = body["titulo"]
+    await db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/conversations/{conv_id}")
+async def delete_conversation(conv_id: int, db: AsyncSession = Depends(get_async_session)):
+    """Elimina una conversación y sus mensajes."""
+    conv = (await db.execute(
+        select(AgentConversation).where(AgentConversation.id == conv_id)
+    )).scalar_one_or_none()
+    if not conv:
+        raise HTTPException(404, "Conversación no encontrada")
+    
+    await db.execute(
+        text("DELETE FROM agent_messages WHERE conversation_id = :cid"),
+        {"cid": conv_id}
+    )
+    await db.delete(conv)
+    await db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/conversations/{conv_id}/messages")
+async def add_message(
+    conv_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Agrega un mensaje a una conversación. Para mensajes del asistente,
+    incluye citations, fundamentos, etc."""
+    body = await request.json()
+    conv = (await db.execute(
+        select(AgentConversation).where(AgentConversation.id == conv_id)
+    )).scalar_one_or_none()
+    if not conv:
+        raise HTTPException(404, "Conversación no encontrada")
+    
+    role = body.get("role", "user")
+    text_content = body.get("text", "")
+    
+    msg = AgentMessage(
+        conversation_id=conv_id,
+        role=role,
+        text=text_content,
+        citations=body.get("citations"),
+        fundamentos=body.get("fundamentos"),
+        conducta=body.get("conducta"),
+        motivo=body.get("motivo"),
+        evidence_mode=body.get("evidence_mode"),
+        max_sim=body.get("max_sim"),
+        timing=body.get("timing"),
+        doc_scoped=body.get("doc_scoped", False),
+        accion=body.get("accion"),
+        opciones=body.get("opciones"),
+    )
+    db.add(msg)
+    
+    # Actualizar título de la conversación si es el primer mensaje del usuario
+    if role == "user" and not conv.titulo:
+        conv.titulo = text_content[:80] + ("…" if len(text_content) > 80 else "")
+    
+    await db.commit()
+    await db.refresh(msg)
+    return {
+        "id": msg.id,
+        "role": msg.role,
+        "text": msg.text,
+        "created_at": msg.created_at.isoformat() if msg.created_at else None,
+    }
+
+
+@app.post("/api/conversations/{conv_id}/save-relations")
+async def save_relations_from_answer(
+    conv_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Guarda aristas CO_CITADO entre documentos citados en una respuesta del agente.
+    Crea edges tipados con procedencia: conversación, pregunta, timestamp."""
+    from datetime import datetime
+    
+    body = await request.json()
+    message_id = body.get("message_id")
+    pregunta = body.get("pregunta", "")
+    
+    # Obtener el mensaje
+    msg = (await db.execute(
+        select(AgentMessage).where(
+            AgentMessage.id == message_id,
+            AgentMessage.conversation_id == conv_id
+        )
+    )).scalar_one_or_none()
+    if not msg:
+        raise HTTPException(404, "Mensaje no encontrado")
+    
+    citations = msg.citations or []
+    if len(citations) < 2:
+        return {"edges_created": 0, "reason": "Se necesitan al menos 2 citaciones para crear relaciones"}
+    
+    # Obtener node_ids únicos de las citaciones
+    node_ids = list({c["node_id"] for c in citations if c.get("node_id")})
+    if len(node_ids) < 2:
+        return {"edges_created": 0, "reason": "Se necesitan al menos 2 documentos distintos"}
+    
+    # Verificar que los nodos existen
+    existing = (await db.execute(
+        select(Node.id).where(Node.id.in_(node_ids))
+    )).scalars().all()
+    existing_set = set(existing)
+    node_ids = [nid for nid in node_ids if nid in existing_set]
+    
+    if len(node_ids) < 2:
+        return {"edges_created": 0, "reason": "Nodos citados no encontrados"}
+    
+    edges_created = 0
+    now = datetime.now()
+    
+    # Crear aristas CO_CITADO entre todos los pares de nodos citados
+    for i, src in enumerate(node_ids):
+        for tgt in node_ids[i + 1:]:
+            # Verificar si ya existe (en cualquier dirección)
+            exists = (await db.execute(
+                text("""
+                    SELECT 1 FROM edges 
+                    WHERE ((source = :s AND target = :t) OR (source = :t AND target = :s))
+                      AND label = 'CO_CITADO'
+                    LIMIT 1
+                """),
+                {"s": src, "t": tgt}
+            )).scalar_one_or_none()
+            
+            if not exists:
+                edge = Edge(
+                    source=src,
+                    target=tgt,
+                    label="CO_CITADO",
+                    score=0.5,  # Score moderado por defecto
+                    description=f"Citados juntos en respuesta a: {pregunta[:100]}",
+                    metodo="agente_cocitacion",
+                    base_relacion="inferida",
+                    evidencia={
+                        "conversation_id": conv_id,
+                        "message_id": message_id,
+                        "pregunta": pregunta[:500],
+                        "timestamp": now.isoformat(),
+                        "n_citaciones": len(citations),
+                    },
+                )
+                db.add(edge)
+                edges_created += 1
+    
+    await db.commit()
+    return {"edges_created": edges_created, "node_ids": node_ids}
 
 
 @app.post("/api/synthesize")

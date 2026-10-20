@@ -85,5 +85,27 @@ class UmbralesPorModeloTests(unittest.TestCase):
         self.assertEqual(processor.texto_de_fragmento(None, "capítulo 3"), "capítulo 3")
 
 
+class ConversationHistoryTests(unittest.TestCase):
+    """Tests para el historial de conversaciones del agente."""
+    
+    def test_modelos_de_conversacion_existen(self):
+        """Los modelos AgentConversation y AgentMessage deben estar definidos."""
+        from database.models import AgentConversation, AgentMessage
+        self.assertTrue(hasattr(AgentConversation, 'id'))
+        self.assertTrue(hasattr(AgentConversation, 'seccion'))
+        self.assertTrue(hasattr(AgentConversation, 'titulo'))
+        self.assertTrue(hasattr(AgentMessage, 'conversation_id'))
+        self.assertTrue(hasattr(AgentMessage, 'role'))
+        self.assertTrue(hasattr(AgentMessage, 'text'))
+        self.assertTrue(hasattr(AgentMessage, 'citations'))
+    
+    def test_edge_co_citado_tiene_campos_de_procedencia(self):
+        """Las aristas CO_CITADO deben tener campos para procedencia."""
+        from database.models import Edge
+        self.assertTrue(hasattr(Edge, 'metodo'))
+        self.assertTrue(hasattr(Edge, 'evidencia'))
+        self.assertTrue(hasattr(Edge, 'base_relacion'))
+
+
 if __name__ == "__main__":
     unittest.main()
