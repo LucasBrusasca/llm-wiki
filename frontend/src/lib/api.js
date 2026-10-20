@@ -375,11 +375,11 @@ export async function searchSemantic(q, max = 24) {
  * `jev`: lo que la persona eligió tocando una opción de una pregunta anterior del agente
  * ({ herramienta, parametros, pedido }); el agente no lo vuelve a decidir.
  */
-export async function askAgent({ system, messages, seccion, contextoId, jev }) {
+export async function askAgent({ system, messages, seccion, contextoId, jev, model }) {
   return fetch('/api/agent', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ system, messages, seccion, contexto_id: contextoId, jev }),
+    body: JSON.stringify({ system, messages, seccion, contexto_id: contextoId, jev, model }),
   }).then(jsonOrThrow);
 }
 

@@ -1084,12 +1084,14 @@ async def dimensiones(db: AsyncSession = Depends(get_async_session)):
         select(Node.id, Node.label, Node.dominio, Node.x3d, Node.y3d, Node.z3d, Node.fuente,
                Node.type, Node.created_at, Node.fecha_doc, Node.autor, Node.tema, Node.cluster,
                Node.fuente_path, Node.fuente_url, Node.fuente_label, Node.conceptos, Node.tags,
+               Node.known_since, Node.valid_from,
                func.left(Node.desc, 300).label("desc"))
         .where(Node.is_centroid == False, Node.is_issue == False)
     )).all()
     # De cerca, cada documento es su tarjeta (miniatura, origen, tema, autor, fecha):
     # van los campos cortos que eso necesita, no los textos. Conceptos y el comienzo de
     # la descripción, para que los filtros y la búsqueda valgan en todas las secciones.
+    # known_since y valid_from permiten el slider temporal del grafo.
     nodos = [{
         "id": f.id, "label": f.label, "dominio": f.dominio or "personal",
         "x": f.x3d, "y": f.y3d, "z": f.z3d, "fuente": f.fuente, "type": f.type,
@@ -1097,6 +1099,8 @@ async def dimensiones(db: AsyncSession = Depends(get_async_session)):
         "autor": f.autor, "tema": f.tema, "cluster": f.cluster if f.cluster is not None else -1,
         "fuente_path": f.fuente_path, "fuente_url": f.fuente_url, "fuente_label": f.fuente_label,
         "conceptos": f.conceptos or [], "tags": f.tags or [], "desc": f.desc,
+        "known_since": (f.known_since or f.created_at).isoformat() if (f.known_since or f.created_at) else None,
+        "valid_from": f.valid_from.isoformat() if f.valid_from else None,
     } for f in filas]
     ids = {n["id"] for n in nodos}
     aristas = (await db.execute(select(Edge.source, Edge.target, Edge.score))).all()
@@ -4610,6 +4614,7 @@ async def agent_endpoint(
     messages = body.get("messages", [])
     ultima = messages[-1]["content"] if messages else ""
     contexto_id = body.get("contextoId") or body.get("contexto_id")  # UI envía contextoId
+    chat_model = body.get("model")  # Modelo seleccionado por el usuario (opcional)
 
     # JEV: antes de buscar en la biblioteca decide el camino. Un pedido de análisis se
     # propone con una herramienta (y su recibo) y la UI pide confirmar; una pregunta sobre
@@ -4776,9 +4781,9 @@ async def agent_endpoint(
         import os as _os
         from processor import query_llm
         t_llm = _time.perf_counter()
-        reply = query_llm(messages, system)
+        reply = query_llm(messages, system, model=chat_model)
         timing["llm_ms"] = int((_time.perf_counter() - t_llm) * 1000)
-        timing["llm_model"] = _os.getenv("LLM_MODEL", "") or _os.getenv("LLM_PROVIDER", "anthropic")
+        timing["llm_model"] = chat_model or _os.getenv("LLM_MODEL", "") or _os.getenv("LLM_PROVIDER", "anthropic")
     except Exception as e:
         reply = f"Error: {e}"
         timing["llm_ms"] = 0

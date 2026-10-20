@@ -3,7 +3,7 @@ import ReactFlow, {
   Handle, Position, ReactFlowProvider, useReactFlow, useStoreApi,
 } from 'reactflow';
 import 'reactflow/dist/base.css';
-import { Plus, Minus, Maximize, Waypoints, Pin, PinOff, Link2, X } from 'lucide-react';
+import { Plus, Minus, Maximize, Waypoints, Pin, PinOff, Link2, X, Play, Pause, Calendar } from 'lucide-react';
 import { Hint } from '@/components/ui/tooltip';
 import ColorPanel, { calcularLeyenda } from '@/app/ColorPanel';
 import NodoTooltip from '@/app/NodoTooltip';
@@ -203,6 +203,67 @@ function BotonCanvas({ texto, onClick, children, activo }) {
   );
 }
 
+/**
+ * TimelineSlider: slider temporal que filtra nodos por known_since/valid_from.
+ * Permite reconstruir el grafo como era en un momento dado.
+ */
+function TimelineSlider({ nodes, timelineDate, onTimelineChange, isPlaying, onPlayToggle }) {
+  const dates = useMemo(() => {
+    const d = nodes
+      .map((n) => n.known_since || n.creado)
+      .filter(Boolean)
+      .map((s) => new Date(s).getTime())
+      .sort((a, b) => a - b);
+    if (!d.length) return null;
+    return { min: d[0], max: d[d.length - 1] };
+  }, [nodes]);
+
+  if (!dates || dates.min === dates.max) return null;
+
+  const value = timelineDate ? new Date(timelineDate).getTime() : dates.max;
+  const formatDate = (ts) => new Date(ts).toLocaleDateString('es-AR', { month: 'short', year: 'numeric' });
+
+  return (
+    <div className="pointer-events-auto flex items-center gap-2 rounded-sm border border-hair bg-surface/95 px-2 py-1.5">
+      <Hint texto={isPlaying ? 'Pausar reproducción' : 'Reproducir línea temporal'} side="top">
+        <button
+          type="button"
+          onClick={onPlayToggle}
+          className="grid size-6 place-items-center rounded text-ink-muted hover:bg-surface-2 hover:text-ink"
+          aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+        >
+          {isPlaying ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
+        </button>
+      </Hint>
+      <Calendar className="size-3.5 text-ink-dim" />
+      <span className="min-w-[70px] text-[10px] text-ink-dim">{formatDate(dates.min)}</span>
+      <input
+        type="range"
+        min={dates.min}
+        max={dates.max}
+        value={value}
+        onChange={(e) => onTimelineChange(new Date(Number(e.target.value)).toISOString())}
+        className="h-1 w-32 cursor-pointer appearance-none rounded-full bg-hair accent-accent"
+      />
+      <span className="min-w-[70px] text-right text-[10px] text-ink-dim">{formatDate(value)}</span>
+      <Hint texto="Mostrar todo (sin filtro temporal)" side="top">
+        <button
+          type="button"
+          onClick={() => onTimelineChange(null)}
+          disabled={!timelineDate}
+          className={cn(
+            'grid size-6 place-items-center rounded text-ink-muted hover:bg-surface-2 hover:text-ink',
+            !timelineDate && 'opacity-40',
+          )}
+          aria-label="Mostrar todo"
+        >
+          <X className="size-3.5" />
+        </button>
+      </Hint>
+    </div>
+  );
+}
+
 function Lienzo({
   nodes, edges, visibleIds, selectedId, highlightIds, onSelect, relIndex,
   pinnedEdge, onClearPin, onVacio, colorMode, onColorMode, colorDe, temas, compacto, ego, onFijar,
@@ -219,6 +280,63 @@ function Lienzo({
   const hudRef = useRef({ t: -Infinity, rects: [] });
   const datosRef = useRef(new Map());
 
+  // ── Timeline playback state ──
+  const [timelineDate, setTimelineDate] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const playRef = useRef(null);
+
+  // Timeline playback: avanza el slider automáticamente
+  useEffect(() => {
+    if (!isPlaying) {
+      if (playRef.current) clearInterval(playRef.current);
+      return;
+    }
+    const dates = nodes
+      .map((n) => n.known_since || n.creado)
+      .filter(Boolean)
+      .map((s) => new Date(s).getTime())
+      .sort((a, b) => a - b);
+    if (dates.length < 2) { setIsPlaying(false); return; }
+
+    const minDate = dates[0];
+    const maxDate = dates[dates.length - 1];
+    const range = maxDate - minDate;
+    const step = range / 60;  // ~60 frames para la animación completa
+
+    const current = timelineDate ? new Date(timelineDate).getTime() : minDate;
+    if (current >= maxDate) {
+      setTimelineDate(new Date(minDate).toISOString());
+    }
+
+    playRef.current = setInterval(() => {
+      setTimelineDate((prev) => {
+        const t = prev ? new Date(prev).getTime() : minDate;
+        const next = t + step;
+        if (next >= maxDate) {
+          setIsPlaying(false);
+          return new Date(maxDate).toISOString();
+        }
+        return new Date(next).toISOString();
+      });
+    }, 100);
+
+    return () => clearInterval(playRef.current);
+  }, [isPlaying, nodes, timelineDate]);
+
+  // Filter nodes by timeline
+  const filteredVisibleIds = useMemo(() => {
+    if (!timelineDate) return visibleIds;
+    const cutoff = new Date(timelineDate).getTime();
+    const filtered = new Set();
+    for (const id of visibleIds) {
+      const n = nodes.find((x) => x.id === id);
+      if (!n) continue;
+      const t = n.known_since || n.creado;
+      if (!t || new Date(t).getTime() <= cutoff) filtered.add(id);
+    }
+    return filtered;
+  }, [visibleIds, timelineDate, nodes]);
+
   const centros = useMemo(() => layout(nodes, podar(edges, 3)), [nodes, edges]);
   const nodesById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   const grado = useCallback((id) => relIndex.get(id)?.length || 0, [relIndex]);
@@ -226,22 +344,22 @@ function Lienzo({
   // El pin sólo cuenta si toca al documento elegido y sus dos puntas están a la vista.
   const pin = pinnedEdge && selectedId
     && (pinnedEdge.source === selectedId || pinnedEdge.target === selectedId)
-    && visibleIds.has(pinnedEdge.source) && visibleIds.has(pinnedEdge.target)
+    && filteredVisibleIds.has(pinnedEdge.source) && filteredVisibleIds.has(pinnedEdge.target)
     ? pinnedEdge : null;
   const pinOtro = pin ? (pin.source === selectedId ? pin.target : pin.source) : null;
 
   const vecinos = useMemo(() => vecinosDe({ selectedId, ego, relIndex }), [selectedId, relIndex, ego]);
   const hitos = useMemo(
-    () => calcularHitos({ selectedId, ego, relIndex, visibleIds }),
-    [selectedId, ego, relIndex, visibleIds],
+    () => calcularHitos({ selectedId, ego, relIndex, visibleIds: filteredVisibleIds }),
+    [selectedId, ego, relIndex, filteredVisibleIds],
   );
   const estados = useMemo(() => {
     const m = new Map();
     for (const n of nodes) {
-      if (visibleIds.has(n.id)) m.set(n.id, estadoNodo(n.id, { selectedId, pinOtro, vecinos, ego }));
+      if (filteredVisibleIds.has(n.id)) m.set(n.id, estadoNodo(n.id, { selectedId, pinOtro, vecinos, ego }));
     }
     return m;
-  }, [nodes, visibleIds, selectedId, pinOtro, vecinos, ego]);
+  }, [nodes, filteredVisibleIds, selectedId, pinOtro, vecinos, ego]);
 
   // Paneles del lienzo: ninguna pieza se ubica debajo. Se miden cada tanto.
   const rectsHud = useCallback(() => {
@@ -350,7 +468,7 @@ function Lienzo({
   }, [nodes, estados, centros, piezas, colorDe, grado, highlightIds, hoverId]);
 
   // Mismas relaciones, mismo corte de fuertes y mismo estilo que el 3D (lib/aristas).
-  const aristas = useMemo(() => aristasVisibles(edges, visibleIds), [edges, visibleIds]);
+  const aristas = useMemo(() => aristasVisibles(edges, filteredVisibleIds), [edges, filteredVisibleIds]);
   const rfEdges = useMemo(() => {
     const out = [];
     for (const a of aristas) {
@@ -381,10 +499,10 @@ function Lienzo({
     [aristas, selectedId, pin, ego, todas],
   );
 
-  const leyenda = useMemo(() => calcularLeyenda(nodes, visibleIds, colorMode, temas), [nodes, visibleIds, colorMode, temas]);
+  const leyenda = useMemo(() => calcularLeyenda(nodes, filteredVisibleIds, colorMode, temas), [nodes, filteredVisibleIds, colorMode, temas]);
 
-  // Encuadrar cuando cambia el conjunto visible (sección / filtros).
-  const firma = useMemo(() => `${visibleIds.size}:${nodes.length}`, [visibleIds, nodes.length]);
+  // Encuadrar cuando cambia el conjunto visible (sección / filtros / timeline).
+  const firma = useMemo(() => `${filteredVisibleIds.size}:${nodes.length}`, [filteredVisibleIds, nodes.length]);
   useEffect(() => {
     const t = setTimeout(() => rf.fitView({ padding: 0.12, duration: 250 }), 30);
     return () => clearTimeout(t);
@@ -398,17 +516,17 @@ function Lienzo({
   useEffect(() => {
     if (!claveEncuadre || claveEncuadre === ultimo.current) return undefined;
     ultimo.current = claveEncuadre;
-    if (!ego && !visibleIds.has(selectedId)) return undefined;
+    if (!ego && !filteredVisibleIds.has(selectedId)) return undefined;
     const ids = ego
-      ? [...ego.ids].filter((id) => visibleIds.has(id))
+      ? [...ego.ids].filter((id) => filteredVisibleIds.has(id))
       : pin
       ? [pin.source, pin.target]
-      : [selectedId, ...[...(vecinos || [])].filter((id) => visibleIds.has(id))];
+      : [selectedId, ...[...(vecinos || [])].filter((id) => filteredVisibleIds.has(id))];
     const t = setTimeout(() => {
       rf.fitView({ nodes: ids.map((id) => ({ id })), padding: pin && !ego ? 0.6 : 0.25, duration: 350, maxZoom: 1.2 });
     }, 20);
     return () => clearTimeout(t);
-  }, [claveEncuadre, pin, ego, selectedId, vecinos, rf, visibleIds]);
+  }, [claveEncuadre, pin, ego, selectedId, vecinos, rf, filteredVisibleIds]);
 
   const onNodeClick = useCallback((_, n) => onSelect(n.id), [onSelect]);
   const moverHover = useCallback((ev, n) => {
@@ -490,6 +608,17 @@ function Lienzo({
         >
           <Waypoints />
         </BotonCanvas>
+      </div>
+
+      {/* Timeline slider para filtrar nodos por fecha */}
+      <div className="pointer-events-none absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-2 text-[11px]">
+        <TimelineSlider
+          nodes={nodes}
+          timelineDate={timelineDate}
+          onTimelineChange={setTimelineDate}
+          isPlaying={isPlaying}
+          onPlayToggle={() => setIsPlaying((p) => !p)}
+        />
       </div>
     </div>
   );

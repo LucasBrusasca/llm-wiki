@@ -1,7 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { MessageSquare, X, ArrowUp, Plus, Quote, ShieldAlert, FileText, Crosshair, HelpCircle, Wrench, History, Trash2, Pencil, Check, Link2, Loader2 } from 'lucide-react';
+import { MessageSquare, X, ArrowUp, Plus, Quote, ShieldAlert, FileText, Crosshair, HelpCircle, Wrench, History, Trash2, Pencil, Check, Link2, Loader2, Settings2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Hint } from '@/components/ui/tooltip';
+
+const CHAT_MODELS = [
+  { id: 'claude-3-5-sonnet-latest', label: 'Claude 3.5 Sonnet', short: 'Sonnet' },
+  { id: 'claude-3-5-haiku-latest', label: 'Claude 3.5 Haiku', short: 'Haiku' },
+  { id: 'gpt-4o', label: 'GPT-4o', short: 'GPT-4o' },
+  { id: 'gpt-4o-mini', label: 'GPT-4o Mini', short: 'GPT-4o Mini' },
+];
 import {
   askAgent, ejecutarArchivo, fetchConversations, createConversation, fetchConversation,
   updateConversation, deleteConversation, addConversationMessage, saveRelationsFromAnswer,
@@ -472,6 +479,8 @@ export default function AgentFab({
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [chatModel, setChatModel] = useState(CHAT_MODELS[0].id);
+  const [showModelPicker, setShowModelPicker] = useState(false);
   const fin = useRef(null);
   const inputRef = useRef(null);
   const ultimaPregunta = useRef('');
@@ -582,6 +591,7 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
         seccion,
         contextoId: context?.id,
         jev,
+        model: chatModel,
       });
 
       const assistantMsg = {
@@ -726,6 +736,37 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
                   </div>
                 )}
                 <div className="flex items-end gap-1.5">
+                  {/* Model selector */}
+                  <div className="relative">
+                    <Hint texto="Elegir modelo" side="top">
+                      <button
+                        type="button"
+                        onClick={() => setShowModelPicker((p) => !p)}
+                        className="grid size-7 place-items-center rounded-sm border border-hair bg-surface-2 text-ink-dim hover:border-accent/50 hover:text-ink"
+                        aria-label="Elegir modelo"
+                      >
+                        <Settings2 className="size-3.5" />
+                      </button>
+                    </Hint>
+                    {showModelPicker && (
+                      <div className="absolute bottom-full left-0 z-50 mb-1 min-w-[160px] rounded-sm border border-hair bg-surface shadow-lg">
+                        <div className="border-b border-hair px-2 py-1 text-[10px] font-medium text-ink-dim">Modelo</div>
+                        {CHAT_MODELS.map((m) => (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => { setChatModel(m.id); setShowModelPicker(false); }}
+                            className={cn(
+                              'flex w-full items-center gap-2 px-2 py-1.5 text-left text-[11px] hover:bg-surface-2',
+                              chatModel === m.id && 'bg-accent/[0.08] text-accent',
+                            )}
+                          >
+                            {m.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <textarea
                     ref={inputRef}
                     value={input}
@@ -739,6 +780,10 @@ Respondé en español. Citá los pasajes con su marcador cuando existan. Si la b
                   <Button type="submit" variant="default" size="icon" disabled={busy || !input.trim()} aria-label="Enviar">
                     <ArrowUp />
                   </Button>
+                </div>
+                {/* Model indicator */}
+                <div className="mt-1 text-[9px] text-ink-dim">
+                  {CHAT_MODELS.find((m) => m.id === chatModel)?.short || 'Sonnet'}
                 </div>
               </form>
             </>

@@ -392,9 +392,21 @@ def _post_llm_chat(url, payload, headers, timeout, retries=6):
         raise last_exc
 
 
-def query_llm(messages: list, system: str = None) -> str:
-    provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
-    model = os.getenv("LLM_MODEL", "").strip()
+def query_llm(messages: list, system: str = None, *, model: str = None) -> str:
+    """Envía mensajes al LLM configurado. Si `model` se pasa explícitamente, lo usa
+    en lugar del de la variable de entorno (para el selector de modelo del chat)."""
+    env_model = os.getenv("LLM_MODEL", "").strip()
+    # Modelo explícito del UI tiene prioridad sobre el de .env
+    model = (model or "").strip() or env_model
+    # Detectar provider del modelo si es explícito (para el selector del UI)
+    if model.startswith("gpt-") or model.startswith("o1-"):
+        provider = "openai"
+    elif model.startswith("claude-"):
+        provider = "anthropic"
+    elif model.startswith("gemini-"):
+        provider = "gemini"
+    else:
+        provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
 
     if provider == "ollama":
         if not model:
@@ -491,8 +503,10 @@ def query_llm(messages: list, system: str = None) -> str:
         # (…/v1 o …/paas/v4); también se acepta la URL completa de /chat/completions.
         base = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
         url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+        # Para OpenAI real, OPENAI_API_KEY; para otros (Groq, Z.ai), LLM_API_KEY.
+        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY", "")
         headers = {"Content-Type": "application/json",
-                   "Authorization": f"Bearer {os.getenv('LLM_API_KEY', '')}"}
+                   "Authorization": f"Bearer {api_key}"}
         payload_messages = []
         if system:
             payload_messages.append({"role": "system", "content": system})
