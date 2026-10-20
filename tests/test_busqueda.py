@@ -85,5 +85,50 @@ class UmbralesPorModeloTests(unittest.TestCase):
         self.assertEqual(processor.texto_de_fragmento(None, "capítulo 3"), "capítulo 3")
 
 
+class ConversationHistoryTests(unittest.TestCase):
+    """Tests para el historial de conversaciones del agente."""
+    
+    def test_modelos_de_conversacion_existen(self):
+        """Los modelos AgentConversation y AgentMessage deben estar definidos."""
+        from database.models import AgentConversation, AgentMessage
+        self.assertTrue(hasattr(AgentConversation, 'id'))
+        self.assertTrue(hasattr(AgentConversation, 'seccion'))
+        self.assertTrue(hasattr(AgentConversation, 'titulo'))
+        self.assertTrue(hasattr(AgentMessage, 'conversation_id'))
+        self.assertTrue(hasattr(AgentMessage, 'role'))
+        self.assertTrue(hasattr(AgentMessage, 'text'))
+        self.assertTrue(hasattr(AgentMessage, 'citations'))
+    
+    def test_edge_co_citado_tiene_campos_de_procedencia(self):
+        """Las aristas CO_CITADO deben tener campos para procedencia."""
+        from database.models import Edge
+        self.assertTrue(hasattr(Edge, 'metodo'))
+        self.assertTrue(hasattr(Edge, 'evidencia'))
+        self.assertTrue(hasattr(Edge, 'base_relacion'))
+
+
+class IntentRoutingTests(unittest.TestCase):
+    """Tests para el routing de intención explain vs compute."""
+    
+    def test_detecta_intencion_explicar(self):
+        """Debe detectar pedidos de explicación conceptual."""
+        import jev
+        # Pedidos de explicación
+        self.assertTrue(jev.es_intencion_explicar("qué es la correlación"))
+        self.assertTrue(jev.es_intencion_explicar("explicame sobre correlación"))
+        self.assertTrue(jev.es_intencion_explicar("necesito que me expliques sobre regresión"))
+        self.assertTrue(jev.es_intencion_explicar("cómo funciona el clustering"))
+        # NO son pedidos de explicación
+        self.assertFalse(jev.es_intencion_explicar("calculá las correlaciones del CSV"))
+        self.assertFalse(jev.es_intencion_explicar("analizá los datos"))
+        self.assertFalse(jev.es_intencion_explicar("hacé una regresión con esta tabla"))
+    
+    def test_pregunta_concepto_pattern(self):
+        """El regex de pregunta conceptual debe capturar variantes."""
+        import jev
+        t = jev.plano("necesito que me expliques sobre correlación")
+        self.assertTrue(jev._PREGUNTA_CONCEPTO.search(t))
+
+
 if __name__ == "__main__":
     unittest.main()

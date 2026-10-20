@@ -47,7 +47,7 @@ class Node(Base):
     # known_since: cuándo el sistema supo de este nodo (backfilled de created_at).
     # valid_from: cuándo el contenido empezó a ser válido (ej. fecha de publicación).
     # Permiten reconstruir el grafo como era en un momento dado.
-    known_since   = Column(DateTime(timezone=True))
+    known_since   = Column(DateTime(timezone=True), default=func.now())
     valid_from    = Column(DateTime(timezone=True))
     created_at    = Column(DateTime, server_default=func.now())
     updated_at    = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -211,6 +211,38 @@ class Papelera(Base):
     resumen      = Column(JSON, default=dict)   # {aristas, notas, pasajes, corridas}
     contenido    = Column(JSON, nullable=False)
     eliminado_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentConversation(Base):
+    """Conversación del agente: historial persistido por sección."""
+    __tablename__ = "agent_conversations"
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    seccion     = Column(String, nullable=False, index=True)
+    titulo      = Column(String)  # título editable (por defecto, primera pregunta)
+    context_id  = Column(String, ForeignKey("nodes.id", ondelete="SET NULL"))  # doc en scope
+    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at  = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AgentMessage(Base):
+    """Mensaje de una conversación del agente."""
+    __tablename__ = "agent_messages"
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(Integer, ForeignKey("agent_conversations.id", ondelete="CASCADE"), nullable=False)
+    role            = Column(String, nullable=False)  # user | assistant
+    text            = Column(Text, nullable=False)
+    # Metadatos de respuestas del agente
+    citations       = Column(JSON, default=list)   # pasajes citados
+    fundamentos     = Column(JSON, default=list)   # nodos usados
+    conducta        = Column(String)               # responder | abstenerse | pedir_aclaracion
+    motivo          = Column(String)
+    evidence_mode   = Column(String)
+    max_sim         = Column(Float)
+    timing          = Column(JSON)
+    doc_scoped      = Column(Boolean, default=False)
+    accion          = Column(JSON)                 # propuesta de acción (script)
+    opciones        = Column(JSON, default=list)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class IngestJob(Base):

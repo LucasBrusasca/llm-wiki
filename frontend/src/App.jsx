@@ -506,13 +506,21 @@ export default function App() {
 
   // En el grafo, clic en un vecino del elegido = seguir ese vínculo; en otro nodo = empezar de nuevo.
   const elegirEnGrafo = useCallback((id) => {
+    const nodo = graph.nodes.find((n) => n.id === id);
+    if (nodo?.is_cluster || nodo?.type === 'cluster') {
+      const key = (nodo.tema || id.replace(/^cluster:/, ''));
+      fetchGraph(seccion, { expand: key })
+        .then((g) => { setGraph(g); setSelectedId(null); })
+        .catch(() => {});
+      return;
+    }
     if (ego) {
       if (ego.ids.has(id)) { setSelectedId(id); return; }
       setEgo(null);
     }
     const r = selectedId && (relIndex.get(selectedId) || []).find((x) => x.otherId === id);
     if (r) abrirVinculo(id, r.edge); else seleccionar(id);
-  }, [selectedId, relIndex, abrirVinculo, seleccionar, ego]);
+  }, [selectedId, relIndex, abrirVinculo, seleccionar, ego, graph.nodes, seccion]);
 
   // En la 4D se ven todas las secciones: un documento de otra sección primero la abre
   // y lo elige cuando llega su grafo. En la misma sección, igual que en el grafo.

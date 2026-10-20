@@ -113,6 +113,10 @@ export const RELACIONES = {
   LEE_DATOS:                'lee los datos de',
   SE_APOYA_EN:              'se apoya en',
   IMPORTA:                  'importa',
+  // Co-citación desde respuestas del agente
+  CO_CITADO:                'co-citado con',
+  GENERADO_POR:             'generado por',
+  USA_DATOS:                'usa datos de',
 };
 
 export function relacionLabel(label) {
@@ -126,6 +130,7 @@ export function procedenciaLabel(edge) {
   if (base === 'explicita') return 'conceptos explícitos';
   if (base === 'semantica') return 'similitud semántica';
   if (base === 'codigo') return 'análisis del código';
+  if (edge?.metodo === 'agente_cocitacion') return 'co-citación en respuesta';
   return edge?.metodo ? edge.metodo.replace(/_/g, ' ') : 'calculado';
 }
 

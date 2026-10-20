@@ -77,6 +77,7 @@ const mismaArista = (e, pin) => !!pin && e.source === pin.source && e.target ===
 function Relacion({ item, other, onAbrir, onConcepto, fijada, onPin }) {
   const { edge, dir } = item;
   const ev = edge.evidencia || {};
+  const esCocitacion = edge.metodo === 'agente_cocitacion';
   const procedencia = [
     procedenciaLabel(edge),
     ev.similitud_coseno != null && `coseno ${Number(ev.similitud_coseno).toFixed(2)}`,
@@ -84,6 +85,7 @@ function Relacion({ item, other, onAbrir, onConcepto, fijada, onPin }) {
     ev.k_vecinos != null && `k=${ev.k_vecinos}`,
     ev.linea != null && `línea ${ev.linea} del script`,
     ev.modelo_embeddings && ev.modelo_embeddings.split('-').slice(0, 2).join('-'),
+    esCocitacion && ev.timestamp && `${fechaCorta(ev.timestamp)}`,
   ].filter(Boolean);
 
   return (
@@ -138,10 +140,17 @@ function Relacion({ item, other, onAbrir, onConcepto, fijada, onPin }) {
         )}
       </div>
 
-      {edge.description && (
+      {(edge.description || esCocitacion) && (
         <p className="mt-1.5 flex gap-1.5 text-[12px] leading-relaxed text-ink-muted">
           <CornerDownRight className="mt-[3px] size-3 shrink-0 text-ink-dim" />
-          <span>{edge.description}</span>
+          <span>
+            {edge.description}
+            {esCocitacion && ev.pregunta && (
+              <span className="mt-1 block text-[11px] italic text-ink-dim">
+                «{ev.pregunta.length > 120 ? `${ev.pregunta.slice(0, 120)}…` : ev.pregunta}»
+              </span>
+            )}
+          </span>
         </p>
       )}
 

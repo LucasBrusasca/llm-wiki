@@ -22,10 +22,15 @@ export async function fetchSections() {
  * son ~1MB de basura que nada en la UI usa) y con x/y/z listos para el lienzo.
  * Si el backend no está (ej. GitHub Pages), cae al snapshot estático de demo.
  */
-export async function fetchGraph(seccion, { signal } = {}) {
+export async function fetchGraph(seccion, { signal, expand, cluster } = {}) {
   let data;
   // «Todas las secciones» ('*'): el grafo sin filtro de sección.
-  const q = seccion && seccion !== '*' ? `?seccion=${encodeURIComponent(seccion)}` : '';
+  const params = new URLSearchParams();
+  if (seccion && seccion !== '*') params.set('seccion', seccion);
+  if (expand) params.set('expand', expand);
+  if (cluster === true) params.set('cluster', 'true');
+  if (cluster === false) params.set('cluster', 'false');
+  const q = params.toString() ? `?${params}` : '';
   try {
     data = await fetch(`/api/graph${q}`, { signal })
       .then(jsonOrThrow);
@@ -66,7 +71,13 @@ export function normalizeGraph(data) {
   // Documentos de OTRAS secciones relacionados con esta: no son parte del grafo de la
   // sección (no se dibujan), sólo se nombran en el panel y se abren cambiando de sección.
   const externos = (data?.externos || []).map((n) => ({ ...n, externo: true, conceptos: [], tags: [] }));
-  return { nodes, edges, externos };
+  return {
+    nodes,
+    edges,
+    externos,
+    total: data?.total ?? nodes.length,
+    clustered: !!data?.clustered,
+  };
 }
 
 /** Renombrar / eliminar sección. Devuelve el Response para que el llamador vea el 403. */
@@ -501,5 +512,53 @@ export async function saveRunAsNode(runId, { label, seccion } = {}) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ label, seccion }),
+  }).then(jsonOrThrow);
+}
+
+// ── Conversaciones del agente ─────────────────────────────────────────
+export async function fetchConversations(seccion, limit = 50) {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (seccion) q.set('seccion', seccion);
+  const d = await fetch(`/api/conversations?${q}`).then(jsonOrThrow);
+  return d.conversations || [];
+}
+
+export async function createConversation({ seccion, titulo, context_id }) {
+  return fetch('/api/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seccion, titulo, context_id }),
+  }).then(jsonOrThrow);
+}
+
+export async function fetchConversation(convId) {
+  return fetch(`/api/conversations/${convId}`).then(jsonOrThrow);
+}
+
+export async function updateConversation(convId, { titulo }) {
+  return fetch(`/api/conversations/${convId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ titulo }),
+  }).then(jsonOrThrow);
+}
+
+export async function deleteConversation(convId) {
+  return fetch(`/api/conversations/${convId}`, { method: 'DELETE' }).then(jsonOrThrow);
+}
+
+export async function addConversationMessage(convId, message) {
+  return fetch(`/api/conversations/${convId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(message),
+  }).then(jsonOrThrow);
+}
+
+export async function saveRelationsFromAnswer(convId, { message_id, pregunta }) {
+  return fetch(`/api/conversations/${convId}/save-relations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message_id, pregunta }),
   }).then(jsonOrThrow);
 }
