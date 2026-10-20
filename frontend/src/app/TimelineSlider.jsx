@@ -23,7 +23,8 @@ export function useTimeline(nodes) {
     const step = (max - min) / 60;
     setTimelineDate((prev) => {
       const t = prev ? new Date(prev).getTime() : min;
-      if (Number.isNaN(t) || t >= max) return new Date(min).toISOString();
+      // Al terminar, timelineDate queda en max: un replay tiene que volver al inicio.
+      if (Number.isNaN(t) || t >= max - 1) return new Date(min).toISOString();
       return prev;
     });
     const id = setInterval(() => {
