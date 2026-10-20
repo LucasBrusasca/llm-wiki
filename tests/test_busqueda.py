@@ -130,6 +130,46 @@ class IntentRoutingTests(unittest.TestCase):
         self.assertTrue(jev._PREGUNTA_CONCEPTO.search(t))
 
 
+class ScalabilityTests(unittest.TestCase):
+    """Tests para características de escalabilidad."""
+    
+    def test_postgres_fts_threshold_es_configurable(self):
+        """El umbral para usar Postgres FTS debe ser configurable."""
+        self.assertGreater(busqueda.POSTGRES_FTS_THRESHOLD, 0)
+        self.assertEqual(busqueda.POSTGRES_FTS_THRESHOLD, 10000)  # default
+    
+    def test_chunk_limit_es_configurable(self):
+        """El límite de chunks por documento debe ser configurable."""
+        self.assertGreater(processor.CHUNK_LIMIT, 200)  # raised from old fixed 200
+        self.assertEqual(processor.CHUNK_LIMIT, 500)  # new default
+    
+    def test_buscar_postgres_fts_devuelve_none_sin_indice(self):
+        """Sin índice tsvector activo, debe retornar None para caer a BM25."""
+        # Mock la sesión para simular que no hay chunks con tsv
+        with patch('database.connection.get_sync_session') as mock:
+            mock.return_value.__enter__.return_value.execute.return_value.scalar.return_value = False
+            result = busqueda.buscar_postgres_fts("test query")
+            self.assertIsNone(result)
+    
+    def test_buscar_hibrido_postgres_usa_fallback(self):
+        """Sin FTS, debe usar solo resultados de vectores."""
+        vec_results = [("c1", "n1", 0.9), ("c2", "n2", 0.8)]
+        with patch('busqueda.buscar_postgres_fts', return_value=None):
+            result = busqueda.buscar_hibrido_postgres("query", vec_results)
+            self.assertEqual(result, ["c1", "c2"])
+    
+    def test_chunk_model_tiene_tsv(self):
+        """El modelo Chunk debe tener columna tsv para full-text search."""
+        from database.models import Chunk
+        self.assertTrue(hasattr(Chunk, 'tsv'))
+    
+    def test_incremental_relations_usa_hnsw(self):
+        """relaciones_incrementales debe documentar uso de HNSW."""
+        doc = processor.relaciones_incrementales.__doc__ or ""
+        self.assertIn("kNN", doc)
+        self.assertIn("HNSW", doc)
+
+
 class WatchedSourcesTests(unittest.TestCase):
     """Tests para Fuentes Vivas (watched sources)."""
     

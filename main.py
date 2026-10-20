@@ -4423,7 +4423,8 @@ async def delete_node(
     if result.rowcount == 0:
         raise HTTPException(404, f"Nodo {node_id} no encontrado")
     await db.commit()
-    background_tasks.add_task(_recompute_edges_background)
+    # Edges CASCADE delete con el nodo — no es necesario recomputar todo el grafo.
+    # Si se quiere reagrupar el grafo completo, usar POST /api/recompute-relations.
     return {"ok": True}
 
 
@@ -5997,7 +5998,8 @@ def _ingest_playlist(url: str, skip_umap: bool = False, seccion: str = "personal
                 ok += 1
         except Exception as e:
             print(f"Error en video {v['url']}: {e}")
-    if not skip_umap:
+    auto_umap = os.getenv("ALGEDI_AUTO_UMAP", "1") in ("1", "true", "True")
+    if not skip_umap and auto_umap:
         _set_progress(90, "Calculando posiciones 3D (UMAP)…")
         try:
             import embeddings_engine
@@ -6080,11 +6082,18 @@ def _persistir_resultado(resultado: dict, seccion: str):
 
 def _cerrar_lote(skip_umap: bool):
     """Trabajo que se hace UNA vez por lote, no por documento: clasificar los temas
-    pendientes (en lote, una llamada cada TEMAS_LOTE docs) y recalcular la proyección 3D."""
+    pendientes (en lote, una llamada cada TEMAS_LOTE docs) y recalcular la proyección 3D.
+    
+    UMAP puede deshabilitarse con ALGEDI_AUTO_UMAP=0 para escalar a grafos grandes:
+    en ese caso las posiciones 3D se calculan solo con POST /api/umap-refresh o el
+    job periódico del watcher (si está habilitado).
+    """
     from processor import asignar_temas_pendientes
     _set_progress(88, "Clasificando temas…")
     asignar_temas_pendientes()
-    if not skip_umap:
+    # Respetar env var: ALGEDI_AUTO_UMAP=0 deshabilita UMAP automático tras ingesta.
+    auto_umap = os.getenv("ALGEDI_AUTO_UMAP", "1") in ("1", "true", "True")
+    if not skip_umap and auto_umap:
         _set_progress(94, "Calculando posición 3D (UMAP)…")
         try:
             import embeddings_engine

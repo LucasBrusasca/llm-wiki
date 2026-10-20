@@ -129,6 +129,37 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_ingest_jobs_status
             ON ingest_jobs (status)
         """))
+        # ── Full-text search (tsvector + GIN) para búsqueda léxica en Postgres ─
+        # Reemplaza el BM25 en memoria: escala mejor y no hay que reconstruir el
+        # índice en cada cambio. La configuración 'spanish' tokeniza bien castellano.
+        await conn.execute(text("""
+            ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tsv tsvector
+        """))
+        await conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS chunks_tsv_gin ON chunks USING gin(tsv)
+        """))
+        # Trigger para actualizar tsv automáticamente (backfill corre aparte).
+        await conn.execute(text("""
+            CREATE OR REPLACE FUNCTION chunks_tsv_update() RETURNS trigger AS $$
+            BEGIN
+                NEW.tsv := to_tsvector('spanish', coalesce(NEW.content, ''));
+                RETURN NEW;
+            END
+            $$ LANGUAGE plpgsql
+        """))
+        await conn.execute(text("""
+            DROP TRIGGER IF EXISTS chunks_tsv_trigger ON chunks
+        """))
+        await conn.execute(text("""
+            CREATE TRIGGER chunks_tsv_trigger
+            BEFORE INSERT OR UPDATE OF content ON chunks
+            FOR EACH ROW EXECUTE FUNCTION chunks_tsv_update()
+        """))
+        # Backfill tsvector para chunks existentes sin tsv
+        await conn.execute(text("""
+            UPDATE chunks SET tsv = to_tsvector('spanish', coalesce(content, ''))
+            WHERE tsv IS NULL
+        """))
     await _backfill_traceability()
     print("✓ Base de datos inicializada")
 

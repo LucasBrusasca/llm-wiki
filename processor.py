@@ -104,7 +104,10 @@ def generar_embedding(nodo):
 
 CHUNK_MAX_CHARS = 1400
 CHUNK_OVERLAP_CHARS = 220
-CHUNK_LIMIT = 200
+# Límite de chunks por documento. Antes fijo en 200, ahora configurable para documentos
+# largos (balances, estados contables). Con el índice HNSW y tsvector+GIN el costo de
+# más chunks es bajo. Default 500; subir si hay PDFs de cientos de páginas.
+CHUNK_LIMIT = int(os.getenv("ALGEDI_CHUNK_LIMIT", "500"))
 
 
 def _char_to_byte_offset(text: str, char_offset: int) -> int:

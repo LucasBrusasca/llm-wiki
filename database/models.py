@@ -160,6 +160,10 @@ class Chunk(Base):
     byte_end       = Column(Integer)
     embedding      = Column(Vector(384) if HAS_PGVECTOR else JSON)
     chunk_metadata = Column(JSON, default=dict)
+    # ── Full-text search (tsvector) ───────────────────────────────────────────
+    # Indexado con GIN para búsqueda léxica en Postgres (reemplaza BM25 en memoria).
+    # Se actualiza con trigger o al insertar/actualizar. Configuración: spanish.
+    tsv            = Column("tsv", Text)  # Stored as tsvector via trigger
     created_at     = Column(DateTime, server_default=func.now())
 
 
