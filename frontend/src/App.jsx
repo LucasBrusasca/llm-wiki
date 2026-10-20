@@ -27,6 +27,8 @@ import TemaDialog from '@/app/TemaDialog';
 import Papelera from '@/app/Papelera';
 import { PanelPlegado } from '@/app/PanelLateral';
 import { normalizar } from '@/lib/utils';
+import { idsHasta, nodoHasta } from '@/lib/timeline';
+import TimelineSlider, { useTimeline } from '@/app/TimelineSlider';
 
 // React Flow pesa: sólo se carga cuando el usuario abre Split o Grafo.
 const GraphCanvas = lazy(() => import('@/app/GraphCanvas'));
@@ -379,12 +381,20 @@ export default function App() {
     return true;
   }, [temasSel, tipos, fuentes, conceptos]);
 
+  const timeline = useTimeline(graph.nodes);
+  useEffect(() => {
+    timeline.setTimelineDate(null);
+    timeline.setIsPlaying(false);
+  }, [seccion]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // El mismo filtro, como función sobre CUALQUIER nodo: la 4D muestra todas las
   // secciones y el filtro tiene que valer para todas (null = no se filtra nada).
   const filtroNodo = useMemo(() => {
     const terms = normalizar(query.trim()).split(/\s+/).filter(Boolean);
-    if (!terms.length && !tipos.size && !fuentes.size && !conceptos.size && !temasSel.size) return null;
+    const corte = timeline.timelineDate;
+    if (!terms.length && !tipos.size && !fuentes.size && !conceptos.size && !temasSel.size && !corte) return null;
     return (n) => {
+      if (!nodoHasta(n, corte)) return false;
       if (!pasaFacetas(n)) return false;
       if (!terms.length) return true;
       const h = haystack.get(n.id) ?? normalizar([
@@ -392,7 +402,7 @@ export default function App() {
       ].join('  '));
       return terms.every((t) => h.includes(t)) || Boolean(semanticIds?.has(n.id));
     };
-  }, [query, tipos, fuentes, conceptos, temasSel, pasaFacetas, haystack, semanticIds]);
+  }, [query, tipos, fuentes, conceptos, temasSel, pasaFacetas, haystack, semanticIds, timeline.timelineDate]);
 
   const { visibles, semanticos } = useMemo(() => {
     const q = normalizar(query.trim());
@@ -761,7 +771,10 @@ export default function App() {
   const selected = selectedId ? nodesById.get(selectedId) : null;
   const seccionInfo = sections.find((s) => s.nombre === seccion);
   const hayFoco = Boolean(selectedId || ego || pinnedEdge || marcados.size);
-  const visibleIds = useMemo(() => new Set(orden), [orden]);
+  const visibleIds = useMemo(
+    () => idsHasta(new Set(orden), nodesById, timeline.timelineDate),
+    [orden, nodesById, timeline.timelineDate],
+  );
 
   // El 3D y la 4D comparten el color (las dos son espaciales); el 2D tiene el suyo.
   const espacial = vista === '3d' || vista === '4d';
@@ -811,11 +824,20 @@ export default function App() {
         <button
           type="button"
           onClick={verTodo}
-          className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-hair-strong bg-surface/90 px-3 py-1.5 text-[12px] text-ink shadow-lg shadow-black/40 backdrop-blur hover:border-accent/60"
+          className="absolute bottom-16 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-hair-strong bg-surface/90 px-3 py-1.5 text-[12px] text-ink shadow-lg shadow-black/40 backdrop-blur hover:border-accent/60"
         >
           Ver todo <kbd className="rounded-xs border border-hair px-1 text-[10.5px] text-ink-dim">Esc</kbd>
         </button>
       )}
+      <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center">
+        <TimelineSlider
+          nodes={graph.nodes}
+          timelineDate={timeline.timelineDate}
+          onTimelineChange={timeline.setTimelineDate}
+          isPlaying={timeline.isPlaying}
+          onPlayToggle={() => timeline.setIsPlaying((p) => !p)}
+        />
+      </div>
     </div>
   );
 
