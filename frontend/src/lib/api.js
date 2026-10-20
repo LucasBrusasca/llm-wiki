@@ -22,10 +22,15 @@ export async function fetchSections() {
  * son ~1MB de basura que nada en la UI usa) y con x/y/z listos para el lienzo.
  * Si el backend no está (ej. GitHub Pages), cae al snapshot estático de demo.
  */
-export async function fetchGraph(seccion, { signal } = {}) {
+export async function fetchGraph(seccion, { signal, expand, cluster } = {}) {
   let data;
   // «Todas las secciones» ('*'): el grafo sin filtro de sección.
-  const q = seccion && seccion !== '*' ? `?seccion=${encodeURIComponent(seccion)}` : '';
+  const params = new URLSearchParams();
+  if (seccion && seccion !== '*') params.set('seccion', seccion);
+  if (expand) params.set('expand', expand);
+  if (cluster === true) params.set('cluster', 'true');
+  if (cluster === false) params.set('cluster', 'false');
+  const q = params.toString() ? `?${params}` : '';
   try {
     data = await fetch(`/api/graph${q}`, { signal })
       .then(jsonOrThrow);
@@ -66,7 +71,13 @@ export function normalizeGraph(data) {
   // Documentos de OTRAS secciones relacionados con esta: no son parte del grafo de la
   // sección (no se dibujan), sólo se nombran en el panel y se abren cambiando de sección.
   const externos = (data?.externos || []).map((n) => ({ ...n, externo: true, conceptos: [], tags: [] }));
-  return { nodes, edges, externos };
+  return {
+    nodes,
+    edges,
+    externos,
+    total: data?.total ?? nodes.length,
+    clustered: !!data?.clustered,
+  };
 }
 
 /** Renombrar / eliminar sección. Devuelve el Response para que el llamador vea el 403. */
