@@ -18,6 +18,28 @@ function citados(m) {
 }
 
 /** Qué respaldo tuvo la respuesta y qué decidió hacer el agente (contrato de conducta). */
+/** Desglose de timing para debug/optimización. */
+function TimingDetail({ timing }) {
+  if (!timing) return null;
+  const items = [
+    timing.chunks_ms != null && `retrieval: ${timing.chunks_ms}ms`,
+    timing.nodes_ms != null && `nodos: ${timing.nodes_ms}ms`,
+    timing.llm_ms != null && `LLM: ${timing.llm_ms}ms`,
+    timing.total_ms != null && `total: ${timing.total_ms}ms`,
+  ].filter(Boolean);
+  if (items.length <= 1) return null;
+  return (
+    <details className="mt-1">
+      <summary className="cursor-pointer list-none text-[10px] text-ink-dim/60 hover:text-ink-dim">
+        ⏱ {timing.total_ms}ms ▸
+      </summary>
+      <p className="mt-0.5 font-mono text-[10px] text-ink-dim/60">
+        {items.join(' · ')}
+      </p>
+    </details>
+  );
+}
+
 function Evidencia({ m }) {
   const n = citados(m).length;
   const conducta = m.conducta || (m.evidenceMode === 'chunks' && n > 0 ? 'responder' : 'abstenerse');
@@ -27,29 +49,38 @@ function Evidencia({ m }) {
   if (conducta === 'abstenerse' || conducta === 'pedir_aclaracion') {
     const pedir = conducta === 'pedir_aclaracion';
     return (
-      <div className="flex gap-1.5 rounded-sm border border-warn/30 bg-warn/[0.08] px-2 py-1.5">
-        {pedir ? <HelpCircle className="mt-px size-3.5 shrink-0 text-warn" /> : <ShieldAlert className="mt-px size-3.5 shrink-0 text-warn" />}
-        <span className="text-[11.5px] leading-relaxed text-warn">
-          <b>{pedir ? 'Necesito que precises' : 'Me abstengo de citar'}</b>
-          {m.motivo ? <> · {m.motivo}</> : null}
-          {timing && <span className="text-warn/60">{timing}</span>}
-        </span>
+      <div className="flex flex-col">
+        <div className="flex gap-1.5 rounded-sm border border-warn/30 bg-warn/[0.08] px-2 py-1.5">
+          {pedir ? <HelpCircle className="mt-px size-3.5 shrink-0 text-warn" /> : <ShieldAlert className="mt-px size-3.5 shrink-0 text-warn" />}
+          <span className="text-[11.5px] leading-relaxed text-warn">
+            <b>{pedir ? 'Necesito que precises' : 'Me abstengo de citar'}</b>
+            {m.motivo ? <> · {m.motivo}</> : null}
+            {timing && <span className="text-warn/60">{timing}</span>}
+          </span>
+        </div>
+        <TimingDetail timing={m.timing} />
       </div>
     );
   }
   if (n > 0) {
     return (
-      <span className="flex items-center gap-1 text-[11px] text-accent-soft">
-        <Quote className="size-3" /> Citada · {n} {n === 1 ? 'pasaje' : 'pasajes'} · afinidad máx {pct(m.sim)}
-        {timing && <span className="text-ink-dim">{timing}{scope}</span>}
-      </span>
+      <div className="flex flex-col">
+        <span className="flex items-center gap-1 text-[11px] text-accent-soft">
+          <Quote className="size-3" /> Citada · {n} {n === 1 ? 'pasaje' : 'pasajes'} · afinidad máx {pct(m.sim || m.max_sim)}
+          {timing && <span className="text-ink-dim">{timing}{scope}</span>}
+        </span>
+        <TimingDetail timing={m.timing} />
+      </div>
     );
   }
   return (
-    <span className="flex items-center gap-1 text-[11px] text-ink-muted">
-      <FileText className="size-3" /> {m.motivo || 'Basada en resúmenes, sin cita por pasaje'} · {pct(m.sim)}
-      {timing && <span className="text-ink-dim/60">{timing}{scope}</span>}
-    </span>
+    <div className="flex flex-col">
+      <span className="flex items-center gap-1 text-[11px] text-ink-muted">
+        <FileText className="size-3" /> {m.motivo || 'Basada en resúmenes, sin cita por pasaje'} · {pct(m.sim || m.max_sim)}
+        {timing && <span className="text-ink-dim/60">{timing}{scope}</span>}
+      </span>
+      <TimingDetail timing={m.timing} />
+    </div>
   );
 }
 

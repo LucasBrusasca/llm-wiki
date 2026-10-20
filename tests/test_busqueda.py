@@ -107,5 +107,28 @@ class ConversationHistoryTests(unittest.TestCase):
         self.assertTrue(hasattr(Edge, 'base_relacion'))
 
 
+class IntentRoutingTests(unittest.TestCase):
+    """Tests para el routing de intención explain vs compute."""
+    
+    def test_detecta_intencion_explicar(self):
+        """Debe detectar pedidos de explicación conceptual."""
+        import jev
+        # Pedidos de explicación
+        self.assertTrue(jev.es_intencion_explicar("qué es la correlación"))
+        self.assertTrue(jev.es_intencion_explicar("explicame sobre correlación"))
+        self.assertTrue(jev.es_intencion_explicar("necesito que me expliques sobre regresión"))
+        self.assertTrue(jev.es_intencion_explicar("cómo funciona el clustering"))
+        # NO son pedidos de explicación
+        self.assertFalse(jev.es_intencion_explicar("calculá las correlaciones del CSV"))
+        self.assertFalse(jev.es_intencion_explicar("analizá los datos"))
+        self.assertFalse(jev.es_intencion_explicar("hacé una regresión con esta tabla"))
+    
+    def test_pregunta_concepto_pattern(self):
+        """El regex de pregunta conceptual debe capturar variantes."""
+        import jev
+        t = jev.plano("necesito que me expliques sobre correlación")
+        self.assertTrue(jev._PREGUNTA_CONCEPTO.search(t))
+
+
 if __name__ == "__main__":
     unittest.main()

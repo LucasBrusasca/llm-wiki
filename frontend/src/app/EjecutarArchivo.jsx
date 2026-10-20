@@ -145,37 +145,65 @@ export function SalidaCorrida({ r, versionActual, seccion, onNodoGuardado }) {
   );
 }
 
-/** El plan de una corrida propuesta, con Confirmar / Cancelar. Nada corre sin el clic. */
-export function PlanCorrida({ propuesta, onConfirmar, onCancelar, ocupado = false, titulo }) {
+/**
+ * El plan de una corrida propuesta, con Confirmar / Cancelar. Nada corre sin el clic.
+ * 
+ * Diseño compacto: una línea con script + versión + datos + timeout, botones, y un
+ * "Ver detalles" colapsable con los pasos. La advertencia de permisos solo se muestra
+ * para scripts nuevos o editados por el usuario (no para los del registry revisados).
+ */
+export function PlanCorrida({ propuesta, onConfirmar, onCancelar, ocupado = false, titulo, esRegistry = false }) {
   const plan = propuesta?.plan;
+  const archivo = propuesta.archivo || plan?.archivo || 'script';
+  const version = plan?.version ? plan.version.slice(0, 7) : null;
+  const datos = plan?.datos || [];
+  const timeout = plan?.timeout_s || 60;
+  const esNuevoOEditado = plan?.es_nuevo_o_editado ?? !esRegistry;
+  
   return (
     <div className="rounded-md border border-accent/40 bg-accent/[0.06] p-2.5">
-      <p className="flex items-start gap-1.5 text-[12.5px] text-ink">
-        <ShieldAlert className="mt-px size-3.5 shrink-0 text-accent" />
-        <span>{titulo || <>¿Ejecutar <b>{propuesta.archivo || plan?.archivo}</b>?</>}</span>
+      {/* Línea compacta: script, versión, datos, timeout */}
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-ink">
+        <span className="font-medium">{titulo || <>¿Correr <b>{archivo}</b>?</>}</span>
+        {version && <span className="font-mono text-[10.5px] text-ink-dim">v{version}</span>}
+        {datos.length > 0 && (
+          <span className="flex items-center gap-1 text-ink-dim">
+            <Database className="size-3" />
+            {datos.map((d) => d.archivo).join(', ')}
+          </span>
+        )}
+        <span className="text-ink-dim">· {timeout}s</span>
       </p>
-      {plan?.pasos ? (
-        <ol className="mt-1.5 flex list-decimal flex-col gap-0.5 pl-5 text-[11.5px] leading-relaxed text-ink-muted">
-          {plan.pasos.map((p) => <li key={p}>{p}</li>)}
-        </ol>
-      ) : (
-        <p className="mt-1 text-[11.5px] leading-relaxed text-ink-muted">{propuesta.message}</p>
-      )}
-      {plan?.datos?.length > 0 && (
-        <p className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px] text-ink-dim">
-          <Database className="size-3" /> Datos:
-          {plan.datos.map((d) => (
-            <span key={d.node_id} className="rounded-xs border border-hair bg-surface-2 px-1 text-ink-muted">{d.archivo}</span>
-          ))}
+      
+      {/* Advertencia solo para scripts nuevos o editados por el usuario */}
+      {esNuevoOEditado && (
+        <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-warn">
+          <ShieldAlert className="mt-px size-3 shrink-0" />
+          Corre con los permisos del servidor: ejecutá sólo código que entendés.
         </p>
       )}
-      {plan?.advertencia && <p className="mt-1.5 text-[11px] text-warn">{plan.advertencia}</p>}
-      <div className="mt-2 flex gap-1.5">
+      
+      {/* Botones */}
+      <div className="mt-2 flex items-center gap-1.5">
         <Button variant="default" size="sm" onClick={onConfirmar} disabled={ocupado}>
           {ocupado ? <Loader2 className="animate-spin" /> : <Play />} Confirmar y ejecutar
         </Button>
         <Button variant="ghost" size="sm" onClick={onCancelar} disabled={ocupado}>Cancelar</Button>
       </div>
+      
+      {/* Detalles colapsables */}
+      {plan?.pasos?.length > 0 && (
+        <details className="mt-2">
+          <summary className="cursor-pointer list-none text-[11px] text-ink-dim hover:text-ink">
+            Ver detalles ▸
+          </summary>
+          <ol className="mt-1.5 flex list-decimal flex-col gap-0.5 pl-5 text-[11px] leading-relaxed text-ink-muted">
+            {plan.pasos.map((p, i) => <li key={i}>{p}</li>)}
+          </ol>
+        </details>
+      )}
+      
+      {plan?.advertencia && <p className="mt-1.5 text-[11px] text-warn">{plan.advertencia}</p>}
     </div>
   );
 }

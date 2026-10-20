@@ -90,15 +90,55 @@ _PALABRAS_DATOS = re.compile(
     r"\b(datos|tabla|csv|planilla|excel|dataset|columna\w*|filas?|variables?)\b")
 _PALABRAS_GRAFO = re.compile(r"\b(relacion\w*|conect\w*|vincul\w*|vecin\w*|parec\w*|similar\w*|"
                              r"une|unen|temas?|cuantos documentos|aislad\w*|huerfan\w*)\b")
+# Patrones que indican intención de EXPLICAR un concepto (no de calcularlo sobre datos):
+# "explicame", "expliques", "qué es", "cómo funciona", "para qué sirve", etc.
 _PREGUNTA_CONCEPTO = re.compile(
     r"\b(que es (un|una|el|la|los|las)|que son (los|las)|que significa|que dice|que diferencia|"
     r"cual es la diferencia|como (se )?(calcula|interpreta|define|funciona|elige|lee|usa)|"
-    r"para que (sirve|se usa)|cuando conviene|explicame|contame|definime)\b")
+    r"para que (sirve|se usa)|cuando conviene|explicame|expliqu\w*|contame|definime|"
+    r"necesito que (me )?(expliqu\w*|cont\w*|defin\w*)|quiero (saber|entender)|"
+    r"no (entiendo|se) (que|como|para))\b")
 
 PROB_CAMINO_HERRAMIENTA = 0.5      # para proponer una herramienta hace falta mayoría
 PISO_HERRAMIENTA = 0.80            # coseno mínimo de la mejor herramienta con el pedido
 PISO_COLUMNA_OPCIONAL = 0.86       # un parámetro opcional sólo se llena con evidencia clara
 SESGO_MENCION = 0.06               # la columna nombrada en el pedido gana
+
+# Camino especial: EXPLICAR primero, luego ofrecer herramienta como seguimiento
+EXPLICAR_LUEGO_OFRECER = "explicar_luego_ofrecer"
+
+
+def es_intencion_explicar(pedido: str) -> bool:
+    """Detecta si el pedido es claramente una pregunta de explicación/concepto,
+    no un pedido de cálculo sobre datos. Determinístico, sin LLM."""
+    t = plano(pedido)
+    # Tiene patrón explícito de pregunta conceptual
+    if _PREGUNTA_CONCEPTO.search(t):
+        return True
+    # Patrones adicionales más sueltos que indican querer entender, no calcular
+    patrones_explicar = [
+        r"\bsobre\s+(que|como|la|el|los|las)\b",  # "sobre qué es", "sobre la correlación"
+        r"\b(me )?(explic|cont|ensen)\w*\b",  # explícame, contame, enseñame
+        r"\b(entender|comprender|saber)\s+(mas|mejor|que|como)\b",
+    ]
+    for p in patrones_explicar:
+        if re.search(p, t):
+            return True
+    return False
+
+
+def herramienta_relacionada(pedido: str, herramientas: list[dict]) -> dict | None:
+    """Si el pedido menciona un concepto para el que existe una herramienta
+    (ej. 'correlación' -> correlaciones.py), devuelve la herramienta."""
+    if not herramientas:
+        return None
+    t = plano(pedido)
+    # Mapeo de conceptos a palabras clave de herramientas
+    puntajes = puntajes_herramientas(pedido, herramientas)
+    mejor_id = max(puntajes, key=puntajes.get) if puntajes else None
+    if mejor_id and puntajes[mejor_id] >= 0.5:  # umbral bajo, solo para sugerir
+        return next((h for h in herramientas if h["node_id"] == mejor_id), None)
+    return None
 
 
 def plano(texto: str) -> str:
@@ -425,18 +465,53 @@ def resolver_parametros(pedido: str, ficha: dict, contexto: dict | None, tablas:
 
 def proponer(pedido: str, contexto: dict | None, herramientas: list[dict], tablas: list[dict], *,
              herramienta: str | None = None, fijados: dict | None = None) -> dict:
-    """{camino, herramienta?, parametros?, faltan?}: todo lo que hace falta para responder,
-    proponer o preguntar. `contexto`: {id, type, label} del nodo en foco, o None.
-    `herramienta`: la que la persona ya eligió (por nombre o tocando una opción)."""
+    """{camino, herramienta?, parametros?, faltan?, explicar_primero?, herramienta_sugerida?}:
+    todo lo que hace falta para responder, proponer o preguntar.
+    
+    `contexto`: {id, type, label} del nodo en foco, o None.
+    `herramienta`: la que la persona ya eligió (por nombre o tocando una opción).
+    
+    Nuevo: si `explicar_primero` es True, el agente debe primero explicar el concepto
+    citando la biblioteca, y luego ofrecer `herramienta_sugerida` como seguimiento opcional."""
     etiquetas = {h["node_id"]: h.get("label") or h["ficha"].get("titulo") for h in herramientas}
+    
+    # Si la persona ya eligió una herramienta explícitamente, ir directo
     if herramienta in etiquetas:
         camino = Decision(HERRAMIENTA, {HERRAMIENTA: 1.0}, "la pediste vos")
         d = Decision(herramienta, {herramienta: 1.0}, "la pediste vos")
+        salida = {"camino": camino.a_dict(ETIQUETA_CAMINO), "eleccion_camino": camino.eleccion,
+                  "explicar_primero": False}
     else:
         camino = decidir_camino(pedido, (contexto or {}).get("type"))
         d = None
-    salida = {"camino": camino.a_dict(ETIQUETA_CAMINO), "eleccion_camino": camino.eleccion}
-    if camino.eleccion != HERRAMIENTA:
+        
+        # Detectar intención de explicar: si es explicar pero hay herramienta relacionada,
+        # marcar para explicar primero y ofrecer herramienta como seguimiento
+        es_explicar = es_intencion_explicar(pedido)
+        h_relacionada = herramienta_relacionada(pedido, herramientas) if es_explicar else None
+        
+        salida = {"camino": camino.a_dict(ETIQUETA_CAMINO), "eleccion_camino": camino.eleccion,
+                  "explicar_primero": es_explicar}
+        
+        if es_explicar and h_relacionada:
+            # Marcar que hay herramienta para ofrecer después de explicar
+            salida["herramienta_sugerida"] = {
+                "node_id": h_relacionada["node_id"],
+                "label": etiquetas.get(h_relacionada["node_id"]) or h_relacionada.get("label"),
+            }
+            # Buscar la tabla más probable para la sugerencia
+            if tablas:
+                t_tabla, _, _ = _elegir_tabla(pedido, contexto, tablas)
+                if t_tabla:
+                    salida["herramienta_sugerida"]["tabla"] = {
+                        "node_id": t_tabla["node_id"],
+                        "label": t_tabla["label"],
+                    }
+            # El camino es BIBLIOTECA para que responda primero
+            salida["eleccion_camino"] = BIBLIOTECA
+            return salida
+    
+    if salida["eleccion_camino"] != HERRAMIENTA:
         return salida
     d = d or elegir_herramienta(pedido, herramientas)
     salida["herramienta"] = d.a_dict(etiquetas)

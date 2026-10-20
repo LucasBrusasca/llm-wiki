@@ -2734,6 +2734,13 @@ async def _plan_de_corrida(db: AsyncSession, node: Node, parametros: dict | None
         ruta.name, wb.hash_codigo(_leer_codigo(ruta)),
         [{k: d[k] for k in ("node_id", "label", "archivo")} for d in datos], RUN_TIMEOUT, mostrados,
     )
+    # Detectar si es un script del registry built-in (no editado por usuario)
+    # Los scripts en herramientas/ son los built-in. Un script es "nuevo o editado"
+    # si NO está en herramientas/ O si su hash difiere de la versión original.
+    es_builtin = "herramientas" in str(ruta.resolve()).replace("\\", "/")
+    ficha = _ficha_de(ruta)
+    plan["es_registry"] = bool(es_builtin and ficha)
+    plan["es_nuevo_o_editado"] = not plan["es_registry"]
     return {"plan": plan, "ruta": ruta, "datos": datos, "parametros": al_script}
 
 
@@ -4026,6 +4033,15 @@ async def _proponer_accion(db: AsyncSession, texto: str, seccion: str, contexto_
     d = await asyncio.to_thread(jev.proponer, texto, contexto, herramientas, tablas,
                                 herramienta=elegida, fijados=forzado.get("parametros"))
     camino = d["eleccion_camino"]
+    
+    # Nuevo: si es intención de explicar con herramienta relacionada, marcar para
+    # que el agente responda primero y ofrezca la herramienta como seguimiento
+    if d.get("explicar_primero") and d.get("herramienta_sugerida"):
+        return {
+            "conducta": "explicar_luego_ofrecer",
+            "herramienta_sugerida": d["herramienta_sugerida"],
+        }, d
+    
     if camino == jev.GRAFO:
         return await _responder_grafo(db, texto, seccion, contexto), d
     if camino != jev.HERRAMIENTA:
@@ -4578,6 +4594,7 @@ async def agent_endpoint(
     if forzado and forzado.get("pedido"):
         ultima = str(forzado["pedido"])          # la opción tocada responde al pedido original
     decision_jev = None
+    herramienta_sugerida = None  # Para ofrecer después de explicar
     if ultima and seccion_agente:
         try:
             propuesta, decision_jev = await _proponer_accion(
@@ -4586,17 +4603,23 @@ async def agent_endpoint(
             print(f"[jev] {e}")
             await db.rollback()
             propuesta = None
-        if propuesta:
+        
+        # Nuevo flujo: explicar primero, ofrecer herramienta después
+        if propuesta and propuesta.get("conducta") == "explicar_luego_ofrecer":
+            herramienta_sugerida = propuesta.get("herramienta_sugerida")
+            propuesta = None  # Continuar con retrieval normal para explicar
+        elif propuesta:
             modo = {"proponer_accion": "PROPUESTA_ACCION", "pedir_aclaracion": "JEV_ACLARACION"}.get(
                 propuesta["conducta"], "JEV_GRAFO")
             db.add(AuditLog(query=ultima, agent_mode=modo,
-                            node_ids_consulted=propuesta["node_ids"], response=propuesta["reply"][:2000]))
+                            node_ids_consulted=propuesta.get("node_ids", []),
+                            response=propuesta.get("reply", "")[:2000]))
             await db.commit()
             return {
                 "conducta": propuesta["conducta"], "motivo": propuesta["motivo"],
                 "reply": propuesta["reply"], "accion": propuesta["accion"],
                 "opciones": propuesta.get("opciones") or [], "jev": decision_jev,
-                "nodos_relevantes": propuesta["node_ids"], "fundamentos": [], "citations": [],
+                "nodos_relevantes": propuesta.get("node_ids", []), "fundamentos": [], "citations": [],
                 "veto": False, "general_knowledge": False, "evidence_mode": None,
                 "max_sim": None, "umbral": AGENT_CITA_UMBRAL,
             }
@@ -4725,10 +4748,15 @@ async def agent_endpoint(
             "específicos o una decisión de alto impacto, explicá qué evidencia falta."
         )
     try:
+        import os as _os
         from processor import query_llm
+        t_llm = _time.perf_counter()
         reply = query_llm(messages, system)
+        timing["llm_ms"] = int((_time.perf_counter() - t_llm) * 1000)
+        timing["llm_model"] = _os.getenv("LLM_MODEL", "") or _os.getenv("LLM_PROVIDER", "anthropic")
     except Exception as e:
         reply = f"Error: {e}"
+        timing["llm_ms"] = 0
 
     db.add(AuditLog(
         query=ultima,
@@ -4741,7 +4769,8 @@ async def agent_endpoint(
 
     conducta = _conducta_agente(max_sim, ultima, bool(citations), AGENT_CITA_UMBRAL)
     timing["total_ms"] = int((_time.perf_counter() - t0) * 1000)
-    return {
+    
+    respuesta = {
         **conducta,
         "umbral": AGENT_CITA_UMBRAL,
         "reply": reply,
@@ -4757,6 +4786,20 @@ async def agent_endpoint(
         "timing": timing,
         "doc_scoped": bool(contexto_id),
     }
+    
+    # Si hay herramienta sugerida (flujo explicar → ofrecer), incluirla como opción
+    if herramienta_sugerida:
+        h = herramienta_sugerida
+        texto_sugerencia = f"¿Querés verlo con tus datos?"
+        if h.get("tabla"):
+            texto_sugerencia = f"¿Querés verlo con tus datos? ({h['label']} sobre {h['tabla']['label']})"
+        respuesta["herramienta_sugerida"] = h
+        respuesta["opciones"] = [{
+            "etiqueta": texto_sugerencia,
+            "jev": {"herramienta": h["node_id"], "pedido": ultima},
+        }]
+    
+    return respuesta
 
 
 # ── Historial de conversaciones del agente ─────────────────────────────────────
