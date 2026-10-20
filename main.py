@@ -2842,6 +2842,7 @@ def _corrida_a_dict(r: ScriptRun, node: Node | None = None, version_actual: str 
         "returncode": out.get("returncode"),
         "timeout": bool(out.get("timeout")),
         "generados": out.get("generados") or [],
+        "artifacts": r.artifacts or [],
         "stdout": recortar(out.get("stdout") if tipo != "registry" else json.dumps(out, ensure_ascii=False)[:4000]),
         "stderr": recortar(out.get("stderr") or r.error_message),
     }
@@ -2899,6 +2900,108 @@ async def get_run(run_id: int, db: AsyncSession = Depends(get_async_session)):
         raise HTTPException(404, f"Corrida {run_id} no encontrada")
     run, node = fila
     return _corrida_a_dict(run, node, _version_de(node), completa=True)
+
+
+@app.get("/api/runs/{run_id}/artifact/{nombre:path}")
+async def get_run_artifact(run_id: int, nombre: str, db: AsyncSession = Depends(get_async_session)):
+    """Sirve un artefacto persistido de una corrida (HTML, PNG, etc.).
+    
+    Los artefactos se guardan en uploads/runs/<run_id>/<nombre> cuando el script
+    declara ARTIFACTS = ["report.html", ...] y los genera."""
+    from fastapi.responses import FileResponse
+    
+    run = (await db.execute(select(ScriptRun).where(ScriptRun.id == run_id))).scalar_one_or_none()
+    if not run:
+        raise HTTPException(404, f"Corrida {run_id} no encontrada")
+    
+    artifacts = run.artifacts or []
+    artifact = next((a for a in artifacts if a.get("nombre") == nombre), None)
+    if not artifact:
+        raise HTTPException(404, f"Artefacto «{nombre}» no encontrado en la corrida {run_id}")
+    
+    ruta = VAULT / "runs" / str(run_id) / nombre
+    if not ruta.exists():
+        raise HTTPException(404, f"Archivo no encontrado: {nombre}")
+    
+    return FileResponse(
+        ruta,
+        media_type=artifact.get("content_type", "application/octet-stream"),
+        filename=Path(nombre).name,
+    )
+
+
+@app.post("/api/runs/{run_id}/save-as-node")
+async def save_run_as_node(run_id: int, request: Request, db: AsyncSession = Depends(get_async_session)):
+    """Guarda el resultado de una corrida como nodo RESULTADO en el grafo.
+    
+    Crea vínculos al script que lo generó y a los datasets usados. Permite que el
+    usuario decida qué resultados vale la pena conservar como parte del conocimiento."""
+    body = await _read_body(request)
+    
+    run = (await db.execute(select(ScriptRun).where(ScriptRun.id == run_id))).scalar_one_or_none()
+    if not run:
+        raise HTTPException(404, f"Corrida {run_id} no encontrada")
+    if run.status != "completed":
+        raise HTTPException(400, "Solo se pueden guardar resultados de corridas exitosas")
+    
+    inp = run.inputs or {}
+    out = run.outputs or {}
+    
+    label = body.get("label") or f"Resultado: {inp.get('label', 'análisis')} #{run_id}"
+    seccion = body.get("seccion") or "personal"
+    
+    stdout = out.get("stdout") or ""
+    artifacts = run.artifacts or []
+    
+    desc_parts = [f"Generado por «{inp.get('label', 'script')}» el {run.created_at.strftime('%Y-%m-%d %H:%M')}"]
+    if inp.get("parametros"):
+        params_str = ", ".join(f"{k}={v}" for k, v in inp["parametros"].items())
+        desc_parts.append(f"Parámetros: {params_str}")
+    if artifacts:
+        desc_parts.append(f"Artefactos: {', '.join(a['nombre'] for a in artifacts)}")
+    
+    node_id = f"resultado_{run_id}"
+    nodo = {
+        "id": node_id,
+        "label": label,
+        "type": "REPORTE",
+        "desc": ". ".join(desc_parts),
+        "fragmento": stdout[:2000] if stdout else "",
+        "dominio": seccion,
+        "fuente": f"corrida:{run_id}",
+        "fuente_label": inp.get("label"),
+    }
+    
+    from processor import generar_embedding
+    generar_embedding(nodo)
+    nodo.update(_ubicacion_por_vecinos(nodo.get("embedding"), seccion))
+    
+    n = Node(**{k: v for k, v in nodo.items() if hasattr(Node, k)})
+    db.add(n)
+    
+    aristas = []
+    if run.node_id:
+        aristas.append(Edge(
+            source=node_id, target=run.node_id,
+            label="GENERADO_POR", description=f"Generado por el script en la corrida #{run_id}",
+            score=1.0, metodo="corrida", base_relacion="codigo", is_manual=False,
+        ))
+    for dato in inp.get("datos") or []:
+        if dato.get("node_id"):
+            aristas.append(Edge(
+                source=node_id, target=dato["node_id"],
+                label="USA_DATOS", description=f"Usa datos de «{dato.get('label', dato['node_id'])}»",
+                score=1.0, metodo="corrida", base_relacion="codigo", is_manual=False,
+            ))
+    for e in aristas:
+        db.add(e)
+    
+    await db.commit()
+    await db.refresh(n)
+    
+    nd = node_to_dict(n, con_embedding=False)
+    nd.pop("embedding", None)
+    return {"node": nd, "aristas": len(aristas)}
 
 
 @app.get("/api/node/{node_id}/codigo")

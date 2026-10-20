@@ -3,7 +3,7 @@ import {
   Play, Loader2, ShieldAlert, CheckCircle2, AlertTriangle, History, Timer, Database, Bot, FileOutput, ExternalLink, Save,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { ejecutarArchivo, fetchEjecuciones, fetchParametros } from '@/lib/api';
+import { ejecutarArchivo, fetchEjecuciones, fetchParametros, saveRunAsNode } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { renderMarkdown } from '@/markdown';
 
@@ -47,13 +47,31 @@ export function EstadoCorrida({ r, className }) {
  * Salida de una corrida: estado, versión, stdout/stderr, artefactos persistidos y lo
  * que generó (descartado si no declaró persistencia).
  */
-export function SalidaCorrida({ r, versionActual, onGuardarNodo }) {
+export function SalidaCorrida({ r, versionActual, seccion, onNodoGuardado }) {
+  const [guardando, setGuardando] = useState(false);
+  const [guardado, setGuardado] = useState(false);
+  
   if (!r) return null;
   const vieja = versionActual && r.version && r.version !== versionActual;
   const esMarkdown = useMemo(() => contieneTablasMd(r.stdout), [r.stdout]);
   const htmlSalida = useMemo(() => esMarkdown ? renderMarkdown(r.stdout) : null, [esMarkdown, r.stdout]);
   const artefactoHtml = (r.artifacts || []).find((a) => a.nombre.endsWith('.html'));
   const runId = r.run_id ?? r.id;
+  const puedeGuardar = r.status === 'completed' && runId != null;
+
+  async function guardarComoNodo() {
+    if (guardando || guardado) return;
+    setGuardando(true);
+    try {
+      const res = await saveRunAsNode(runId, { seccion });
+      setGuardado(true);
+      onNodoGuardado?.(res.node);
+    } catch (e) {
+      console.error('Error guardando resultado como nodo:', e);
+    } finally {
+      setGuardando(false);
+    }
+  }
 
   return (
     <div className="overflow-hidden rounded-md border border-hair">
@@ -86,7 +104,7 @@ export function SalidaCorrida({ r, versionActual, onGuardarNodo }) {
       {r.stderr && (
         <pre className="max-h-40 overflow-auto border-t border-hair p-2 font-mono text-[11px] leading-relaxed text-danger">{r.stderr}</pre>
       )}
-      {(r.artifacts?.length > 0 || onGuardarNodo) && (
+      {(r.artifacts?.length > 0 || puedeGuardar) && (
         <div className="flex flex-wrap items-center gap-2 border-t border-hair px-2 py-1.5 text-[11px]">
           {artefactoHtml && (
             <a
@@ -98,13 +116,19 @@ export function SalidaCorrida({ r, versionActual, onGuardarNodo }) {
               <ExternalLink className="size-3" /> Abrir resultado
             </a>
           )}
-          {onGuardarNodo && (
+          {puedeGuardar && (
             <button
               type="button"
-              onClick={() => onGuardarNodo(runId)}
-              className="flex items-center gap-1 text-ink-dim hover:text-ink"
+              onClick={guardarComoNodo}
+              disabled={guardando || guardado}
+              className={cn(
+                'flex items-center gap-1',
+                guardado ? 'text-ok' : 'text-ink-dim hover:text-ink',
+                (guardando || guardado) && 'cursor-default'
+              )}
             >
-              <Save className="size-3" /> Guardar como nodo
+              <Save className="size-3" />
+              {guardado ? 'Guardado' : guardando ? 'Guardando…' : 'Guardar como nodo'}
             </button>
           )}
         </div>
@@ -363,7 +387,7 @@ export default function EjecutarArchivo({ node, onCorrida }) {
       )}
 
       {error && <p className="text-[12px] text-danger">{error}</p>}
-      {resultado && <SalidaCorrida r={resultado} versionActual={previas.versionActual} />}
+      {resultado && <SalidaCorrida r={resultado} versionActual={previas.versionActual} seccion={node.dominio} />}
 
       {anteriores.length > 0 && (
         <details>
@@ -374,7 +398,7 @@ export default function EjecutarArchivo({ node, onCorrida }) {
             {anteriores.map((r) => (
               <li key={r.id}>
                 <p className="mb-0.5 text-[11px] text-ink-dim">{fechaHora(r.started_at || r.created_at)}</p>
-                <SalidaCorrida r={r} versionActual={previas.versionActual} />
+                <SalidaCorrida r={r} versionActual={previas.versionActual} seccion={node.dominio} />
               </li>
             ))}
           </ul>

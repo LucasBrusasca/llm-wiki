@@ -494,3 +494,12 @@ export async function retryJob(jobId) {
 export async function cancelJob(jobId) {
   return fetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }).then(jsonOrThrow);
 }
+
+/** Guarda el resultado de una corrida como nodo RESULTADO en el grafo. */
+export async function saveRunAsNode(runId, { label, seccion } = {}) {
+  return fetch(`/api/runs/${runId}/save-as-node`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label, seccion }),
+  }).then(jsonOrThrow);
+}
